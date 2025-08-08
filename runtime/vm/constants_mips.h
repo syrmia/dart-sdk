@@ -27,13 +27,13 @@ enum Register {
   R16 = 16,
   R17 = 17,
   R18 = 18,
-  R19 = 19,
+  R19 = 19,  // THR
   R20 = 20,
   R21 = 21,
-  R22 = 22,
-  R23 = 23,
-  R24 = 24,
-  R25 = 25,
+  R22 = 22,  // CTX
+  R23 = 23,  // PP
+  R24 = 24,  // CMPRES1
+  R25 = 25,  // CMPRES2
   R26 = 26,  // K0 (reserved for OS kernel)
   R27 = 27,  // K1 (reserved for OS kernel)
   R28 = 28,
@@ -86,6 +86,48 @@ enum Register {
   RA = R31,
 };
 
+// Values for floating point registers.
+// Double-precision values use register pairs.
+enum FRegister {
+  F0 = 0,
+  F1 = 1,
+  F2 = 2,
+  F3 = 3,
+  F4 = 4,
+  F5 = 5,
+  F6 = 6,
+  F7 = 7,
+  F8 = 8,
+  F9 = 9,
+  F10 = 10,
+  F11 = 11,
+  F12 = 12,
+  F13 = 13,
+  F14 = 14,
+  F15 = 15,
+  F16 = 16,
+  F17 = 17,
+  F18 = 18,
+  F19 = 19,
+  F20 = 20,
+  F21 = 21,
+  F22 = 22,
+  F23 = 23,
+  F24 = 24,
+  F25 = 25,
+  F26 = 26,
+  F27 = 27,
+  F28 = 28,
+  F29 = 29,
+  F30 = 30,
+  F31 = 31,
+  kNumberOfFRegisters = 32,
+  kNoFRegister = -1,
+};
+
+const int kFpuRegisterSize = 8;
+typedef double fpu_register_t;
+
 // There is no dedicated status register on MIPS, but Condition values are used
 // and passed around by the intermediate language, so we need a Condition type.
 // We delay code generation of a comparison that would result in a traditional
@@ -129,6 +171,70 @@ class Condition : public ValueObject {
     kInvalidCondition = INVALID_RELATION
   };
 };   
+
+// The double precision floating point registers are concatenated pairs of the
+// single precision registers, e.g. D0 is F1:F0, D1 is F3:F2, etc.. We only
+// tell the architecture generic code about the double precision registers, then
+// convert to the single precision registers when needed in the mips-specific
+// code.
+enum DRegister {
+  D0 = 0,    // Function return value 1.
+  D1 = 1,    // Function return value 2.
+  D2 = 2,    // Not preserved.
+  D3 = 3,    // Not preserved.
+  D4 = 4,    // Not preserved.
+  D5 = 5,    // Not preserved.
+  D6 = 6,    // Argument 1.
+  D7 = 7,    // Argument 2.
+  D8 = 8,    // Not preserved.
+  D9 = 9,    // Not preserved.
+  D10 = 10,  // Preserved.
+  D11 = 11,  // Preserved.
+  D12 = 12,  // Preserved.
+  D13 = 13,  // Preserved.
+  D14 = 14,  // Preserved.
+  D15 = 15,  // Preserved.
+  kNumberOfDRegisters = 16,
+  kNoDRegister = -1,
+};
+
+const DRegister DTMP = D9;  // Double TMP
+const FRegister STMP1 = F18;  // Single-precision TMP1
+const FRegister STMP2 = F19;  // Single-precision TMP2
+
+// Architecture independent aliases.
+typedef DRegister FpuRegister;
+const FpuRegister FpuTMP = DTMP;
+const int kNumberOfFpuRegisters = kNumberOfDRegisters;
+const FpuRegister kNoFpuRegister = kNoDRegister;
+
+// Register aliases.
+const Register TMP = AT;            // Used as scratch register by assembler.
+const Register TMP2 = kNoRegister;  // No second assembler scratch register.
+const Register CTX = S6;  // Location of current context at method entry.
+const Register CODE_REG = S6;
+const Register PP = S7;     // Caches object pool pointer in generated code.
+
+const Register FUNCTION_REG = T0;
+const Register SPREG = SP;  // Stack pointer register.
+const Register FPREG = FP;  // Frame pointer register.
+const Register LRREG = RA;  // Link register.
+const Register ICREG = S5;  // IC data register.
+const Register ARGS_DESC_REG = S4;
+const Register THR = S3;  // Caches current thread in generated code.
+const Register CALLEE_SAVED_TEMP = S5;
+
+// The code that generates a comparison can be far away from the code that
+// generates the branch that uses the result of that comparison. In this case,
+// CMPRES1 and CMPRES2 are used for the results of the comparison. We need two
+// since TMP is clobbered by a far branch.
+const Register CMPRES1 = T8;
+const Register CMPRES2 = T9;
+
+
+extern const char* const cpu_reg_names[kNumberOfCpuRegisters];
+extern const char* const cpu_reg_abi_names[kNumberOfCpuRegisters];
+extern const char* const fpu_reg_names[kNumberOfFRegisters];
 
 }  // namespace dart
 
