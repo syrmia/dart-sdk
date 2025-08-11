@@ -5,6 +5,8 @@
 #ifndef RUNTIME_VM_CONSTANTS_MIPS_H_
 #define RUNTIME_VM_CONSTANTS_MIPS_H_
 
+#include "vm/allocation.h"
+
 namespace dart {
 
 enum Register {
@@ -133,7 +135,6 @@ typedef double fpu_register_t;
 // We delay code generation of a comparison that would result in a traditional
 // condition code in the status register by keeping both register operands and
 // the relational operator between them as the Condition.
-
 class Condition : public ValueObject {
  public:
   enum RelationOperator {
@@ -231,10 +232,53 @@ const Register CALLEE_SAVED_TEMP = S5;
 const Register CMPRES1 = T8;
 const Register CMPRES2 = T9;
 
-
 extern const char* const cpu_reg_names[kNumberOfCpuRegisters];
 extern const char* const cpu_reg_abi_names[kNumberOfCpuRegisters];
 extern const char* const fpu_reg_names[kNumberOfFRegisters];
+
+// Constants used for decoding or encoding the individual fields of
+// instructions. Based on "Table 5.30 CPU Instruction Format Fields" in
+// MIPS® Architecture For Programmers Volume I-A:
+// Introduction to the MIPS32® Architecture, Revision 6.01.
+// Available at:
+// https://s3-eu-west-1.amazonaws.com/downloads-mips/documents/MD00082-2B-MIPS32INT-AFP-06.01.pdf
+enum InstructionFields {
+  kOpcodeShift = 26,
+  kOpcodeBits = 6,
+  kRsShift = 21,
+  kRsBits = 5,
+  kFmtShift = 21,
+  kFmtBits = 5,
+  kRtShift = 16,
+  kRtBits = 5,
+  kFtShift = 16,
+  kFtBits = 5,
+  kRdShift = 11,
+  kRdBits = 5,
+  kFsShift = 11,
+  kFsBits = 5,
+  kSaShift = 6,
+  kSaBits = 5,
+  kFdShift = 6,
+  kFdBits = 5,
+  kFunctionShift = 0,
+  kFunctionBits = 6,
+  kCop1FnShift = 0,
+  kCop1FnBits = 6,
+  kCop1SubShift = 21,
+  kCop1SubBits = 5,
+  kImmShift = 0,
+  kImmBits = 16,
+  kInstrShift = 0,
+  kInstrBits = 26,
+  kBreakCodeShift = 6,
+  kBreakCodeBits = 20,
+  kSyncCodeShift = 6,
+  kFpuCCShift = 8,
+  kFpuCCBits = 3,
+
+  kBranchOffsetMask = 0x0000ffff,
+};
 
 }  // namespace dart
 
