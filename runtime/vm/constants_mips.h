@@ -5,6 +5,8 @@
 #ifndef RUNTIME_VM_CONSTANTS_MIPS_H_
 #define RUNTIME_VM_CONSTANTS_MIPS_H_
 
+#include "vm/allocation.h"
+
 namespace dart {
 
 enum Register {
@@ -133,7 +135,6 @@ typedef double fpu_register_t;
 // We delay code generation of a comparison that would result in a traditional
 // condition code in the status register by keeping both register operands and
 // the relational operator between them as the Condition.
-
 class Condition : public ValueObject {
  public:
   enum RelationOperator {
@@ -231,10 +232,202 @@ const Register CALLEE_SAVED_TEMP = S5;
 const Register CMPRES1 = T8;
 const Register CMPRES2 = T9;
 
-
 extern const char* const cpu_reg_names[kNumberOfCpuRegisters];
 extern const char* const cpu_reg_abi_names[kNumberOfCpuRegisters];
 extern const char* const fpu_reg_names[kNumberOfFRegisters];
+
+// Constants used for decoding or encoding the individual fields of
+// instructions. Based on "Table 5.30 CPU Instruction Format Fields" in
+// MIPS® Architecture For Programmers Volume I-A:
+// Introduction to the MIPS32® Architecture, Revision 6.01.
+// Available at:
+// https://s3-eu-west-1.amazonaws.com/downloads-mips/documents/MD00082-2B-MIPS32INT-AFP-06.01.pdf
+enum InstructionFields {
+  kOpcodeShift = 26,
+  kOpcodeBits = 6,
+  kRsShift = 21,
+  kRsBits = 5,
+  kFmtShift = 21,
+  kFmtBits = 5,
+  kRtShift = 16,
+  kRtBits = 5,
+  kFtShift = 16,
+  kFtBits = 5,
+  kRdShift = 11,
+  kRdBits = 5,
+  kFsShift = 11,
+  kFsBits = 5,
+  kSaShift = 6,
+  kSaBits = 5,
+  kFdShift = 6,
+  kFdBits = 5,
+  kFunctionShift = 0,
+  kFunctionBits = 6,
+  kCop1FnShift = 0,
+  kCop1FnBits = 6,
+  kCop1SubShift = 21,
+  kCop1SubBits = 5,
+  kImmShift = 0,
+  kImmBits = 16,
+  kInstrShift = 0,
+  kInstrBits = 26,
+  kBreakCodeShift = 6,
+  kBreakCodeBits = 20,
+  kSyncCodeShift = 6,
+  kFpuCCShift = 8,
+  kFpuCCBits = 3,
+
+  kBranchOffsetMask = 0x0000ffff,
+};
+
+enum Opcode {
+  SPECIAL = 0,
+  REGIMM = 1,
+  J = 2,
+  JAL = 3,
+  BEQ = 4,
+  BNE = 5,
+  BLEZ = 6,
+  BGTZ = 7,
+  ADDI = 8,
+  ADDIU = 9,
+  SLTI = 10,
+  SLTIU = 11,
+  ANDI = 12,
+  ORI = 13,
+  XORI = 14,
+  LUI = 15,
+  CPO0 = 16,
+  COP1 = 17,
+  COP2 = 18,
+  COP1X = 19,
+  BEQL = 20,
+  BNEL = 21,
+  BLEZL = 22,
+  BGTZL = 23,
+  SPECIAL2 = 28,
+  JALX = 29,
+  SPECIAL3 = 31,
+  LB = 32,
+  LH = 33,
+  LWL = 34,
+  LW = 35,
+  LBU = 36,
+  LHU = 37,
+  LWR = 38,
+  SB = 40,
+  SH = 41,
+  SWL = 42,
+  SW = 43,
+  SWR = 46,
+  CACHE = 47,
+  LL = 48,
+  LWC1 = 49,
+  LWC2 = 50,
+  PREF = 51,
+  LDC1 = 53,
+  LDC2 = 54,
+  SC = 56,
+  SWC1 = 57,
+  SWC2 = 58,
+  SDC1 = 61,
+  SDC2 = 62,
+};
+
+enum SpecialFunction {
+  // SPECIAL opcodes.
+  SLL = 0,
+  MOVCI = 1,
+  SRL = 2,
+  SRA = 3,
+  SLLV = 4,
+  SRLV = 6,
+  SRAV = 7,
+  JR = 8,
+  JALR = 9,
+  MOVZ = 10,
+  MOVN = 11,
+  SYSCALL = 12,
+  BREAK = 13,
+  SYNC = 15,
+  MFHI = 16,
+  MTHI = 17,
+  MFLO = 18,
+  MTLO = 19,
+  MULT = 24,
+  MULTU = 25,
+  DIV = 26,
+  DIVU = 27,
+  ADD = 32,
+  ADDU = 33,
+  SUB = 34,
+  SUBU = 35,
+  AND = 36,
+  OR = 37,
+  XOR = 38,
+  NOR = 39,
+  SLT = 42,
+  SLTU = 43,
+  TGE = 48,
+  TGEU = 49,
+  TLT = 50,
+  TLTU = 51,
+  TEQ = 52,
+  TNE = 54,
+
+  // SPECIAL2 opcodes.
+  MADD = 0,
+  MADDU = 1,
+  CLZ = 32,
+  CLO = 33,
+};
+
+enum RtRegImm {
+  BLTZ = 0,
+  BGEZ = 1,
+  BLTZL = 2,
+  BGEZL = 3,
+  TGEI = 8,
+  TGEIU = 9,
+  TLTI = 10,
+  TLTIU = 11,
+  TEQI = 12,
+  TNEI = 14,
+  BLTZAL = 16,
+  BGEZAL = 17,
+  BLTZALL = 18,
+  BGEZALL = 19,
+  SYNCI = 31,
+};
+
+enum Cop1Function {
+  COP1_ADD = 0x00,
+  COP1_SUB = 0x01,
+  COP1_MUL = 0x02,
+  COP1_DIV = 0x03,
+  COP1_SQRT = 0x04,
+  COP1_MOV = 0x06,
+  COP1_NEG = 0x07,
+  COP1_TRUNC_W = 0x0d,
+  COP1_CVT_S = 0x20,
+  COP1_CVT_D = 0x21,
+  COP1_C_F = 0x30,
+  COP1_C_UN = 0x31,
+  COP1_C_EQ = 0x32,
+  COP1_C_UEQ = 0x33,
+  COP1_C_OLT = 0x34,
+  COP1_C_ULT = 0x35,
+  COP1_C_OLE = 0x36,
+  COP1_C_ULE = 0x37,
+};
+
+enum Format {
+  FMT_S = 16,
+  FMT_D = 17,
+  FMT_W = 20,
+  FMT_L = 21,
+  FMT_PS = 22,
+};
 
 }  // namespace dart
 
