@@ -29,6 +29,7 @@ compiler_sources = [
   "assembler/assembler_base.h",
   "assembler/assembler_ia32.cc",
   "assembler/assembler_ia32.h",
+  "assembler/assembler_mips.cc",
   "assembler/assembler_mips.h",
   "assembler/assembler_riscv.cc",
   "assembler/assembler_riscv.h",
