@@ -38,27 +38,6 @@ namespace dart {
 // Convert comparison Token::Kind to GPR comparison condition.
 static inline Condition TokenKindToIntCondition(Token::Kind kind,
                                                 bool is_unsigned) {
-#if defined(TARGET_ARCH_MIPS)
-  switch (kind) {
-    case Token::kEQ:
-      return Condition::EQUAL;
-    case Token::kNE:
-      return Condition::NOT_EQUAL;
-    case Token::kLT:
-      return is_unsigned ? Condition::UNSIGNED_LESS : Condition::LESS;
-    case Token::kGT:
-      return is_unsigned ? Condition::UNSIGNED_GREATER : Condition::GREATER;
-    case Token::kLTE:
-      return is_unsigned ? Condition::UNSIGNED_LESS_EQUAL
-                         : Condition::LESS_EQUAL;
-    case Token::kGTE:
-      return is_unsigned ? Condition::UNSIGNED_GREATER_EQUAL
-                         : Condition::GREATER_EQUAL;
-    default:
-      UNREACHABLE();
-      return Condition::kInvalidCondition;
-  }
-#else
   // Use platform-independent condition names
   // declared in constant_<arch>.h on all platforms.
   switch (kind) {
@@ -78,7 +57,6 @@ static inline Condition TokenKindToIntCondition(Token::Kind kind,
       UNREACHABLE();
       return OVERFLOW;
   }
-#endif
 }
 
 }  // namespace dart
