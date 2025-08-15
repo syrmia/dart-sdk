@@ -99,6 +99,12 @@ class Assembler : public AssemblerBase {
           UNIMPLEMENTED();
   }
   ~Assembler() {}
+
+  void CompareImmediate(Register rn, int32_t imm, OperandSize sz = kWordBytes) override;
+  void TestImmediate(Register rn, int32_t imm, OperandSize sz = kWordBytes);
+
+  void CompareRegisters(Register rn, Register rm);
+  void TestRegisters(Register rn, Register rm);
   
  private:
   bool use_far_branches_;
@@ -106,6 +112,19 @@ class Assembler : public AssemblerBase {
   bool in_delay_slot_;
 
   bool constant_pool_allowed_;
+
+  enum DeferredCompareType {
+    kNone,
+    kCompareReg,
+    kCompareImm,
+    kTestReg,
+    kTestImm,
+  };
+  
+  DeferredCompareType deferred_compare_ = kNone;
+  Register deferred_left_ = kNoRegister;
+  Register deferred_reg_ = kNoRegister;
+  intptr_t deferred_imm_ = 0;
 
   void Emit(int32_t value) {
     // Emitting an instruction clears the delay slot state.
