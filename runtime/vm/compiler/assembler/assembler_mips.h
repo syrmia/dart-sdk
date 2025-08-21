@@ -106,6 +106,17 @@ class Assembler : public AssemblerBase {
   void CompareRegisters(Register rn, Register rm);
   void TestRegisters(Register rn, Register rm);
 
+  // A utility to be able to assemble an instruction into the delay slot.
+  Assembler* delay_slot() {
+    ASSERT(delay_slot_available_);
+    ASSERT(buffer_.Load<int32_t>(buffer_.GetPosition() - sizeof(int32_t)) ==
+           Instr::kNopInstruction);
+    buffer_.Remit<int32_t>();
+    delay_slot_available_ = false;
+    in_delay_slot_ = true;
+    return this;
+  }
+
   // CPU instructions in alphabetical order.
   void addd(DRegister dd, DRegister ds, DRegister dt) {
     // DRegisters start at the even FRegisters.
@@ -143,6 +154,117 @@ class Assembler : public AssemblerBase {
     ASSERT(Utils::IsUint(kImmBits, imm.value()));
     const uint16_t imm_value = static_cast<uint16_t>(imm.value());
     EmitIType(ANDI, rs, rt, imm_value);
+  }
+
+  // Unconditional branch.
+  void b(Label* l) { beq(R0, R0, l); }
+
+  void bal(Label* l) {
+    ASSERT(!in_delay_slot_);
+    EmitRegImmBranch(BGEZAL, R0, l);
+    EmitBranchDelayNop();
+  }
+
+  // Branch on floating point false.
+  void bc1f(Label* l) {
+    EmitFpuBranch(false, l);
+    EmitBranchDelayNop();
+  }
+
+  // Branch on floating point true.
+  void bc1t(Label* l) {
+    EmitFpuBranch(true, l);
+    EmitBranchDelayNop();
+  }
+
+  // Branch if equal.
+  void beq(Register rs, Register rt, Label* l) {
+    ASSERT(!in_delay_slot_);
+    EmitBranch(BEQ, rs, rt, l);
+    EmitBranchDelayNop();
+  }
+
+  // Branch if equal, likely taken.
+  // Delay slot executed only when branch taken.
+  void beql(Register rs, Register rt, Label* l) {
+    ASSERT(!in_delay_slot_);
+    EmitBranch(BEQL, rs, rt, l);
+    EmitBranchDelayNop();
+  }
+
+  // Branch if rs >= 0.
+  void bgez(Register rs, Label* l) {
+    ASSERT(!in_delay_slot_);
+    EmitRegImmBranch(BGEZ, rs, l);
+    EmitBranchDelayNop();
+  }
+
+  // Branch if rs >= 0, likely taken.
+  // Delay slot executed only when branch taken.
+  void bgezl(Register rs, Label* l) {
+    ASSERT(!in_delay_slot_);
+    EmitRegImmBranch(BGEZL, rs, l);
+    EmitBranchDelayNop();
+  }
+
+  // Branch if rs > 0.
+  void bgtz(Register rs, Label* l) {
+    ASSERT(!in_delay_slot_);
+    EmitBranch(BGTZ, rs, R0, l);
+    EmitBranchDelayNop();
+  }
+
+  // Branch if rs > 0, likely taken.
+  // Delay slot executed only when branch taken.
+  void bgtzl(Register rs, Label* l) {
+    ASSERT(!in_delay_slot_);
+    EmitBranch(BGTZL, rs, R0, l);
+    EmitBranchDelayNop();
+  }
+
+  // Branch if rs <= 0.
+  void blez(Register rs, Label* l) {
+    ASSERT(!in_delay_slot_);
+    EmitBranch(BLEZ, rs, R0, l);
+    EmitBranchDelayNop();
+  }
+
+  // Branch if rs <= 0, likely taken.
+  // Delay slot executed only when branch taken.
+  void blezl(Register rs, Label* l) {
+    ASSERT(!in_delay_slot_);
+    EmitBranch(BLEZL, rs, R0, l);
+    EmitBranchDelayNop();
+  }
+
+  // Branch if rs < 0.
+  void bltz(Register rs, Label* l) {
+    ASSERT(!in_delay_slot_);
+    EmitRegImmBranch(BLTZ, rs, l);
+    EmitBranchDelayNop();
+  }
+
+  // Branch if rs < 0, likely taken.
+  // Delay slot executed only when branch taken.
+  void bltzl(Register rs, Label* l) {
+    ASSERT(!in_delay_slot_);
+    EmitRegImmBranch(BLTZL, rs, l);
+    EmitBranchDelayNop();
+  }
+
+  // Branch if not equal.
+  void bne(Register rs, Register rt, Label* l) {
+    ASSERT(!in_delay_slot_);  // Jump within a delay slot is not supported.
+    EmitBranch(BNE, rs, rt, l);
+    EmitBranchDelayNop();
+  }
+
+  // Branch if not equal, likely taken.
+  // Delay slot executed only when branch taken.
+  void bnel(Register rs, Register rt, Label* l) {
+    ASSERT(!in_delay_slot_);  // Jump within a delay slot is not supported.
+    EmitBranch(BNEL, rs, rt, l);
+    EmitBranchDelayNop();
   }
 
   static int32_t BreakEncoding(int32_t code) {
@@ -254,6 +376,26 @@ class Assembler : public AssemblerBase {
     EmitRType(SPECIAL, rs, rt, R0, 0, DIVU);
   }
 
+  void jalr(Register rs, Register rd = RA) {
+    ASSERT(rs != rd);
+    ASSERT(!in_delay_slot_);  // Jump within a delay slot is not supported.
+    EmitRType(SPECIAL, rs, R0, rd, 0, JALR);
+    EmitBranchDelayNop();
+  }
+
+  void jr(Register rs) {
+    ASSERT(!in_delay_slot_);  // Jump within a delay slot is not supported.
+    EmitRType(SPECIAL, rs, R0, R0, 0, JR);
+    EmitBranchDelayNop();
+  }
+
+  void jal(uint32_t address) {
+    ASSERT(!in_delay_slot_);  // Jump within a delay slot is not supported.
+    ASSERT(Utils::IsUint(26, address));
+    Emit(JAL << kOpcodeShift | address << kFunctionShift);
+    EmitBranchDelayNop();
+  }
+
   void lb(Register rt, const Address& addr) { EmitLoadStore(LB, rt, addr); }
 
   void lbu(Register rt, const Address& addr) { EmitLoadStore(LBU, rt, addr); }
@@ -358,6 +500,8 @@ class Assembler : public AssemblerBase {
     FRegister fs = static_cast<FRegister>(ds * 2);
     EmitFpuRType(COP1, FMT_D, F0, fs, fd, COP1_NEG);
   }
+
+  void nop() { Emit(Instr::kNopInstruction); }
 
   void nor(Register rd, Register rs, Register rt) {
     EmitRType(SPECIAL, rs, rt, rd, 0, NOR);
@@ -547,6 +691,15 @@ class Assembler : public AssemblerBase {
                     Cop1Function func) {
     Emit(opcode << kOpcodeShift | fmt << kFmtShift | ft << kFtShift |
          fs << kFsShift | fd << kFdShift | func << kCop1FnShift);
+  }
+
+  void EmitBranch(Opcode b, Register rs, Register rt, Label* label);
+  void EmitRegImmBranch(RtRegImm b, Register rs, Label* label);
+  void EmitFpuBranch(bool kind, Label* label);
+
+  void EmitBranchDelayNop() {
+    Emit(Instr::kNopInstruction);  // Branch delay NOP.
+    delay_slot_available_ = true;
   }
 };
 
