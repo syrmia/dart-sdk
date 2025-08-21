@@ -620,6 +620,90 @@ class Assembler : public AssemblerBase {
   void xor_(Register rd, Register rs, Register rt) {
     EmitRType(SPECIAL, rs, rt, rd, 0, XOR);
   }
+
+  void BranchEqual(Register rd, Register rn, Label* l) { beq(rd, rn, l); }
+
+  void BranchEqual(Register rd, const Immediate& imm, Label* l) {
+    UNIMPLEMENTED();
+  }
+
+  void BranchEqual(Register rd, const Object& object, Label* l) {
+    UNIMPLEMENTED();
+  }
+
+  void BranchNotEqual(Register rd, Register rn, Label* l) { bne(rd, rn, l); }
+
+  void BranchNotEqual(Register rd, const Immediate& imm, Label* l) {
+    UNIMPLEMENTED();
+  }
+
+  void BranchNotEqual(Register rd, const Object& object, Label* l) {
+    UNIMPLEMENTED();
+  }
+
+  void BranchSignedGreater(Register rd, Register rs, Label* l) {
+    UNIMPLEMENTED();
+  }
+
+  void BranchSignedGreater(Register rd, const Immediate& imm, Label* l) {
+    UNIMPLEMENTED();
+  }
+
+  void BranchUnsignedGreater(Register rd, Register rs, Label* l) {
+    UNIMPLEMENTED();
+  }
+
+  void BranchUnsignedGreater(Register rd, const Immediate& imm, Label* l) {
+    UNIMPLEMENTED();
+  }
+
+  void BranchSignedGreaterEqual(Register rd, Register rs, Label* l) {
+    UNIMPLEMENTED();
+  }
+
+  void BranchSignedGreaterEqual(Register rd, const Immediate& imm, Label* l) {
+    UNIMPLEMENTED();
+  }
+
+  void BranchUnsignedGreaterEqual(Register rd, Register rs, Label* l) {
+    UNIMPLEMENTED();
+  }
+
+  void BranchUnsignedGreaterEqual(Register rd, const Immediate& imm, Label* l) {
+    UNIMPLEMENTED();
+  }
+
+  void BranchSignedLess(Register rd, Register rs, Label* l) {
+    UNIMPLEMENTED();
+  }
+
+  void BranchSignedLess(Register rd, const Immediate& imm, Label* l) {
+    UNIMPLEMENTED();
+  }
+
+  void BranchUnsignedLess(Register rd, Register rs, Label* l) {
+    UNIMPLEMENTED();
+  }
+
+  void BranchUnsignedLess(Register rd, const Immediate& imm, Label* l) {
+    UNIMPLEMENTED();
+  }
+
+  void BranchSignedLessEqual(Register rd, Register rs, Label* l) {
+    UNIMPLEMENTED();
+  }
+
+  void BranchSignedLessEqual(Register rd, const Immediate& imm, Label* l) {
+    UNIMPLEMENTED();
+  }
+
+  void BranchUnsignedLessEqual(Register rd, Register rs, Label* l) {
+    UNIMPLEMENTED();
+  }
+
+  void BranchUnsignedLessEqual(Register rd, const Immediate& imm, Label* l) {
+    UNIMPLEMENTED();
+  }
   
  private:
   bool use_far_branches_;
