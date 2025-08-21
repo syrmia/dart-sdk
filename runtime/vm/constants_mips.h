@@ -426,6 +426,15 @@ enum Format {
   FMT_PS = 22,
 };
 
+class Instr {
+ public:
+  enum {
+    kInstrSize = 4,
+  };
+
+  static const int32_t kNopInstruction = 0;
+};
+
 }  // namespace dart
 
 #endif  // RUNTIME_VM_CONSTANTS_MIPS_H_
