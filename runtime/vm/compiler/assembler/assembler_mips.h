@@ -105,6 +105,377 @@ class Assembler : public AssemblerBase {
 
   void CompareRegisters(Register rn, Register rm);
   void TestRegisters(Register rn, Register rm);
+
+  // CPU instructions in alphabetical order.
+  void addd(DRegister dd, DRegister ds, DRegister dt) {
+    // DRegisters start at the even FRegisters.
+    FRegister fd = static_cast<FRegister>(dd * 2);
+    FRegister fs = static_cast<FRegister>(ds * 2);
+    FRegister ft = static_cast<FRegister>(dt * 2);
+    EmitFpuRType(COP1, FMT_D, ft, fs, fd, COP1_ADD);
+  }
+
+  void addiu(Register rt, Register rs, const Immediate& imm) {
+    ASSERT(Utils::IsInt(kImmBits, imm.value()));
+    const uint16_t imm_value = static_cast<uint16_t>(imm.value());
+    EmitIType(ADDIU, rs, rt, imm_value);
+  }
+
+  void addu(Register rd, Register rs, Register rt) {
+    EmitRType(SPECIAL, rs, rt, rd, 0, ADDU);
+  }
+
+  void add(Register rd, Register rs, Register rt) {
+    EmitRType(SPECIAL, rs, rt, rd, 0, ADD);
+  }
+
+  void addi(Register rt, Register rs, const Immediate& imm) {
+    ASSERT(Utils::IsInt(kImmBits, imm.value()));
+    const uint16_t imm_value = static_cast<uint16_t>(imm.value());
+    EmitIType(ADDI, rs, rt, imm_value);
+  }
+
+  void and_(Register rd, Register rs, Register rt) {
+    EmitRType(SPECIAL, rs, rt, rd, 0, AND);
+  }
+
+  void andi(Register rt, Register rs, const Immediate& imm) {
+    ASSERT(Utils::IsUint(kImmBits, imm.value()));
+    const uint16_t imm_value = static_cast<uint16_t>(imm.value());
+    EmitIType(ANDI, rs, rt, imm_value);
+  }
+
+  static int32_t BreakEncoding(int32_t code) {
+    ASSERT(Utils::IsUint(20, code));
+    return SPECIAL << kOpcodeShift | code << kBreakCodeShift |
+           BREAK << kFunctionShift;
+  }
+
+  void break_(int32_t code) { Emit(BreakEncoding(code)); }
+
+  // FPU compare, always false.
+  void cfd(DRegister ds, DRegister dt) {
+    FRegister fs = static_cast<FRegister>(ds * 2);
+    FRegister ft = static_cast<FRegister>(dt * 2);
+    EmitFpuRType(COP1, FMT_D, ft, fs, F0, COP1_C_F);
+  }
+
+  // FPU compare, true if unordered, i.e. one is NaN.
+  void cund(DRegister ds, DRegister dt) {
+    FRegister fs = static_cast<FRegister>(ds * 2);
+    FRegister ft = static_cast<FRegister>(dt * 2);
+    EmitFpuRType(COP1, FMT_D, ft, fs, F0, COP1_C_UN);
+  }
+
+  // FPU compare, true if equal.
+  void ceqd(DRegister ds, DRegister dt) {
+    FRegister fs = static_cast<FRegister>(ds * 2);
+    FRegister ft = static_cast<FRegister>(dt * 2);
+    EmitFpuRType(COP1, FMT_D, ft, fs, F0, COP1_C_EQ);
+  }
+
+  // FPU compare, true if unordered or equal.
+  void cueqd(DRegister ds, DRegister dt) {
+    FRegister fs = static_cast<FRegister>(ds * 2);
+    FRegister ft = static_cast<FRegister>(dt * 2);
+    EmitFpuRType(COP1, FMT_D, ft, fs, F0, COP1_C_UEQ);
+  }
+
+  // FPU compare, true if less than.
+  void coltd(DRegister ds, DRegister dt) {
+    FRegister fs = static_cast<FRegister>(ds * 2);
+    FRegister ft = static_cast<FRegister>(dt * 2);
+    EmitFpuRType(COP1, FMT_D, ft, fs, F0, COP1_C_OLT);
+  }
+
+  // FPU compare, true if unordered or less than.
+  void cultd(DRegister ds, DRegister dt) {
+    FRegister fs = static_cast<FRegister>(ds * 2);
+    FRegister ft = static_cast<FRegister>(dt * 2);
+    EmitFpuRType(COP1, FMT_D, ft, fs, F0, COP1_C_ULT);
+  }
+
+  // FPU compare, true if less or equal.
+  void coled(DRegister ds, DRegister dt) {
+    FRegister fs = static_cast<FRegister>(ds * 2);
+    FRegister ft = static_cast<FRegister>(dt * 2);
+    EmitFpuRType(COP1, FMT_D, ft, fs, F0, COP1_C_OLE);
+  }
+
+  // FPU compare, true if unordered or less or equal.
+  void culed(DRegister ds, DRegister dt) {
+    FRegister fs = static_cast<FRegister>(ds * 2);
+    FRegister ft = static_cast<FRegister>(dt * 2);
+    EmitFpuRType(COP1, FMT_D, ft, fs, F0, COP1_C_ULE);
+  }
+
+  void clo(Register rd, Register rs) {
+    EmitRType(SPECIAL2, rs, rd, rd, 0, CLO);
+  }
+
+  void clz(Register rd, Register rs) {
+    EmitRType(SPECIAL2, rs, rd, rd, 0, CLZ);
+  }
+
+  // Convert a double in ds to a 32-bit signed int in fd rounding towards 0.
+  void truncwd(FRegister fd, DRegister ds) {
+    FRegister fs = static_cast<FRegister>(ds * 2);
+    EmitFpuRType(COP1, FMT_D, F0, fs, fd, COP1_TRUNC_W);
+  }
+
+  // Convert a 32-bit float in fs to a 64-bit double in dd.
+  void cvtds(DRegister dd, FRegister fs) {
+    FRegister fd = static_cast<FRegister>(dd * 2);
+    EmitFpuRType(COP1, FMT_S, F0, fs, fd, COP1_CVT_D);
+  }
+
+  // Converts a 32-bit signed int in fs to a double in fd.
+  void cvtdw(DRegister dd, FRegister fs) {
+    FRegister fd = static_cast<FRegister>(dd * 2);
+    EmitFpuRType(COP1, FMT_W, F0, fs, fd, COP1_CVT_D);
+  }
+
+  // Convert a 64-bit double in ds to a 32-bit float in fd.
+  void cvtsd(FRegister fd, DRegister ds) {
+    FRegister fs = static_cast<FRegister>(ds * 2);
+    EmitFpuRType(COP1, FMT_D, F0, fs, fd, COP1_CVT_S);
+  }
+
+  void div(Register rs, Register rt) { EmitRType(SPECIAL, rs, rt, R0, 0, DIV); }
+
+  void divd(DRegister dd, DRegister ds, DRegister dt) {
+    FRegister fd = static_cast<FRegister>(dd * 2);
+    FRegister fs = static_cast<FRegister>(ds * 2);
+    FRegister ft = static_cast<FRegister>(dt * 2);
+    EmitFpuRType(COP1, FMT_D, ft, fs, fd, COP1_DIV);
+  }
+
+  void divu(Register rs, Register rt) {
+    EmitRType(SPECIAL, rs, rt, R0, 0, DIVU);
+  }
+
+  void lb(Register rt, const Address& addr) { EmitLoadStore(LB, rt, addr); }
+
+  void lbu(Register rt, const Address& addr) { EmitLoadStore(LBU, rt, addr); }
+
+  void ldc1(DRegister dt, const Address& addr) {
+    FRegister ft = static_cast<FRegister>(dt * 2);
+    EmitFpuLoadStore(LDC1, ft, addr);
+  }
+
+  void lh(Register rt, const Address& addr) { EmitLoadStore(LH, rt, addr); }
+
+  void lhu(Register rt, const Address& addr) { EmitLoadStore(LHU, rt, addr); }
+
+  void ll(Register rt, const Address& addr) { EmitLoadStore(LL, rt, addr); }
+
+  void lui(Register rt, const Immediate& imm) {
+    ASSERT(Utils::IsUint(kImmBits, imm.value()));
+    const uint16_t imm_value = static_cast<uint16_t>(imm.value());
+    EmitIType(LUI, R0, rt, imm_value);
+  }
+
+  void lw(Register rt, const Address& addr) { EmitLoadStore(LW, rt, addr); }
+
+  void lwc1(FRegister ft, const Address& addr) {
+    EmitFpuLoadStore(LWC1, ft, addr);
+  }
+
+  void madd(Register rs, Register rt) {
+    EmitRType(SPECIAL2, rs, rt, R0, 0, MADD);
+  }
+
+  void maddu(Register rs, Register rt) {
+    EmitRType(SPECIAL2, rs, rt, R0, 0, MADDU);
+  }
+
+  void mfc1(Register rt, FRegister fs) {
+    Emit(COP1 << kOpcodeShift | COP1_MF << kCop1SubShift | rt << kRtShift |
+         fs << kFsShift);
+  }
+
+  void mfhi(Register rd) { EmitRType(SPECIAL, R0, R0, rd, 0, MFHI); }
+
+  void mflo(Register rd) { EmitRType(SPECIAL, R0, R0, rd, 0, MFLO); }
+
+  void mov(Register rd, Register rs) { or_(rd, rs, ZR); }
+
+  void movd(DRegister dd, DRegister ds) {
+    FRegister fd = static_cast<FRegister>(dd * 2);
+    FRegister fs = static_cast<FRegister>(ds * 2);
+    EmitFpuRType(COP1, FMT_D, F0, fs, fd, COP1_MOV);
+  }
+
+  // Move if floating point false.
+  void movf(Register rd, Register rs) {
+    EmitRType(SPECIAL, rs, R0, rd, 0, MOVCI);
+  }
+
+  void movn(Register rd, Register rs, Register rt) {
+    EmitRType(SPECIAL, rs, rt, rd, 0, MOVN);
+  }
+
+  // Move if floating point true.
+  void movt(Register rd, Register rs) {
+    EmitRType(SPECIAL, rs, R1, rd, 0, MOVCI);
+  }
+
+  // rd <- (rt == 0) ? rs : rd;
+  void movz(Register rd, Register rs, Register rt) {
+    EmitRType(SPECIAL, rs, rt, rd, 0, MOVZ);
+  }
+
+  void movs(FRegister fd, FRegister fs) {
+    EmitFpuRType(COP1, FMT_S, F0, fs, fd, COP1_MOV);
+  }
+
+  void mtc1(Register rt, FRegister fs) {
+    Emit(COP1 << kOpcodeShift | COP1_MT << kCop1SubShift | rt << kRtShift |
+         fs << kFsShift);
+  }
+
+  void mthi(Register rs) { EmitRType(SPECIAL, rs, R0, R0, 0, MTHI); }
+
+  void mtlo(Register rs) { EmitRType(SPECIAL, rs, R0, R0, 0, MTLO); }
+
+  void muld(DRegister dd, DRegister ds, DRegister dt) {
+    FRegister fd = static_cast<FRegister>(dd * 2);
+    FRegister fs = static_cast<FRegister>(ds * 2);
+    FRegister ft = static_cast<FRegister>(dt * 2);
+    EmitFpuRType(COP1, FMT_D, ft, fs, fd, COP1_MUL);
+  }
+
+  void mult(Register rs, Register rt) {
+    EmitRType(SPECIAL, rs, rt, R0, 0, MULT);
+  }
+
+  void multu(Register rs, Register rt) {
+    EmitRType(SPECIAL, rs, rt, R0, 0, MULTU);
+  }
+
+  void negd(DRegister dd, DRegister ds) {
+    FRegister fd = static_cast<FRegister>(dd * 2);
+    FRegister fs = static_cast<FRegister>(ds * 2);
+    EmitFpuRType(COP1, FMT_D, F0, fs, fd, COP1_NEG);
+  }
+
+  void nor(Register rd, Register rs, Register rt) {
+    EmitRType(SPECIAL, rs, rt, rd, 0, NOR);
+  }
+
+  void or_(Register rd, Register rs, Register rt) {
+    EmitRType(SPECIAL, rs, rt, rd, 0, OR);
+  }
+
+  void ori(Register rt, Register rs, const Immediate& imm) {
+    ASSERT(Utils::IsUint(kImmBits, imm.value()));
+    const uint16_t imm_value = static_cast<uint16_t>(imm.value());
+    EmitIType(ORI, rs, rt, imm_value);
+  }
+
+  void sb(Register rt, const Address& addr) { EmitLoadStore(SB, rt, addr); }
+
+  // rt = 1 on success, 0 on failure.
+  void sc(Register rt, const Address& addr) { EmitLoadStore(SC, rt, addr); }
+
+  void sdc1(DRegister dt, const Address& addr) {
+    FRegister ft = static_cast<FRegister>(dt * 2);
+    EmitFpuLoadStore(SDC1, ft, addr);
+  }
+
+  void sh(Register rt, const Address& addr) { EmitLoadStore(SH, rt, addr); }
+
+  void sll(Register rd, Register rt, int sa) {
+    EmitRType(SPECIAL, R0, rt, rd, sa, SLL);
+  }
+
+  void sllv(Register rd, Register rt, Register rs) {
+    EmitRType(SPECIAL, rs, rt, rd, 0, SLLV);
+  }
+
+  void slt(Register rd, Register rs, Register rt) {
+    EmitRType(SPECIAL, rs, rt, rd, 0, SLT);
+  }
+
+  void slti(Register rt, Register rs, const Immediate& imm) {
+    ASSERT(Utils::IsInt(kImmBits, imm.value()));
+    const uint16_t imm_value = static_cast<uint16_t>(imm.value());
+    EmitIType(SLTI, rs, rt, imm_value);
+  }
+
+  // Although imm argument is int32_t, it is interpreted as an uint32_t.
+  // For example, -1 stands for 0xffffffffUL: it is encoded as 0xffff in the
+  // instruction imm field and is then sign extended back to 0xffffffffUL.
+  void sltiu(Register rt, Register rs, const Immediate& imm) {
+    ASSERT(Utils::IsInt(kImmBits, imm.value()));
+    const uint16_t imm_value = static_cast<uint16_t>(imm.value());
+    EmitIType(SLTIU, rs, rt, imm_value);
+  }
+
+  void sltu(Register rd, Register rs, Register rt) {
+    EmitRType(SPECIAL, rs, rt, rd, 0, SLTU);
+  }
+
+  void sqrtd(DRegister dd, DRegister ds) {
+    FRegister fd = static_cast<FRegister>(dd * 2);
+    FRegister fs = static_cast<FRegister>(ds * 2);
+    EmitFpuRType(COP1, FMT_D, F0, fs, fd, COP1_SQRT);
+  }
+
+  void sra(Register rd, Register rt, int sa) {
+    EmitRType(SPECIAL, R0, rt, rd, sa, SRA);
+  }
+
+  void srav(Register rd, Register rt, Register rs) {
+    EmitRType(SPECIAL, rs, rt, rd, 0, SRAV);
+  }
+
+  void srl(Register rd, Register rt, int sa) {
+    EmitRType(SPECIAL, R0, rt, rd, sa, SRL);
+  }
+
+  void srlv(Register rd, Register rt, Register rs) {
+    EmitRType(SPECIAL, rs, rt, rd, 0, SRLV);
+  }
+
+  void subd(DRegister dd, DRegister ds, DRegister dt) {
+    FRegister fd = static_cast<FRegister>(dd * 2);
+    FRegister fs = static_cast<FRegister>(ds * 2);
+    FRegister ft = static_cast<FRegister>(dt * 2);
+    EmitFpuRType(COP1, FMT_D, ft, fs, fd, COP1_SUB);
+  }
+
+  void sub(Register rd, Register rs, Register rt) {
+    EmitRType(SPECIAL, rs, rt, rd, 0, SUB);
+  }
+
+  void subu(Register rd, Register rs, Register rt) {
+    EmitRType(SPECIAL, rs, rt, rd, 0, SUBU);
+  }
+
+  void sw(Register rt, const Address& addr) { EmitLoadStore(SW, rt, addr); }
+
+  void swc1(FRegister ft, const Address& addr) {
+    EmitFpuLoadStore(SWC1, ft, addr);
+  }
+
+  static int32_t SyncEncoding(int32_t stype) {
+    ASSERT(Utils::IsUint(5, stype));
+    return SPECIAL << kOpcodeShift | stype << kSyncCodeShift |
+           SYNC << kFunctionShift;
+  }
+
+  void sync(int32_t code) { Emit(SyncEncoding(code)); }
+
+  void xori(Register rt, Register rs, const Immediate& imm) {
+    ASSERT(Utils::IsUint(kImmBits, imm.value()));
+    const uint16_t imm_value = static_cast<uint16_t>(imm.value());
+    EmitIType(XORI, rs, rt, imm_value);
+  }
+
+  void xor_(Register rd, Register rs, Register rt) {
+    EmitRType(SPECIAL, rs, rt, rd, 0, XOR);
+  }
   
  private:
   bool use_far_branches_;
