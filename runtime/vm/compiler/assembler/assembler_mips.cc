@@ -4,8 +4,22 @@
 
 #if defined(TARGET_ARCH_MIPS)
 
+#include "vm/compiler/assembler/assembler.h"
+
 namespace dart {
 namespace compiler{
+
+void Assembler::EmitBranch(Opcode b, Register rs, Register rt, Label* label) {
+  UNIMPLEMENTED();
+}  
+
+void Assembler::EmitRegImmBranch(RtRegImm b, Register rs, Label* label) {
+  UNIMPLEMENTED();
+}
+
+void Assembler::EmitFpuBranch(bool kind, Label* label) {
+  UNIMPLEMENTED();
+}
 
 void Assembler::CompareRegisters(Register rn, Register rm) {
   ASSERT(deferred_compare_ == kNone);
