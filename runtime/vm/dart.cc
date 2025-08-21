@@ -28,6 +28,7 @@
 #include "vm/heap/freelist.h"
 #include "vm/heap/heap.h"
 #include "vm/heap/pointer_block.h"
+#include "vm/gdb_jit_interface.h"
 #include "vm/isolate.h"
 #include "vm/isolate_reload.h"
 #include "vm/kernel_isolate.h"
@@ -528,6 +529,9 @@ char* Dart::DartInit(const Dart_InitializeParams* params) {
   // values (such as Dart_True, Dart_False and Dart_Null).
   Api::InitHandles();
 
+  // Initialize GDB JIT interface.
+  GDBJITInterface::Init();
+
   Thread::ExitIsolate();  // Unregister the VM isolate from this thread.
   Isolate::SetCreateGroupCallback(params->create_group);
   Isolate::SetInitializeCallback_(params->initialize_isolate);
@@ -675,6 +679,9 @@ char* Dart::Cleanup() {
   }
   Profiler::Cleanup();
 #endif  // !defined(PRODUCT)
+
+  // Clean up GDB JIT interface.
+  GDBJITInterface::Cleanup();
 
   NativeSymbolResolver::Cleanup();
 

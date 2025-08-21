@@ -28,6 +28,7 @@
 #include "vm/compiler/jit/jit_call_specializer.h"
 #include "vm/dart_entry.h"
 #include "vm/debugger.h"
+#include "vm/gdb_jit_interface.h"
 #include "vm/deopt_instructions.h"
 #include "vm/exceptions.h"
 #include "vm/flags.h"
@@ -451,6 +452,9 @@ CodePtr CompileParsedFunctionHelper::FinalizeCompilation(
   if (function.IsFfiCallbackTrampoline()) {
     compiler::ffi::SetFfiCallbackCode(thread(), function, code);
   }
+
+  // Register the code with GDB JIT interface if enabled
+  GDBJITInterface::RegisterCode(code);
 
   return code.ptr();
 }

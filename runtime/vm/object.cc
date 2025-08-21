@@ -18,6 +18,7 @@
 #include "vm/bootstrap.h"
 #include "vm/bytecode_reader.h"
 #include "vm/canonical_tables.h"
+#include "vm/gdb_jit_interface.h"
 #include "vm/class_finalizer.h"
 #include "vm/class_id.h"
 #include "vm/closure_functions_cache.h"
@@ -8437,6 +8438,12 @@ void Function::InstallOptimizedCode(const Code& code) const {
 void Function::SetInstructions(const Code& value) const {
   // Ensure that nobody is executing this function when we install it.
   if (untag()->code() != Code::null() && HasCode()) {
+    // Unregister old code from GDB JIT interface
+    const Code& old_code = Code::Handle(static_cast<CodePtr>(untag()->code()));
+    if (!old_code.IsNull()) {
+      GDBJITInterface::UnregisterCode(old_code);
+    }
+
     GcSafepointOperationScope safepoint(Thread::Current());
     SetInstructionsSafe(value);
   } else {

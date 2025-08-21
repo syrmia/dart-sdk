@@ -36,6 +36,9 @@
 #include "vm/timeline.h"
 #include "vm/type_testing_stubs.h"
 
+#include "vm/gdb_jit_interface.h"
+#include <iostream>
+
 namespace dart {
 
 DEFINE_FLAG(bool,
@@ -1515,7 +1518,9 @@ void FlowGraphCompiler::GenerateInstanceCall(intptr_t deopt_id,
     return;
   }
 
-  EmitInstanceCallJIT(StubEntryFor(ic_data, /*optimized=*/false), ic_data,
+
+  auto &code = StubEntryFor(ic_data, /*optimized=*/false);
+  EmitInstanceCallJIT(code, ic_data,
                       deopt_id, source, locs, entry_kind);
 }
 

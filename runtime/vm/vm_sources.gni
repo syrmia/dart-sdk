@@ -119,6 +119,8 @@ vm_sources = [
   "flags.h",
   "frame_layout.h",
   "gdb_helpers.cc",
+  "gdb_jit_interface.cc",
+  "gdb_jit_interface.h",
   "globals.h",
   "growable_array.h",
   "handle_visitor.h",
