@@ -621,6 +621,59 @@ class Assembler : public AssemblerBase {
     EmitRType(SPECIAL, rs, rt, rd, 0, XOR);
   }
 
+  void LoadImmediate(Register rd, int32_t value) override{
+    UNIMPLEMENTED();
+  }
+
+  void LoadImmediate(DRegister rd, double value) {
+    UNIMPLEMENTED();
+  }
+
+  void LoadImmediate(FRegister rd, float value) {
+    UNIMPLEMENTED();
+  }
+
+  void AddImmediate(Register rd, Register rs, int32_t value) {
+    UNIMPLEMENTED();
+  }
+
+  void AddImmediate(Register rd, int32_t value) {
+    UNIMPLEMENTED();
+  }
+
+  void AddRegisters(Register rd, Register rs) { addu(rd, rd, rs); }
+
+  void AndImmediate(Register rd, 
+                    Register rs, 
+                    target::word imm, 
+                    OperandSize sz = kWordBytes) override {
+    UNIMPLEMENTED();
+  }
+
+  void AndImmediate(Register reg,
+                    target::word imm, 
+                    OperandSize sz = kWordBytes) override {
+    UNIMPLEMENTED();
+  }
+
+  void OrImmediate(Register rd, Register rs, int32_t imm) {
+    UNIMPLEMENTED();
+  }
+
+  void OrImmediate(Register rd, int32_t imm) { 
+    UNIMPLEMENTED();
+  }
+  
+  void AndRegisters(Register dst,
+                    Register src1,
+                    Register src2 = kNoRegister) override{
+    UNIMPLEMENTED();                  
+  }
+
+  void XorImmediate(Register rd, Register rs, int32_t imm) {
+    UNIMPLEMENTED();
+  }
+
   void BranchEqual(Register rd, Register rn, Label* l) { beq(rd, rn, l); }
 
   void BranchEqual(Register rd, const Immediate& imm, Label* l) {
