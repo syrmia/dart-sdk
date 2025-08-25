@@ -757,6 +757,8 @@ class Assembler : public AssemblerBase {
   void BranchUnsignedLessEqual(Register rd, const Immediate& imm, Label* l) {
     UNIMPLEMENTED();
   }
+
+  void Bind(Label* label) override;
   
  private:
   bool use_far_branches_;

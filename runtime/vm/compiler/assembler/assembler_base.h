@@ -272,6 +272,47 @@ class Label : public ZoneObject {
   friend class MicroAssembler;
   DISALLOW_COPY_AND_ASSIGN(Label);
 };
+#elif defined(TARGET_ARCH_MIPS)
+class Label : public ValueObject {
+ public:
+  Label() : position_(0) {}
+
+  ~Label() {
+    // Assert if label is being destroyed with unresolved branches pending.
+    ASSERT(!IsLinked());
+  }
+
+  // Returns the position for bound and linked labels. Cannot be used
+  // for unused labels.
+  intptr_t Position() const {
+    ASSERT(!IsUnused());
+    return IsBound() ? -position_ - target::kWordSize : position_ - target::kWordSize;
+  }
+
+  bool IsBound() const { return position_ < 0; }
+  bool IsUnused() const { return position_ == 0; }
+  bool IsLinked() const { return position_ > 0; }
+
+ private:
+  intptr_t position_;
+
+  void Reinitialize() { position_ = 0; }
+
+  void BindTo(intptr_t position) {
+    ASSERT(!IsBound());
+    position_ = -position - target::kWordSize;
+    ASSERT(IsBound());
+  }
+
+  void LinkTo(intptr_t position) {
+    ASSERT(!IsBound());
+    position_ = position + target::kWordSize;
+    ASSERT(IsLinked());
+  }
+
+  friend class Assembler;
+  DISALLOW_COPY_AND_ASSIGN(Label);
+};
 #else
 class Label : public ZoneObject {
  public:
