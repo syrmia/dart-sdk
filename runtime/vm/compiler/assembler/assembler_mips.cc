@@ -49,6 +49,10 @@ void Assembler::TestImmediate(Register rn, int32_t imm, OperandSize sz) {
   deferred_imm_ = imm;
 }
 
+void Assembler::Bind(Label* label) {
+  UNIMPLEMENTED();
+}
+
 }  // namespace compiler
 }  // namespace dart
 
