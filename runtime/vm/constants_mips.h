@@ -229,6 +229,83 @@ const Register CALLEE_SAVED_TEMP = S5;
 const Register CMPRES1 = T8;
 const Register CMPRES2 = T9;
 
+typedef uint32_t RegList;
+const RegList kAllCpuRegistersList = 0xFFFFFFFF;
+
+const RegList kAbiArgumentCpuRegs =
+    (1 << A0) | (1 << A1) | (1 << A2) | (1 << A3);
+const RegList kAbiPreservedCpuRegs = (1 << S0) | (1 << S1) | (1 << S2) |
+                                     (1 << S3) | (1 << S4) | (1 << S5) |
+                                     (1 << S6) | (1 << S7);
+const int kAbiPreservedCpuRegCount = 8;
+
+// FRegister registers 20 - 31 are preserved across calls.
+const FRegister kAbiFirstPreservedFReg = F20;
+const FRegister kAbiLastPreservedFReg =
+    static_cast<FRegister>(kNumberOfFRegisters - 1);
+const int kAbiPreservedFRegCount = 12;
+
+const RegList kAbiPreservedFRegs = (1 << F20) | (1 << F21) | (1 << F22) |
+                                     (1 << F23) | (1 << F24) | (1 << F25) |
+                                     (1 << F26) | (1 << F27) | (1 << F28) |
+                                     (1 << F29) | (1 << F30)| (1 << F31);
+
+// FpuRegister registers D10 - D15 are preserved across calls.
+const int kAbiPreservedFpuRegCount = 6;
+const RegList kAbiPreservedFpuRegs = (1 << D10) | (1 << D11) | (1 << D12) |
+                                     (1 << D13) | (1 << D14) | (1 << D15);
+const FpuRegister kAbiFirstPreservedFpuReg = D10;
+
+const RegList kReservedCpuRegisters =
+    (1 << SPREG) | (1 << FPREG) | (1 << TMP) | (1 << PP) | (1 << THR) |
+    (1 << CTX) | (1 << ZR) | (1 << CMPRES1) | (1 << CMPRES2) | (1 << K0) |
+    (1 << K1) | (1 << GP) | (1 << RA);
+const int kNumberOfReservedCpuRegisters = 13;
+// CPU registers available to Dart allocator.
+const RegList kDartAvailableCpuRegs =
+    kAllCpuRegistersList & ~kReservedCpuRegisters;
+// Registers available to Dart that are not preserved by runtime calls.
+const RegList kDartVolatileCpuRegs =
+    kDartAvailableCpuRegs & ~kAbiPreservedCpuRegs;
+const int kDartVolatileCpuRegCount = 14;
+const Register kDartFirstVolatileCpuReg = R2;
+const Register kDartLastVolatileCpuReg = R15;
+
+// No reason to prefer certain registers on MIPS.
+constexpr int kRegisterAllocationBias = 0;
+
+// FPU registers 0 - 19 are not preserved across calls.
+const FRegister kDartFirstVolatileFpuReg = F0;
+const FRegister kDartLastVolatileFpuReg = F19;
+const int kDartVolatileFRegCount = 20;
+const int kDartVolatileFpuRegCount = 10;
+constexpr RegList kAbiVolatileFpuRegs = 
+    (1 << D0) | (1 << D1) | (1 << D2) | (1 << D3) | (1 << D4) |
+    (1 << D5) | (1 << D6) | (1 << D7) | (1 << D8) | (1 << D9);
+constexpr RegList kAbiVolatileFRegs = 
+    (1 << F0) | (1 << F1) | (1 << F2) | (1 << F3) | (1 << F4) |
+    (1 << F5) | (1 << F6) | (1 << F7) | (1 << F8) | (1 << F9) |
+    (1 << F10) | (1 << F11) | (1 << F12) | (1 << F13) | (1 << F14) |
+    (1 << F15) | (1 << F16) | (1 << F17) | (1 << F18) | (1 << F19);
+constexpr RegList kAllFpuRegistersList = 
+    (1 << D0) | (1 << D1) | (1 << D2) | (1 << D3) | (1 << D4) |
+    (1 << D5) | (1 << D6) | (1 << D7) | (1 << D8) | (1 << D9) |
+    (1 << D10) | (1 << D11) | (1 << D12) | (1 << D13) | (1 << D14) |
+    (1 << D15);
+constexpr RegList kAllFRegistersList = 
+    (1 << F0) | (1 << F1) | (1 << F2) | (1 << F3) | (1 << F4) |
+    (1 << F5) | (1 << F6) | (1 << F7) | (1 << F8) | (1 << F9) |
+    (1 << F10) | (1 << F11) | (1 << F12) | (1 << F13) | (1 << F14) |
+    (1 << F15) | (1 << F16) | (1 << F17) | (1 << F18) | (1 << F19) |
+    (1 << F20) | (1 << F21) | (1 << F22) | (1 << F23) | (1 << F24) |
+    (1 << F25) | (1 << F26) | (1 << F27) | (1 << F28) | (1 << F29) |
+    (1 << F30) | (1 << F31);
+
+constexpr int kNumberOfDartAvailableCpuRegs =
+    kNumberOfCpuRegisters - kNumberOfReservedCpuRegisters;
+const intptr_t kStoreBufferWrapperSize = 48;
+const intptr_t kPreferredLoopAlignment = 1;
+
 extern const char* const cpu_reg_names[kNumberOfCpuRegisters];
 extern const char* const cpu_reg_abi_names[kNumberOfCpuRegisters];
 extern const char* const fpu_reg_names[kNumberOfFRegisters];
