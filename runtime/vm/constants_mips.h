@@ -6,6 +6,7 @@
 #define RUNTIME_VM_CONSTANTS_MIPS_H_
 
 #include "vm/allocation.h"
+#include "vm/constants_base.h"
 
 namespace dart {
 
@@ -306,9 +307,82 @@ constexpr int kNumberOfDartAvailableCpuRegs =
 const intptr_t kStoreBufferWrapperSize = 48;
 const intptr_t kPreferredLoopAlignment = 1;
 
+class CallingConventions {
+ public:
+  static const Register ArgumentRegisters[];
+  static constexpr intptr_t kArgumentRegisters = kAbiArgumentCpuRegs;
+  static constexpr intptr_t kNumArgRegs = 4;
+
+  static constexpr intptr_t kFpuArgumentRegisters =
+      (1 << D6) | (1 << D7) | (1 << D8) | (1 << D9);
+  static const FpuRegister FpuArgumentRegisters[];
+  static constexpr intptr_t kNumFpuArgRegs = 4;
+
+  static constexpr intptr_t kCalleeSaveCpuRegisters = kAbiPreservedCpuRegs;
+
+  static constexpr Register kReturnReg = V0;
+  static constexpr Register kSecondReturnReg = V1;
+  static constexpr Register kPointerToReturnStructRegisterReturn = kReturnReg;
+
+  static constexpr FpuRegister kReturnFpuReg = D0;
+  static constexpr FpuRegister kSecondReturnFpuReg = D1;
+
+  static constexpr Register kFirstNonArgumentRegister = T0;
+  static constexpr Register kSecondNonArgumentRegister = T1;
+  static constexpr Register kStackPointerRegister = SPREG;
+
+  // Whether larger than wordsize arguments are aligned to even registers.
+  static constexpr AlignmentStrategy kArgumentRegisterAlignment =
+      kAlignedToWordSize;
+  static constexpr AlignmentStrategy kArgumentRegisterAlignmentVarArgs =
+      kArgumentRegisterAlignment;
+
+  // How stack arguments are aligned.
+  static constexpr AlignmentStrategy kArgumentStackAlignment =
+      kAlignedToWordSize;
+  static constexpr AlignmentStrategy kArgumentStackAlignmentVarArgs =
+      kArgumentStackAlignment;
+
+  static constexpr AlignmentStrategy kFieldAlignment = kAlignedToValueSize;
+
+  static constexpr ExtensionStrategy kReturnRegisterExtension = kExtendedTo4;
+  static constexpr ExtensionStrategy kArgumentRegisterExtension = kExtendedTo4;
+  static constexpr ExtensionStrategy kArgumentStackExtension = kExtendedTo4;
+};
+
+struct DartCallingConvention {
+  static constexpr Register kCpuRegistersForArgs[] = {A0, A1, A2, A3};
+  static constexpr FpuRegister kFpuRegistersForArgs[] = {D6, D7, D8, D9};
+};
+
 extern const char* const cpu_reg_names[kNumberOfCpuRegisters];
 extern const char* const cpu_reg_abi_names[kNumberOfCpuRegisters];
 extern const char* const fpu_reg_names[kNumberOfFRegisters];
+
+enum ScaleFactor {
+  TIMES_1 = 0,
+  TIMES_2 = 1,
+  TIMES_4 = 2,
+  TIMES_8 = 3,
+  TIMES_16 = 4,
+// Don't use (dart::)kWordSizeLog2, as this needs to work for crossword as
+// well. If this is included, we know the target is 32 bit.
+#if defined(TARGET_ARCH_IS_32_BIT)
+  // Used for Smi-boxed indices.
+  TIMES_HALF_WORD_SIZE = kInt32SizeLog2 - 1,
+  // Used for unboxed indices.
+  TIMES_WORD_SIZE = kInt32SizeLog2,
+#else
+#error "Unexpected word size"
+#endif
+#if !defined(DART_COMPRESSED_POINTERS)
+  TIMES_COMPRESSED_WORD_SIZE = TIMES_WORD_SIZE,
+#else
+#error Cannot compress MIPS32
+#endif
+  // Used for Smi-boxed indices.
+  TIMES_COMPRESSED_HALF_WORD_SIZE = TIMES_COMPRESSED_WORD_SIZE - 1,
+};
 
 // Constants used for decoding or encoding the individual fields of
 // instructions. Based on "Table 5.30 CPU Instruction Format Fields" in
