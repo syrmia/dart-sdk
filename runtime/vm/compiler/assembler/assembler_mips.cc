@@ -53,6 +53,28 @@ void Assembler::Bind(Label* label) {
   UNIMPLEMENTED();
 }
 
+void Assembler::LoadClassId(Register result, Register object) {
+  UNIMPLEMENTED();
+}
+
+void Assembler::LoadClassById(Register result, Register class_id) {
+  UNIMPLEMENTED();
+}
+
+void Assembler::CompareClassId(Register object,
+                               intptr_t class_id,
+                               Register scratch) {
+  UNIMPLEMENTED();
+}
+
+void Assembler::LoadClassIdMayBeSmi(Register result, Register object) {
+  UNIMPLEMENTED();
+}
+
+void Assembler::LoadTaggedClassIdMayBeSmi(Register result, Register object) {
+  UNIMPLEMENTED();
+}
+
 }  // namespace compiler
 }  // namespace dart
 
