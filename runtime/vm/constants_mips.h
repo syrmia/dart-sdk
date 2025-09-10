@@ -583,6 +583,12 @@ enum Cop1Function {
   COP1_C_ULE = 0x37,
 };
 
+enum Cop1Sub {
+  COP1_MF = 0,
+  COP1_MT = 4,
+  COP1_BC = 8,
+};
+
 enum Format {
   FMT_S = 16,
   FMT_D = 17,
