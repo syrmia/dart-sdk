@@ -65,6 +65,7 @@ vm_sources = [
   "cpu_arm.cc",
   "cpu_arm64.cc",
   "cpu_ia32.cc",
+  "cpu_mips.cc",
   "cpu_riscv.cc",
   "cpu_x64.cc",
   "cpuid.cc",
