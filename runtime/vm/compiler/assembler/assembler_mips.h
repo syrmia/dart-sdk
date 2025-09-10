@@ -759,6 +759,14 @@ class Assembler : public AssemblerBase {
   }
 
   void Bind(Label* label) override;
+
+  void LoadClassId(Register result, Register object);
+  void LoadClassById(Register result, Register class_id);
+  void CompareClassId(Register object,
+                    intptr_t class_id,
+                    Register scratch = kNoRegister);
+  void LoadClassIdMayBeSmi(Register result, Register object);
+  void LoadTaggedClassIdMayBeSmi(Register result, Register object);
   
  private:
   bool use_far_branches_;
