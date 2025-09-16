@@ -171,6 +171,20 @@ enum Condition {
   kInvalidCondition = INVALID_RELATION
 };
 
+static inline Condition InvertCondition(Condition c) {
+  COMPILE_ASSERT((EQ ^ NE) == 1);
+  COMPILE_ASSERT((UGE ^ ULT) == 1);
+  COMPILE_ASSERT((UGT ^ ULE) == 1);
+  COMPILE_ASSERT((GE ^ LT) == 1);
+  COMPILE_ASSERT((GT ^ LE) == 1);
+  COMPILE_ASSERT((AL ^ NV) == 1);
+  COMPILE_ASSERT((VS ^ VC) == 1);
+
+  ASSERT(c != AL);
+  ASSERT(c != kInvalidCondition);
+  return static_cast<Condition>(c ^ 1);
+}
+
 // The double precision floating point registers are concatenated pairs of the
 // single precision registers, e.g. D0 is F1:F0, D1 is F3:F2, etc.. We only
 // tell the architecture generic code about the double precision registers, then
@@ -567,6 +581,12 @@ enum Cop1Function {
   COP1_C_ULT = 0x35,
   COP1_C_OLE = 0x36,
   COP1_C_ULE = 0x37,
+};
+
+enum Cop1Sub {
+  COP1_MF = 0,
+  COP1_MT = 4,
+  COP1_BC = 8,
 };
 
 enum Format {
