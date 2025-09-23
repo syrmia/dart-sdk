@@ -312,6 +312,7 @@ vm_sources = [
   "stack_frame_arm64.h",
   "stack_frame_ia32.h",
   "stack_frame_kbc.h",
+  "stack_frame_mips.h",
   "stack_frame_x64.h",
   "stack_trace.cc",
   "stack_trace.h",
