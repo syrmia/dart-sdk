@@ -49,6 +49,14 @@ void CpuInfo::Init() {
   // We only rely on the base Linux configuration of IMAFDC, so don't need
   // dynamic feature detection.
   method_ = kCpuInfoNone;
+#elif defined(HOST_ARCH_MIPS)
+  fields_[kCpuInfoProcessor] = "system type";
+  fields_[kCpuInfoModel] = "cpu model";
+  fields_[kCpuInfoHardware] = "cpu model";
+  fields_[kCpuInfoFeatures] = "ASEs implemented";
+  fields_[kCpuInfoArchitecture] = "CPU architecture";
+  method_ = kCpuInfoSystem;
+  ProcCpuInfo::Init();
 #else
 #error Unrecognized target architecture
 #endif
