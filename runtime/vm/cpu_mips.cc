@@ -10,7 +10,41 @@
 
 #include "vm/cpuinfo.h"
 
+#if !defined(DART_INCLUDE_SIMULATOR)
+#include <asm/cachectl.h> /* NOLINT */
+#include <sys/syscall.h>  /* NOLINT */
+#include <unistd.h>       /* NOLINT */
+#endif
+
 namespace dart {
+
+void CPU::FlushICache(uword start, uword size) {
+#if defined(DART_PRECOMPILED_RUNTIME)
+  UNREACHABLE();
+#elif !defined(DART_INCLUDE_SIMULATOR)
+  // Nothing to do. Flushing no instructions.
+  if (size == 0) {
+    return;
+  }
+
+#if defined(DART_HOST_OS_LINUX)
+  char* beg = reinterpret_cast<char*>(start);
+  char* end = reinterpret_cast<char*>(start + size);
+  __builtin___clear_cache(beg, end);
+#else
+#error FlushICache only tested/supported on Linux
+#endif
+
+#endif
+}
+
+const char* CPU::Id() {
+  return
+#if defined(DART_INCLUDE_SIMULATOR)
+      "sim"
+#endif  // !defined(DART_INCLUDE_SIMULATOR)
+      "mips";
+}
 
 const char* HostCPUFeatures::hardware_ = nullptr;
 MIPSVersion HostCPUFeatures::mips_version_ = MIPSvUnknown;
