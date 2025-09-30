@@ -5,6 +5,7 @@
 #if defined(TARGET_ARCH_MIPS)
 
 #include "vm/compiler/assembler/assembler.h"
+#include "vm/compiler/backend/locations.h"
 
 namespace dart {
 namespace compiler{
@@ -19,6 +20,49 @@ void Assembler::EmitRegImmBranch(RtRegImm b, Register rs, Label* label) {
 
 void Assembler::EmitFpuBranch(bool kind, Label* label) {
   UNIMPLEMENTED();
+}
+
+void Assembler::PushRegisters(const RegisterSet& registers) {
+  UNIMPLEMENTED();
+}
+
+void Assembler::PopRegisters(const RegisterSet& registers) {
+  UNIMPLEMENTED();
+}
+
+void Assembler::PushRegistersInOrder(std::initializer_list<Register> regs) {
+  for (Register reg : regs) {
+    PushRegister(reg);
+  }
+}
+
+void PushRegisterPair(Register r0, Register r1){
+  ASSERT(r0 != SP);
+  ASSERT(r1 != SP);
+
+  addiu(SP, SP, Immediate(-2 * target::kWordSize));
+  sw(r1, Address(SP, target::kWordSize));
+  sw(r0, Address(SP, 0));
+}
+
+void PopRegisterPair(Register r0, Register r1){
+  ASSERT(r0 != SP);
+  ASSERT(r1 != SP);
+
+  lw(r1, Address(SP, target::kWordSize));
+  lw(r0, Address(SP, 0));
+  addiu(SP, SP, Immediate(2 * target::kWordSize));
+}
+
+void PushImmediate(int64_t immediate){
+  LoadImmediate(TMP, immediate);
+  Push(TMP);
+}
+
+void PushValueAtOffset(Register base, int32_t offset){
+  addiu(SP, SP, Immediate(-target::kWordSize));
+  lw(TMP, Address(base, offset));
+  sw(TMP, Address(SP, 0));
 }
 
 void Assembler::CompareRegisters(Register rn, Register rm) {
