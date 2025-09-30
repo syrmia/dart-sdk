@@ -5,6 +5,7 @@
 #ifndef RUNTIME_VM_ASSEMBLER_MIPS_H_
 #define RUNTIME_VM_ASSEMBLER_MIPS_H_
 
+#include "platform/assert.h"
 #include "vm/compiler/assembler/assembler_base.h"
 #include "vm/constants.h"
 
@@ -20,6 +21,8 @@
 //   https://s3-eu-west-1.amazonaws.com/downloads-mips/documents/MD00086-2B-MIPS32BIS-AFP-6.06.pdf
 namespace dart {
 namespace compiler {
+
+class RegisterSet;
 
 class Immediate : public ValueObject {
  public:
@@ -99,6 +102,33 @@ class Assembler : public AssemblerBase {
           UNIMPLEMENTED();
   }
   ~Assembler() {}
+
+  void PushRegister(Register r) { Push(r); }
+  void PopRegister(Register r) { Pop(r); }
+
+  void PushRegisters(const RegisterSet& registers);
+  void PopRegisters(const RegisterSet& registers);
+
+  void PushRegistersInOrder(std::initializer_list<Register> regs);
+
+  void PushRegisterPair(Register r0, Register r1);
+  void PopRegisterPair(Register r0, Register r1);
+
+  void PushImmediate(int64_t immediate);
+
+  void PushValueAtOffset(Register base, int32_t offset);
+
+  void Push(Register rt) {
+    ASSERT(!in_delay_slot_);
+    addiu(SP, SP, Immediate(-target::kWordSize));
+    sw(rt, Address(SP));
+  }
+
+  void Pop(Register rt) {
+    ASSERT(!in_delay_slot_);
+    lw(rt, Address(SP));
+    addiu(SP, SP, Immediate(target::kWordSize));
+  }
 
   void CompareImmediate(Register rn, int32_t imm, OperandSize sz = kWordBytes) override;
   void TestImmediate(Register rn, int32_t imm, OperandSize sz = kWordBytes);
