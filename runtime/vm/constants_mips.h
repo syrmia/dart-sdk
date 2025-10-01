@@ -662,10 +662,60 @@ class Instr {
     return (InstructionBits() >> shift) & ((1 << count) - 1);
   }
 
+  // Accessors to the different named fields used in the MIPS encoding.
+  inline Opcode OpcodeField() const {
+    return static_cast<Opcode>(Bits(kOpcodeShift, kOpcodeBits));
+  }
+
   inline void SetOpcodeField(Opcode b) {
     int32_t instr = InstructionBits();
     int32_t mask = ((1 << kOpcodeBits) - 1) << kOpcodeShift;
     SetInstructionBits((b << kOpcodeShift) | (instr & ~mask));
+  }
+
+  inline Register RsField() const {
+    return static_cast<Register>(Bits(kRsShift, kRsBits));
+  }
+
+  inline Register RtField() const {
+    return static_cast<Register>(Bits(kRtShift, kRtBits));
+  }
+
+  inline Register RdField() const {
+    return static_cast<Register>(Bits(kRdShift, kRdBits));
+  }
+
+  inline FRegister FsField() const {
+    return static_cast<FRegister>(Bits(kFsShift, kFsBits));
+  }
+
+  inline FRegister FtField() const {
+    return static_cast<FRegister>(Bits(kFtShift, kFtBits));
+  }
+
+  inline FRegister FdField() const {
+    return static_cast<FRegister>(Bits(kFdShift, kFdBits));
+  }
+
+  inline int SaField() const { return Bits(kSaShift, kSaBits); }
+
+  inline int32_t UImmField() const { return Bits(kImmShift, kImmBits); }
+
+  inline int32_t SImmField() const {
+    // Sign-extend the imm field.
+    return (Bits(kImmShift, kImmBits) << (32 - kImmBits)) >> (32 - kImmBits);
+  }
+
+  inline int32_t BreakCodeField() const {
+    return Bits(kBreakCodeShift, kBreakCodeBits);
+  }
+
+  inline SpecialFunction FunctionField() const {
+    return static_cast<SpecialFunction>(Bits(kFunctionShift, kFunctionBits));
+  }
+
+  inline RtRegImm RegImmFnField() const {
+    return static_cast<RtRegImm>(Bits(kRtShift, kRtBits));
   }
 
   inline void SetRegImmFnField(RtRegImm b) {
@@ -673,6 +723,28 @@ class Instr {
     int32_t mask = ((1 << kRtBits) - 1) << kRtShift;
     SetInstructionBits((b << kRtShift) | (instr & ~mask));
   }
+
+  inline bool IsBreakPoint() {
+    return (OpcodeField() == SPECIAL) && (FunctionField() == BREAK);
+  }
+
+  inline Cop1Function Cop1FunctionField() const {
+    return static_cast<Cop1Function>(Bits(kCop1FnShift, kCop1FnBits));
+  }
+
+  inline Cop1Sub Cop1SubField() const {
+    return static_cast<Cop1Sub>(Bits(kCop1SubShift, kCop1SubBits));
+  }
+
+  inline bool HasFormat() const {
+    return (OpcodeField() == COP1) && (Bit(25) == 1);
+  }
+
+  inline Format FormatField() const {
+    return static_cast<Format>(Bits(kFmtShift, kFmtBits));
+  }
+
+  inline int32_t FpuCCField() const { return Bits(kFpuCCShift, kFpuCCBits); }
 
   // Instructions are read out of a code stream. The only way to get a
   // reference to an instruction is to convert a pc. There is no way
