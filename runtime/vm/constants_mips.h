@@ -627,6 +627,62 @@ class Instr {
   // Runtime call redirection instruction used by the simulator.
   static const int32_t kSimulatorRedirectInstruction =
       kBreakPointZeroInstruction | (kSimulatorRedirectCode << kBreakCodeShift);  
+
+  // Get the raw instruction bits.
+  inline int32_t InstructionBits() const {
+    return *reinterpret_cast<const int32_t*>(this);
+  }
+
+  // Set the raw instruction bits to value.
+  inline void SetInstructionBits(int32_t value) {
+    *reinterpret_cast<int32_t*>(this) = value;
+  }
+
+  inline void SetImmInstrBits(Opcode op,
+                              Register rs,
+                              Register rt,
+                              uint16_t imm) {
+    SetInstructionBits(op << kOpcodeShift | rs << kRsShift | rt << kRtShift |
+                       imm << kImmShift);
+  }
+
+  inline void SetSpecialInstrBits(SpecialFunction f,
+                                  Register rs,
+                                  Register rt,
+                                  Register rd) {
+    SetInstructionBits(SPECIAL << kOpcodeShift | f << kFunctionShift |
+                       rs << kRsShift | rt << kRtShift | rd << kRdShift);
+  }
+
+  // Read one particular bit out of the instruction bits.
+  inline int32_t Bit(int nr) const { return (InstructionBits() >> nr) & 1; }
+
+  // Read a bit field out of the instruction bits.
+  inline int32_t Bits(int shift, int count) const {
+    return (InstructionBits() >> shift) & ((1 << count) - 1);
+  }
+
+  inline void SetOpcodeField(Opcode b) {
+    int32_t instr = InstructionBits();
+    int32_t mask = ((1 << kOpcodeBits) - 1) << kOpcodeShift;
+    SetInstructionBits((b << kOpcodeShift) | (instr & ~mask));
+  }
+
+  inline void SetRegImmFnField(RtRegImm b) {
+    int32_t instr = InstructionBits();
+    int32_t mask = ((1 << kRtBits) - 1) << kRtShift;
+    SetInstructionBits((b << kRtShift) | (instr & ~mask));
+  }
+
+  // Instructions are read out of a code stream. The only way to get a
+  // reference to an instruction is to convert a pc. There is no way
+  // to allocate or create instances of class Instr.
+  // Use the At(pc) function to create references to Instr.
+  static Instr* At(uword pc) { return reinterpret_cast<Instr*>(pc); }
+
+ private:
+  DISALLOW_ALLOCATION();
+  DISALLOW_IMPLICIT_CONSTRUCTORS(Instr);
 };
 
 }  // namespace dart
