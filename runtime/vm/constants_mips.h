@@ -604,6 +604,29 @@ class Instr {
   };
 
   static const int32_t kNopInstruction = 0;
+
+  // Reserved break instruction codes.
+  static const int32_t kBreakPointCode = 0xdeb0;      // For breakpoint.
+  static const int32_t kStopMessageCode = 0xdeb1;     // For Stop(message).
+  static const int32_t kSimulatorBreakCode = 0xdeb2;  // For breakpoint in sim.
+  static const int32_t kSimulatorRedirectCode = 0xca11;  // For redirection.
+
+  static const int32_t kBreakPointZeroInstruction =
+      (SPECIAL << kOpcodeShift) | (BREAK << kFunctionShift);
+
+  // Breakpoint instruction filling assembler code buffers in debug mode.
+  static const int32_t kBreakPointInstruction =
+      kBreakPointZeroInstruction | (kBreakPointCode << kBreakCodeShift);
+
+  // Breakpoint instruction used by the simulator.
+  // Should be distinct from kBreakPointInstruction and from a typical user
+  // breakpoint inserted in generated code for debugging, e.g. break_(0).
+  static const int32_t kSimulatorBreakpointInstruction =
+      kBreakPointZeroInstruction | (kSimulatorBreakCode << kBreakCodeShift);
+
+  // Runtime call redirection instruction used by the simulator.
+  static const int32_t kSimulatorRedirectInstruction =
+      kBreakPointZeroInstruction | (kSimulatorRedirectCode << kBreakCodeShift);  
 };
 
 }  // namespace dart
