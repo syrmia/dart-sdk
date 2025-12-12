@@ -119,6 +119,105 @@ void Assembler::LoadTaggedClassIdMayBeSmi(Register result, Register object) {
   UNIMPLEMENTED();
 }
 
+void Assembler::EnterFrame(intptr_t frame_size) {
+  ASSERT(!in_delay_slot_);
+  addiu(SP, SP, Immediate(-2 * target::kWordSize));
+  sw(RA, Address(SP, 1 * target::kWordSize));
+  sw(FP, Address(SP, 0 * target::kWordSize));
+  mov(FP, SP);
+  if (frame_size != 0) {
+    addiu(SP, SP, Immediate(-frame_size));
+  }
+}
+
+void Assembler::LeaveFrame() {
+  ASSERT(!in_delay_slot_);
+  mov(SP, FP);
+  lw(RA, Address(SP, 1 * target::kWordSize));
+  lw(FP, Address(SP, 0 * target::kWordSize));
+  addiu(SP, SP, Immediate(2 * target::kWordSize));
+}
+
+void Assembler::LeaveFrameAndReturn() {
+  ASSERT(!in_delay_slot_);
+  mov(SP, FP);
+  lw(RA, Address(SP, 1 * target::kWordSize));
+  lw(FP, Address(SP, 0 * target::kWordSize));
+  Ret();
+  delay_slot()->addiu(SP, SP, Immediate(2 * target::kWordSize));
+}
+
+void Assembler::EnterStubFrame(intptr_t frame_size) {
+  EnterDartFrame(frame_size);
+}
+
+void Assembler::LeaveStubFrame() {
+  LeaveDartFrame();
+}
+
+void Assembler::LeaveStubFrameAndReturn(Register ra) {
+  LeaveDartFrameAndReturn(ra);
+}
+
+void Assembler::EnterDartFrame(intptr_t frame_size, bool load_pool_pointer) {
+  ASSERT(!in_delay_slot_);
+
+  SetPrologueOffset();
+
+  if (FLAG_precompiled_mode) {
+    addiu(SP, SP, Immediate(-2 * target::kWordSize));
+    sw(RA, Address(SP, 1 * target::kWordSize));
+    sw(FP, Address(SP, 0 * target::kWordSize));
+    mov(FP, SP);
+  } else {
+    addiu(SP, SP, Immediate(-4 * target::kWordSize));
+    sw(RA, Address(SP, 3 * target::kWordSize));
+    sw(FP, Address(SP, 2 * target::kWordSize));
+    sw(CODE_REG, Address(SP, 1 * target::kWordSize));
+    sw(PP, Address(SP, 0 * target::kWordSize));
+
+    // Set FP to the saved previous FP.
+    addiu(FP, SP, Immediate(2 * target::kWordSize));
+
+    if (load_pool_pointer) LoadPoolPointer();
+  }
+  set_constant_pool_allowed(true);
+
+  // Reserve space for locals.
+  AddImmediate(SP, -frame_size);
+}
+
+void Assembler::LeaveDartFrame(RestorePP restore_pp) {
+  ASSERT(!in_delay_slot_);
+  addiu(SP, FP, Immediate(-2 * target::kWordSize));
+
+  lw(RA, Address(SP, 3 * target::kWordSize));
+  lw(FP, Address(SP, 2 * target::kWordSize));
+  if (restore_pp == kRestoreCallerPP && !FLAG_precompiled_mode) {
+    lw(PP, Address(SP, 0 * target::kWordSize));
+  }
+  set_constant_pool_allowed(false);
+
+  // Adjust SP for PC, RA, FP, PP pushed in EnterDartFrame.
+  addiu(SP, SP, Immediate(4 * target::kWordSize));
+}
+
+void Assembler::LeaveDartFrameAndReturn(Register ra) {
+  ASSERT(!in_delay_slot_);
+  addiu(SP, FP, Immediate(-2 * target::kWordSize));
+
+  lw(RA, Address(SP, 3 * target::kWordSize));
+  lw(FP, Address(SP, 2 * target::kWordSize));
+  if (!FLAG_precompiled_mode) {
+    lw(PP, Address(SP, 0 * target::kWordSize));
+  }
+  set_constant_pool_allowed(false);
+
+  // Adjust SP for PC, RA, FP, PP pushed in EnterDartFrame, and return.
+  addiu(SP, SP, Immediate(4 * target::kWordSize));
+  jr(ra);
+}
+
 }  // namespace compiler
 }  // namespace dart
 

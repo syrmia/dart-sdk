@@ -806,6 +806,26 @@ class Assembler : public AssemblerBase {
       prologue_offset_ = CodeSize();
     }
   }
+
+  void EnterFrame(intptr_t frame_size = 0);
+  void LeaveFrame();
+  void LeaveFrameAndReturn();
+
+  // Set up a stub frame so that the stack traversal code can easily identify
+  // a stub frame.
+  void EnterStubFrame(intptr_t frame_size = 0);
+  void LeaveStubFrame();
+  // A separate macro for when a Ret immediately follows, so that we can use
+  // the branch delay slot.
+  void LeaveStubFrameAndReturn(Register ra = RA);
+
+  // Set up a Dart frame on entry with a frame pointer and PC information to
+  // enable easy access to the RawInstruction object of code corresponding
+  // to this frame.
+  enum RestorePP { kRestoreCallerPP, kKeepCalleePP };
+  void EnterDartFrame(intptr_t frame_size, bool load_pool_pointer = true);
+  void LeaveDartFrame(RestorePP restore_pp = kRestoreCallerPP);
+  void LeaveDartFrameAndReturn(Register ra = RA);
   
  private:
   bool use_far_branches_;
