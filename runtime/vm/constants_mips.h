@@ -347,13 +347,13 @@ class CallingConventions {
 
   // Whether larger than wordsize arguments are aligned to even registers.
   static constexpr AlignmentStrategy kArgumentRegisterAlignment =
-      kAlignedToWordSize;
+      kAlignedToWordSizeAndValueSize;
   static constexpr AlignmentStrategy kArgumentRegisterAlignmentVarArgs =
       kArgumentRegisterAlignment;
 
   // How stack arguments are aligned.
   static constexpr AlignmentStrategy kArgumentStackAlignment =
-      kAlignedToWordSize;
+      kAlignedToWordSizeAndValueSize;
   static constexpr AlignmentStrategy kArgumentStackAlignmentVarArgs =
       kArgumentStackAlignment;
 
