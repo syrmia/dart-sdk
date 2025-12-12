@@ -604,6 +604,157 @@ class Instr {
   };
 
   static const int32_t kNopInstruction = 0;
+
+  // Reserved break instruction codes.
+  static const int32_t kBreakPointCode = 0xdeb0;      // For breakpoint.
+  static const int32_t kStopMessageCode = 0xdeb1;     // For Stop(message).
+  static const int32_t kSimulatorBreakCode = 0xdeb2;  // For breakpoint in sim.
+  static const int32_t kSimulatorRedirectCode = 0xca11;  // For redirection.
+
+  static const int32_t kBreakPointZeroInstruction =
+      (SPECIAL << kOpcodeShift) | (BREAK << kFunctionShift);
+
+  // Breakpoint instruction filling assembler code buffers in debug mode.
+  static const int32_t kBreakPointInstruction =
+      kBreakPointZeroInstruction | (kBreakPointCode << kBreakCodeShift);
+
+  // Breakpoint instruction used by the simulator.
+  // Should be distinct from kBreakPointInstruction and from a typical user
+  // breakpoint inserted in generated code for debugging, e.g. break_(0).
+  static const int32_t kSimulatorBreakpointInstruction =
+      kBreakPointZeroInstruction | (kSimulatorBreakCode << kBreakCodeShift);
+
+  // Runtime call redirection instruction used by the simulator.
+  static const int32_t kSimulatorRedirectInstruction =
+      kBreakPointZeroInstruction | (kSimulatorRedirectCode << kBreakCodeShift);  
+
+  // Get the raw instruction bits.
+  inline int32_t InstructionBits() const {
+    return *reinterpret_cast<const int32_t*>(this);
+  }
+
+  // Set the raw instruction bits to value.
+  inline void SetInstructionBits(int32_t value) {
+    *reinterpret_cast<int32_t*>(this) = value;
+  }
+
+  inline void SetImmInstrBits(Opcode op,
+                              Register rs,
+                              Register rt,
+                              uint16_t imm) {
+    SetInstructionBits(op << kOpcodeShift | rs << kRsShift | rt << kRtShift |
+                       imm << kImmShift);
+  }
+
+  inline void SetSpecialInstrBits(SpecialFunction f,
+                                  Register rs,
+                                  Register rt,
+                                  Register rd) {
+    SetInstructionBits(SPECIAL << kOpcodeShift | f << kFunctionShift |
+                       rs << kRsShift | rt << kRtShift | rd << kRdShift);
+  }
+
+  // Read one particular bit out of the instruction bits.
+  inline int32_t Bit(int nr) const { return (InstructionBits() >> nr) & 1; }
+
+  // Read a bit field out of the instruction bits.
+  inline int32_t Bits(int shift, int count) const {
+    return (InstructionBits() >> shift) & ((1 << count) - 1);
+  }
+
+  // Accessors to the different named fields used in the MIPS encoding.
+  inline Opcode OpcodeField() const {
+    return static_cast<Opcode>(Bits(kOpcodeShift, kOpcodeBits));
+  }
+
+  inline void SetOpcodeField(Opcode b) {
+    int32_t instr = InstructionBits();
+    int32_t mask = ((1 << kOpcodeBits) - 1) << kOpcodeShift;
+    SetInstructionBits((b << kOpcodeShift) | (instr & ~mask));
+  }
+
+  inline Register RsField() const {
+    return static_cast<Register>(Bits(kRsShift, kRsBits));
+  }
+
+  inline Register RtField() const {
+    return static_cast<Register>(Bits(kRtShift, kRtBits));
+  }
+
+  inline Register RdField() const {
+    return static_cast<Register>(Bits(kRdShift, kRdBits));
+  }
+
+  inline FRegister FsField() const {
+    return static_cast<FRegister>(Bits(kFsShift, kFsBits));
+  }
+
+  inline FRegister FtField() const {
+    return static_cast<FRegister>(Bits(kFtShift, kFtBits));
+  }
+
+  inline FRegister FdField() const {
+    return static_cast<FRegister>(Bits(kFdShift, kFdBits));
+  }
+
+  inline int SaField() const { return Bits(kSaShift, kSaBits); }
+
+  inline int32_t UImmField() const { return Bits(kImmShift, kImmBits); }
+
+  inline int32_t SImmField() const {
+    // Sign-extend the imm field.
+    return (Bits(kImmShift, kImmBits) << (32 - kImmBits)) >> (32 - kImmBits);
+  }
+
+  inline int32_t BreakCodeField() const {
+    return Bits(kBreakCodeShift, kBreakCodeBits);
+  }
+
+  inline SpecialFunction FunctionField() const {
+    return static_cast<SpecialFunction>(Bits(kFunctionShift, kFunctionBits));
+  }
+
+  inline RtRegImm RegImmFnField() const {
+    return static_cast<RtRegImm>(Bits(kRtShift, kRtBits));
+  }
+
+  inline void SetRegImmFnField(RtRegImm b) {
+    int32_t instr = InstructionBits();
+    int32_t mask = ((1 << kRtBits) - 1) << kRtShift;
+    SetInstructionBits((b << kRtShift) | (instr & ~mask));
+  }
+
+  inline bool IsBreakPoint() {
+    return (OpcodeField() == SPECIAL) && (FunctionField() == BREAK);
+  }
+
+  inline Cop1Function Cop1FunctionField() const {
+    return static_cast<Cop1Function>(Bits(kCop1FnShift, kCop1FnBits));
+  }
+
+  inline Cop1Sub Cop1SubField() const {
+    return static_cast<Cop1Sub>(Bits(kCop1SubShift, kCop1SubBits));
+  }
+
+  inline bool HasFormat() const {
+    return (OpcodeField() == COP1) && (Bit(25) == 1);
+  }
+
+  inline Format FormatField() const {
+    return static_cast<Format>(Bits(kFmtShift, kFmtBits));
+  }
+
+  inline int32_t FpuCCField() const { return Bits(kFpuCCShift, kFpuCCBits); }
+
+  // Instructions are read out of a code stream. The only way to get a
+  // reference to an instruction is to convert a pc. There is no way
+  // to allocate or create instances of class Instr.
+  // Use the At(pc) function to create references to Instr.
+  static Instr* At(uword pc) { return reinterpret_cast<Instr*>(pc); }
+
+ private:
+  DISALLOW_ALLOCATION();
+  DISALLOW_IMPLICIT_CONSTRUCTORS(Instr);
 };
 
 }  // namespace dart
