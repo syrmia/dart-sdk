@@ -797,6 +797,9 @@ class Assembler : public AssemblerBase {
                     Register scratch = kNoRegister);
   void LoadClassIdMayBeSmi(Register result, Register object);
   void LoadTaggedClassIdMayBeSmi(Register result, Register object);
+
+  bool constant_pool_allowed() const { return constant_pool_allowed_; }
+  void set_constant_pool_allowed(bool b) { constant_pool_allowed_ = b; }
   
  private:
   bool use_far_branches_;
