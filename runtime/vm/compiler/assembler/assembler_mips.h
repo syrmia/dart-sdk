@@ -800,6 +800,12 @@ class Assembler : public AssemblerBase {
 
   bool constant_pool_allowed() const { return constant_pool_allowed_; }
   void set_constant_pool_allowed(bool b) { constant_pool_allowed_ = b; }
+
+  void SetPrologueOffset() {
+    if (prologue_offset_ == -1) {
+      prologue_offset_ = CodeSize();
+    }
+  }
   
  private:
   bool use_far_branches_;
