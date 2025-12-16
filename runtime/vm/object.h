@@ -5853,7 +5853,10 @@ class Instructions : public Object {
   static constexpr intptr_t kMonomorphicEntryOffsetAOT = 6;
   static constexpr intptr_t kPolymorphicEntryOffsetAOT = 18;
 #elif defined(TARGET_ARCH_MIPS)
-  // TODO: Handle MIPS.
+  static constexpr intptr_t kMonomorphicEntryOffsetJIT = 12;
+  static constexpr intptr_t kPolymorphicEntryOffsetJIT = 68;
+  static constexpr intptr_t kMonomorphicEntryOffsetAOT = 12;
+  static constexpr intptr_t kPolymorphicEntryOffsetAOT = 32;
 #else
 #error Missing entry offsets for current architecture
 #endif
