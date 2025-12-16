@@ -804,7 +804,7 @@ class Assembler : public AssemblerBase {
   bool use_far_branches() const {
     return FLAG_use_far_branches || use_far_branches_;
   }
-  
+
   void set_use_far_branches(bool b) { use_far_branches_ = b; }
 
   void SetPrologueOffset() {
@@ -832,6 +832,9 @@ class Assembler : public AssemblerBase {
   void EnterDartFrame(intptr_t frame_size, bool load_pool_pointer = true);
   void LeaveDartFrame(RestorePP restore_pp = kRestoreCallerPP);
   void LeaveDartFrameAndReturn(Register ra = RA);
+
+  void MonomorphicCheckedEntryJIT();
+  void MonomorphicCheckedEntryAOT();
   
  private:
   bool use_far_branches_;
