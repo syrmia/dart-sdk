@@ -218,6 +218,66 @@ void Assembler::LeaveDartFrameAndReturn(Register ra) {
   jr(ra);
 }
 
+// A0 receiver, S5 ICData entries array
+void Assembler::MonomorphicCheckedEntryJIT() {
+  has_monomorphic_entry_ = true;
+  bool saved_use_far_branches = use_far_branches();
+  set_use_far_branches(false);
+
+  const intptr_t start = CodeSize();
+
+  Label miss;
+  Bind(&miss);
+  lw(T9, Address(THR, target::Thread::switchable_call_miss_entry_offset()));
+  jr(T9);
+
+  Comment("MonomorphicCheckedEntry");
+  ASSERT_EQUAL(CodeSize() - start, target::Instructions::kMonomorphicEntryOffsetJIT);
+
+  const intptr_t cid_offset = target::Array::element_offset(0);
+  const intptr_t count_offset = target::Array::element_offset(1);
+
+  lw(T1, FieldAddress(S5, cid_offset));
+  LoadTaggedClassIdMayBeSmi(A1, A0);
+  bne(T1, A1, &miss);
+
+  lw(T1, FieldAddress(S5, count_offset));
+  AddImmediate(T1, T1, target::ToRawSmi(1));
+  sw(T1, FieldAddress(S5, count_offset));
+
+  LoadImmediate(ARGS_DESC_REG, 0);  // GC-safe for OptimizeInvokedFunction
+
+  // Fall through to unchecked entry.
+  ASSERT_EQUAL(CodeSize() - start, target::Instructions::kPolymorphicEntryOffsetJIT);
+
+  set_use_far_branches(saved_use_far_branches);
+}
+
+// A0 receiver, S5 guarded cid as Smi
+void Assembler::MonomorphicCheckedEntryAOT() {
+  has_monomorphic_entry_ = true;
+  bool saved_use_far_branches = use_far_branches();
+  set_use_far_branches(false);
+
+  const intptr_t start = CodeSize();
+
+  Label miss;
+  Bind(&miss);
+  lw(T9, Address(THR, target::Thread::switchable_call_miss_entry_offset()));
+  jr(T9);
+
+  Comment("MonomorphicCheckedEntry");
+  ASSERT_EQUAL(CodeSize() - start, target::Instructions::kMonomorphicEntryOffsetAOT);
+  LoadClassId(TMP, A0);
+  SmiTag(TMP);
+  bne(S5, TMP, &miss);
+
+  // Fall through to unchecked entry.
+  ASSERT_EQUAL(CodeSize() - start, target::Instructions::kPolymorphicEntryOffsetAOT);
+
+  set_use_far_branches(saved_use_far_branches);
+}
+
 }  // namespace compiler
 }  // namespace dart
 
