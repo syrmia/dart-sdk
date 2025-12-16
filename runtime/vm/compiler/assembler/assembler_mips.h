@@ -801,6 +801,12 @@ class Assembler : public AssemblerBase {
   bool constant_pool_allowed() const { return constant_pool_allowed_; }
   void set_constant_pool_allowed(bool b) { constant_pool_allowed_ = b; }
 
+  bool use_far_branches() const {
+    return FLAG_use_far_branches || use_far_branches_;
+  }
+  
+  void set_use_far_branches(bool b) { use_far_branches_ = b; }
+
   void SetPrologueOffset() {
     if (prologue_offset_ == -1) {
       prologue_offset_ = CodeSize();
