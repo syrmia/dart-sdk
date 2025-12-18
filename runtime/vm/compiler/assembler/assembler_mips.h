@@ -130,6 +130,8 @@ class Assembler : public AssemblerBase {
     addiu(SP, SP, Immediate(target::kWordSize));
   }
 
+  void Ret() { jr(RA); }
+
   void CompareImmediate(Register rn, int32_t imm, OperandSize sz = kWordBytes) override;
   void TestImmediate(Register rn, int32_t imm, OperandSize sz = kWordBytes);
 
