@@ -243,6 +243,14 @@ const Register CALLEE_SAVED_TEMP = S5;
 // since TMP is clobbered by a far branch.
 const Register CMPRES1 = T8;
 const Register CMPRES2 = T9;
+struct InstantiationABI {
+  static constexpr Register kUninstantiatedTypeArgumentsReg = T1;
+  static constexpr Register kInstantiatorTypeArgumentsReg = T2;
+  static constexpr Register kFunctionTypeArgumentsReg = T3;
+  static constexpr Register kResultTypeArgumentsReg = V0;
+  static constexpr Register kResultTypeReg = V0;
+  static constexpr Register kScratchReg = T4;
+};
 
 typedef uint32_t RegList;
 const RegList kAllCpuRegistersList = 0xFFFFFFFF;
