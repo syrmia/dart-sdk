@@ -36,7 +36,7 @@ void Assembler::PushRegistersInOrder(std::initializer_list<Register> regs) {
   }
 }
 
-void PushRegisterPair(Register r0, Register r1){
+void Assembler::PushRegisterPair(Register r0, Register r1){
   ASSERT(r0 != SP);
   ASSERT(r1 != SP);
 
@@ -45,7 +45,7 @@ void PushRegisterPair(Register r0, Register r1){
   sw(r0, Address(SP, 0));
 }
 
-void PopRegisterPair(Register r0, Register r1){
+void Assembler::PopRegisterPair(Register r0, Register r1){
   ASSERT(r0 != SP);
   ASSERT(r1 != SP);
 
@@ -54,12 +54,12 @@ void PopRegisterPair(Register r0, Register r1){
   addiu(SP, SP, Immediate(2 * target::kWordSize));
 }
 
-void PushImmediate(int64_t immediate){
+void Assembler::PushImmediate(int64_t immediate){
   LoadImmediate(TMP, immediate);
   Push(TMP);
 }
 
-void PushValueAtOffset(Register base, int32_t offset){
+void Assembler::PushValueAtOffset(Register base, int32_t offset){
   addiu(SP, SP, Immediate(-target::kWordSize));
   lw(TMP, Address(base, offset));
   sw(TMP, Address(SP, 0));
