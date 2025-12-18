@@ -800,6 +800,10 @@ class Assembler : public AssemblerBase {
   void LoadClassIdMayBeSmi(Register result, Register object);
   void LoadTaggedClassIdMayBeSmi(Register result, Register object);
 
+  void LoadPoolPointer(Register reg = PP);
+  void CheckCodePointer();
+  void GetNextPC(Register dest, Register temp = kNoRegister);
+
   bool constant_pool_allowed() const { return constant_pool_allowed_; }
   void set_constant_pool_allowed(bool b) { constant_pool_allowed_ = b; }
 
