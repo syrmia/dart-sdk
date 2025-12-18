@@ -21,8 +21,8 @@ DEFINE_FLAG(bool,
             false,
             "Verify instructions offset in code object."
             "NOTE: This breaks the profiler.");
-#if defined(TARGET_ARCH_ARM)
-DEFINE_FLAG(bool, use_far_branches, false, "Enable far branches for ARM.");
+#if defined(TARGET_ARCH_ARM) || defined(TARGET_ARCH_MIPS)
+DEFINE_FLAG(bool, use_far_branches, false, "Enable far branches for ARM and MIPS.");
 #endif
 
 namespace compiler {
