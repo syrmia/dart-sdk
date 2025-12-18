@@ -8,6 +8,9 @@
 #include "vm/compiler/backend/locations.h"
 
 namespace dart {
+  
+DECLARE_FLAG(bool, check_code_pointer);
+
 namespace compiler{
 
 void Assembler::EmitBranch(Opcode b, Register rs, Register rt, Label* label) {
@@ -117,6 +120,50 @@ void Assembler::LoadClassIdMayBeSmi(Register result, Register object) {
 
 void Assembler::LoadTaggedClassIdMayBeSmi(Register result, Register object) {
   UNIMPLEMENTED();
+}
+
+void Assembler::LoadPoolPointer(Register reg) {
+  ASSERT(!in_delay_slot_);
+  CheckCodePointer();
+  lw(reg, FieldAddress(CODE_REG, target::Code::object_pool_offset()));
+  set_constant_pool_allowed(reg == PP);
+}
+
+void Assembler::CheckCodePointer() {
+#ifdef DEBUG
+  if (!FLAG_check_code_pointer) {
+    return;
+  }
+  Comment("CheckCodePointer");
+  Label cid_ok, instructions_ok;
+  Push(CMPRES1);
+  Push(CMPRES2);
+  LoadClassId(CMPRES1, CODE_REG);
+  BranchEqual(CMPRES1, Immediate(kCodeCid), &cid_ok);
+  break_(0);
+  Bind(&cid_ok);
+  GetNextPC(CMPRES1, TMP);
+  const intptr_t entry_offset = CodeSize() - Instr::kInstrSize +
+                                target::Instructions::HeaderSize() - kHeapObjectTag;
+  AddImmediate(CMPRES1, CMPRES1, -entry_offset);
+  lw(CMPRES2, FieldAddress(CODE_REG, target::Code::instructions_offset()));
+  BranchEqual(CMPRES1, CMPRES2, &instructions_ok);
+  break_(1);
+  Bind(&instructions_ok);
+  Pop(CMPRES2);
+  Pop(CMPRES1);
+#endif
+}
+
+void Assembler::GetNextPC(Register dest, Register temp) {
+  if (temp != kNoRegister) {
+    mov(temp, RA);
+  }
+  EmitRegImmType(REGIMM, R0, BGEZAL, 1);
+  mov(dest, RA);
+  if (temp != kNoRegister) {
+    mov(RA, temp);
+  }
 }
 
 void Assembler::EnterFrame(intptr_t frame_size) {
