@@ -837,6 +837,8 @@ class Assembler : public AssemblerBase {
 
   void MonomorphicCheckedEntryJIT();
   void MonomorphicCheckedEntryAOT();
+
+  void ReserveAlignedFrameSpace(intptr_t frame_space);
   
  private:
   bool use_far_branches_;

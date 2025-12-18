@@ -278,6 +278,17 @@ void Assembler::MonomorphicCheckedEntryAOT() {
   set_use_far_branches(saved_use_far_branches);
 }
 
+void Assembler::ReserveAlignedFrameSpace(intptr_t frame_space) {
+  ASSERT(!in_delay_slot_);
+  // Reserve space for arguments and align frame before entering
+  // the C++ world.
+  AddImmediate(SP, -frame_space);
+  if (OS::ActivationFrameAlignment() > 1) {
+    LoadImmediate(TMP, ~(OS::ActivationFrameAlignment() - 1));
+    and_(SP, SP, TMP);
+  }
+}
+
 }  // namespace compiler
 }  // namespace dart
 
