@@ -839,6 +839,11 @@ class Assembler : public AssemblerBase {
   void LeaveDartFrame(RestorePP restore_pp = kRestoreCallerPP);
   void LeaveDartFrameAndReturn(Register ra = RA);
 
+  void EnterFullSafepoint(Register scratch0, Register scratch1);
+  void ExitFullSafepoint(Register scratch0,
+                         Register scratch1,
+                         bool ignore_unwind_in_progress);
+
   void MonomorphicCheckedEntryJIT();
   void MonomorphicCheckedEntryAOT();
 
