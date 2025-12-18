@@ -327,10 +327,9 @@ class CallingConventions {
   static constexpr intptr_t kArgumentRegisters = kAbiArgumentCpuRegs;
   static constexpr intptr_t kNumArgRegs = 4;
 
-  static constexpr intptr_t kFpuArgumentRegisters =
-      (1 << D6) | (1 << D7) | (1 << D8) | (1 << D9);
+  static constexpr intptr_t kFpuArgumentRegisters = (1 << D6) | (1 << D7);
   static const FpuRegister FpuArgumentRegisters[];
-  static constexpr intptr_t kNumFpuArgRegs = 4;
+  static constexpr intptr_t kNumFpuArgRegs = 2;
 
   static constexpr intptr_t kCalleeSaveCpuRegisters = kAbiPreservedCpuRegs;
 
@@ -366,7 +365,7 @@ class CallingConventions {
 
 struct DartCallingConvention {
   static constexpr Register kCpuRegistersForArgs[] = {A0, A1, A2, A3};
-  static constexpr FpuRegister kFpuRegistersForArgs[] = {D6, D7, D8, D9};
+  static constexpr FpuRegister kFpuRegistersForArgs[] = {D6, D7};
 };
 
 extern const char* const cpu_reg_names[kNumberOfCpuRegisters];
