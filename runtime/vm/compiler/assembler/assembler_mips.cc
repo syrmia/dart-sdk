@@ -265,6 +265,75 @@ void Assembler::LeaveDartFrameAndReturn(Register ra) {
   jr(ra);
 }
 
+void Assembler::EnterFullSafepoint(Register addr, Register state) {
+  // We generate the same number of instructions whether or not the slow-path is
+  // forced. This simplifies GenerateJitCallbackTrampolines.
+  Label slow_path, done, retry;
+  if (FLAG_use_slow_path) {
+    b(&slow_path);
+  }
+
+  AddImmediate(addr, THR, target::Thread::safepoint_state_offset());
+  Bind(&retry);
+  ll(state, Address(addr, 0));
+  ASSERT(TMP!=addr);
+  ASSERT(TMP!=state);
+  LoadImmediate(TMP, target::Thread::native_safepoint_state_unacquired());
+  BranchNotEqual(state, TMP, &slow_path);
+
+  LoadImmediate(state, target::Thread::native_safepoint_state_acquired());
+  sc(state, Address(addr, 0));
+  BranchEqual(state, compiler::Immediate(1),
+              &done);  // 1 means sc was successful.
+
+  if (!FLAG_use_slow_path) {
+    b(&retry);
+  }
+
+  Bind(&slow_path);
+  lw(TMP, Address(THR, target::Thread::enter_safepoint_stub_offset()));
+  lw(TMP, FieldAddress(TMP, target::Code::entry_point_offset()));
+  mov(T9, TMP);
+  jalr(T9);
+
+  Bind(&done);
+}
+
+void Assembler::ExitFullSafepoint(Register addr,
+                                  Register state,
+                                  bool ignore_unwind_in_progress) {
+  // We generate the same number of instructions whether or not the slow-path is
+  // forced, for consistency with EnterFullSafepoint.
+  Label slow_path, done, retry;
+  if (FLAG_use_slow_path) {
+    b(&slow_path);
+  }
+
+  AddImmediate(addr, THR, target::Thread::safepoint_state_offset());
+  Bind(&retry);
+  ll(state, Address(addr, 0));
+  BranchNotEqual(
+      state,
+      compiler::Immediate(target::Thread::native_safepoint_state_acquired()),
+      &slow_path);
+
+  LoadImmediate(state, target::Thread::native_safepoint_state_unacquired());
+  sc(state, Address(addr, 0));
+  BranchEqual(state, compiler::Immediate(1),
+              &done);  // 1 means sc was successful.
+
+  if (!FLAG_use_slow_path) {
+    b(&retry);
+  }
+
+  Bind(&slow_path);
+  lw(TMP, Address(THR, target::Thread::exit_safepoint_stub_offset()));
+  lw(T9, FieldAddress(TMP, target::Code::entry_point_offset()));
+  jalr(T9);
+
+  Bind(&done);
+}
+
 // A0 receiver, S5 ICData entries array
 void Assembler::MonomorphicCheckedEntryJIT() {
   has_monomorphic_entry_ = true;
