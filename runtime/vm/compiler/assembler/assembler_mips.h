@@ -130,6 +130,8 @@ class Assembler : public AssemblerBase {
     addiu(SP, SP, Immediate(target::kWordSize));
   }
 
+  void Ret() { jr(RA); }
+
   void CompareImmediate(Register rn, int32_t imm, OperandSize sz = kWordBytes) override;
   void TestImmediate(Register rn, int32_t imm, OperandSize sz = kWordBytes);
 
@@ -798,6 +800,10 @@ class Assembler : public AssemblerBase {
   void LoadClassIdMayBeSmi(Register result, Register object);
   void LoadTaggedClassIdMayBeSmi(Register result, Register object);
 
+  void LoadPoolPointer(Register reg = PP);
+  void CheckCodePointer();
+  void GetNextPC(Register dest, Register temp = kNoRegister);
+
   bool constant_pool_allowed() const { return constant_pool_allowed_; }
   void set_constant_pool_allowed(bool b) { constant_pool_allowed_ = b; }
 
@@ -833,8 +839,15 @@ class Assembler : public AssemblerBase {
   void LeaveDartFrame(RestorePP restore_pp = kRestoreCallerPP);
   void LeaveDartFrameAndReturn(Register ra = RA);
 
+  void EnterFullSafepoint(Register scratch0, Register scratch1);
+  void ExitFullSafepoint(Register scratch0,
+                         Register scratch1,
+                         bool ignore_unwind_in_progress);
+
   void MonomorphicCheckedEntryJIT();
   void MonomorphicCheckedEntryAOT();
+
+  void ReserveAlignedFrameSpace(intptr_t frame_space);
   
  private:
   bool use_far_branches_;

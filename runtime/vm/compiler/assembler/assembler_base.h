@@ -21,7 +21,8 @@
 namespace dart {
 
 #if defined(TARGET_ARCH_ARM) || defined(TARGET_ARCH_ARM64) ||                  \
-    defined(TARGET_ARCH_RISCV32) || defined(TARGET_ARCH_RISCV64)
+    defined(TARGET_ARCH_RISCV32) || defined(TARGET_ARCH_RISCV64) ||		         \
+    defined(TARGET_ARCH_MIPS)
 DECLARE_FLAG(bool, use_far_branches);
 #endif
 
@@ -645,7 +646,7 @@ class AssemblerBase : public StackResource {
         object_pool_builder_(object_pool_builder) {}
   virtual ~AssemblerBase();
 
-  // Used for near/far jumps on IA32/X64, ignored for ARM.
+  // Used for near/far jumps on IA32/X64, ignored for ARM and MIPS.
   enum JumpDistance : bool {
     kFarJump = false,
     kNearJump = true,

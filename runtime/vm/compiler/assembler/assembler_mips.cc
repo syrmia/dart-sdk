@@ -8,6 +8,9 @@
 #include "vm/compiler/backend/locations.h"
 
 namespace dart {
+  
+DECLARE_FLAG(bool, check_code_pointer);
+
 namespace compiler{
 
 void Assembler::EmitBranch(Opcode b, Register rs, Register rt, Label* label) {
@@ -36,7 +39,7 @@ void Assembler::PushRegistersInOrder(std::initializer_list<Register> regs) {
   }
 }
 
-void PushRegisterPair(Register r0, Register r1){
+void Assembler::PushRegisterPair(Register r0, Register r1){
   ASSERT(r0 != SP);
   ASSERT(r1 != SP);
 
@@ -45,7 +48,7 @@ void PushRegisterPair(Register r0, Register r1){
   sw(r0, Address(SP, 0));
 }
 
-void PopRegisterPair(Register r0, Register r1){
+void Assembler::PopRegisterPair(Register r0, Register r1){
   ASSERT(r0 != SP);
   ASSERT(r1 != SP);
 
@@ -54,12 +57,12 @@ void PopRegisterPair(Register r0, Register r1){
   addiu(SP, SP, Immediate(2 * target::kWordSize));
 }
 
-void PushImmediate(int64_t immediate){
+void Assembler::PushImmediate(int64_t immediate){
   LoadImmediate(TMP, immediate);
   Push(TMP);
 }
 
-void PushValueAtOffset(Register base, int32_t offset){
+void Assembler::PushValueAtOffset(Register base, int32_t offset){
   addiu(SP, SP, Immediate(-target::kWordSize));
   lw(TMP, Address(base, offset));
   sw(TMP, Address(SP, 0));
@@ -117,6 +120,50 @@ void Assembler::LoadClassIdMayBeSmi(Register result, Register object) {
 
 void Assembler::LoadTaggedClassIdMayBeSmi(Register result, Register object) {
   UNIMPLEMENTED();
+}
+
+void Assembler::LoadPoolPointer(Register reg) {
+  ASSERT(!in_delay_slot_);
+  CheckCodePointer();
+  lw(reg, FieldAddress(CODE_REG, target::Code::object_pool_offset()));
+  set_constant_pool_allowed(reg == PP);
+}
+
+void Assembler::CheckCodePointer() {
+#ifdef DEBUG
+  if (!FLAG_check_code_pointer) {
+    return;
+  }
+  Comment("CheckCodePointer");
+  Label cid_ok, instructions_ok;
+  Push(CMPRES1);
+  Push(CMPRES2);
+  LoadClassId(CMPRES1, CODE_REG);
+  BranchEqual(CMPRES1, Immediate(kCodeCid), &cid_ok);
+  break_(0);
+  Bind(&cid_ok);
+  GetNextPC(CMPRES1, TMP);
+  const intptr_t entry_offset = CodeSize() - Instr::kInstrSize +
+                                target::Instructions::HeaderSize() - kHeapObjectTag;
+  AddImmediate(CMPRES1, CMPRES1, -entry_offset);
+  lw(CMPRES2, FieldAddress(CODE_REG, target::Code::instructions_offset()));
+  BranchEqual(CMPRES1, CMPRES2, &instructions_ok);
+  break_(1);
+  Bind(&instructions_ok);
+  Pop(CMPRES2);
+  Pop(CMPRES1);
+#endif
+}
+
+void Assembler::GetNextPC(Register dest, Register temp) {
+  if (temp != kNoRegister) {
+    mov(temp, RA);
+  }
+  EmitRegImmType(REGIMM, R0, BGEZAL, 1);
+  mov(dest, RA);
+  if (temp != kNoRegister) {
+    mov(RA, temp);
+  }
 }
 
 void Assembler::EnterFrame(intptr_t frame_size) {
@@ -218,6 +265,75 @@ void Assembler::LeaveDartFrameAndReturn(Register ra) {
   jr(ra);
 }
 
+void Assembler::EnterFullSafepoint(Register addr, Register state) {
+  // We generate the same number of instructions whether or not the slow-path is
+  // forced. This simplifies GenerateJitCallbackTrampolines.
+  Label slow_path, done, retry;
+  if (FLAG_use_slow_path) {
+    b(&slow_path);
+  }
+
+  AddImmediate(addr, THR, target::Thread::safepoint_state_offset());
+  Bind(&retry);
+  ll(state, Address(addr, 0));
+  ASSERT(TMP!=addr);
+  ASSERT(TMP!=state);
+  LoadImmediate(TMP, target::Thread::native_safepoint_state_unacquired());
+  BranchNotEqual(state, TMP, &slow_path);
+
+  LoadImmediate(state, target::Thread::native_safepoint_state_acquired());
+  sc(state, Address(addr, 0));
+  BranchEqual(state, compiler::Immediate(1),
+              &done);  // 1 means sc was successful.
+
+  if (!FLAG_use_slow_path) {
+    b(&retry);
+  }
+
+  Bind(&slow_path);
+  lw(TMP, Address(THR, target::Thread::enter_safepoint_stub_offset()));
+  lw(TMP, FieldAddress(TMP, target::Code::entry_point_offset()));
+  mov(T9, TMP);
+  jalr(T9);
+
+  Bind(&done);
+}
+
+void Assembler::ExitFullSafepoint(Register addr,
+                                  Register state,
+                                  bool ignore_unwind_in_progress) {
+  // We generate the same number of instructions whether or not the slow-path is
+  // forced, for consistency with EnterFullSafepoint.
+  Label slow_path, done, retry;
+  if (FLAG_use_slow_path) {
+    b(&slow_path);
+  }
+
+  AddImmediate(addr, THR, target::Thread::safepoint_state_offset());
+  Bind(&retry);
+  ll(state, Address(addr, 0));
+  BranchNotEqual(
+      state,
+      compiler::Immediate(target::Thread::native_safepoint_state_acquired()),
+      &slow_path);
+
+  LoadImmediate(state, target::Thread::native_safepoint_state_unacquired());
+  sc(state, Address(addr, 0));
+  BranchEqual(state, compiler::Immediate(1),
+              &done);  // 1 means sc was successful.
+
+  if (!FLAG_use_slow_path) {
+    b(&retry);
+  }
+
+  Bind(&slow_path);
+  lw(TMP, Address(THR, target::Thread::exit_safepoint_stub_offset()));
+  lw(T9, FieldAddress(TMP, target::Code::entry_point_offset()));
+  jalr(T9);
+
+  Bind(&done);
+}
+
 // A0 receiver, S5 ICData entries array
 void Assembler::MonomorphicCheckedEntryJIT() {
   has_monomorphic_entry_ = true;
@@ -276,6 +392,17 @@ void Assembler::MonomorphicCheckedEntryAOT() {
   ASSERT_EQUAL(CodeSize() - start, target::Instructions::kPolymorphicEntryOffsetAOT);
 
   set_use_far_branches(saved_use_far_branches);
+}
+
+void Assembler::ReserveAlignedFrameSpace(intptr_t frame_space) {
+  ASSERT(!in_delay_slot_);
+  // Reserve space for arguments and align frame before entering
+  // the C++ world.
+  AddImmediate(SP, -frame_space);
+  if (OS::ActivationFrameAlignment() > 1) {
+    LoadImmediate(TMP, ~(OS::ActivationFrameAlignment() - 1));
+    and_(SP, SP, TMP);
+  }
 }
 
 }  // namespace compiler

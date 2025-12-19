@@ -343,7 +343,9 @@ class FfiCallbackMetadata {
   static constexpr intptr_t kNativeCallbackSharedStubSize = 302;
   static constexpr intptr_t kNativeCallbackTrampolineStackDelta = 2;
 #elif defined(TARGET_ARCH_MIPS)
-  // TODO: Handle MIPS.
+  static constexpr intptr_t kNativeCallbackTrampolineSize = 36;
+  static constexpr intptr_t kNativeCallbackSharedStubSize = 476;
+  static constexpr intptr_t kNativeCallbackTrampolineStackDelta = 2;
 #else
 #error What architecture?
 #endif
