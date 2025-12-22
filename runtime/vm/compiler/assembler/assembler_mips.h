@@ -800,6 +800,16 @@ class Assembler : public AssemblerBase {
 
   void Bind(Label* label) override;
 
+  // Unconditional jump to a given label. [distance] is ignored on MIPS.
+  void Jump(Label* label, JumpDistance distance = kFarJump) { b(label); }
+  // Unconditional jump to a given address in register.
+  void Jump(Register target) { jr(target); }
+  // Unconditional jump to a given address in memory. Clobbers TMP.
+  void Jump(const Address& address) {
+    lw(TMP, address);
+    jr(TMP);
+  }
+
   Address PrepareLargeOffset(Register base, int32_t offset);
 
   void LoadObjectHelper(Register rd, const Object& object, bool is_unique,
