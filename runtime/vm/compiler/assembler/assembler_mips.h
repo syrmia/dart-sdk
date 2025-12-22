@@ -834,6 +834,14 @@ class Assembler : public AssemblerBase {
     jr(TMP);
   }
 
+  void LoadMemoryValue(Register dst, Register base, int32_t offset) {
+    LoadFromOffset(dst, base, offset, kWordBytes);
+  }
+
+  void StoreMemoryValue(Register src, Register base, int32_t offset) {
+    StoreToOffset(src, base, offset);
+  }
+
   Address PrepareLargeOffset(Register base, int32_t offset);
 
   void LoadObjectHelper(Register rd, const Object& object, bool is_unique,
