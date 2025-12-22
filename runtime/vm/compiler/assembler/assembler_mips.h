@@ -792,6 +792,14 @@ class Assembler : public AssemblerBase {
 
   void Bind(Label* label) override;
 
+  void LoadObjectHelper(Register rd, const Object& object, bool is_unique,
+                        ObjectPoolBuilderEntry::SnapshotBehavior snapshot_behavior =
+                          ObjectPoolBuilderEntry::kSnapshotable);
+  void LoadObject(Register rd, const Object& object);
+  void LoadUniqueObject(Register rd, const Object& object,
+                        ObjectPoolBuilderEntry::SnapshotBehavior snapshot_behavior =
+                          ObjectPoolBuilderEntry::kSnapshotable);
+
   void LoadClassId(Register result, Register object);
   void LoadClassById(Register result, Register class_id);
   void CompareClassId(Register object,

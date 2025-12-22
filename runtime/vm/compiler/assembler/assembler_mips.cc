@@ -100,6 +100,48 @@ void Assembler::Bind(Label* label) {
   UNIMPLEMENTED();
 }
 
+void Assembler::LoadObjectHelper(Register rd,
+                                 const Object& object,
+                                 bool is_unique,
+                                 ObjectPoolBuilderEntry::SnapshotBehavior snapshot_behavior) {
+  ASSERT(IsOriginalObject(object));
+  // `is_unique == true` effectively means object has to be patchable.
+  // (even if the object is null)
+  if(!is_unique){
+    intptr_t offset = 0;
+    if (target::CanLoadFromThread(object, &offset)) {
+      // Load common VM constants from the thread. This works also in places where
+      // no constant pool is set up (e.g. intrinsic code).
+      lw(rd, Address(THR, offset));
+      return;
+    }
+    if (target::IsSmi(object)) {
+      // Relocation doesn't apply to Smis.
+      LoadImmediate(rd, target::ToRawSmi(object));
+      return;
+    }
+  }
+  RELEASE_ASSERT(CanLoadFromObjectPool(object));
+  // Make sure that class CallPattern is able to decode this load from the
+  // object pool.
+  const intptr_t index =
+      is_unique ? object_pool_builder().AddObject(
+                      object, ObjectPoolBuilderEntry::kPatchable, snapshot_behavior)
+                : object_pool_builder().FindObject(
+                      object, ObjectPoolBuilderEntry::kNotPatchable,
+                      snapshot_behavior);
+  LoadWordFromPoolIndex(rd, index);
+}
+
+void Assembler::LoadObject(Register rd, const Object& object) {
+  LoadObjectHelper(rd, object, false);
+}
+
+void Assembler::LoadUniqueObject(Register rd, const Object& object, 
+                                ObjectPoolBuilderEntry::SnapshotBehavior snapshot_behavior) {
+  LoadObjectHelper(rd, object, true, snapshot_behavior);
+}
+
 void Assembler::LoadClassId(Register result, Register object) {
   UNIMPLEMENTED();
 }
