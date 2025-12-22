@@ -306,6 +306,18 @@ void Assembler::Bind(Label* label) {
   UNIMPLEMENTED();
 }
 
+Address Assembler::PrepareLargeOffset(Register base, int32_t offset) {
+  ASSERT(!in_delay_slot_);
+  if (Utils::IsInt(kImmBits, offset)) {
+    return Address(base, offset);
+  } else {
+    ASSERT(base != TMP);
+    LoadImmediate(TMP, offset);     
+    addu(TMP, base, TMP);            
+    return Address(TMP, 0);          
+  }
+}
+
 void Assembler::LoadObjectHelper(Register rd,
                                  const Object& object,
                                  bool is_unique,

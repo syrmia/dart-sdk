@@ -800,6 +800,8 @@ class Assembler : public AssemblerBase {
 
   void Bind(Label* label) override;
 
+  Address PrepareLargeOffset(Register base, int32_t offset);
+
   void LoadObjectHelper(Register rd, const Object& object, bool is_unique,
                         ObjectPoolBuilderEntry::SnapshotBehavior snapshot_behavior =
                           ObjectPoolBuilderEntry::kSnapshotable);
@@ -821,6 +823,22 @@ class Assembler : public AssemblerBase {
   void LoadWordFromPoolIndex(Register rd, intptr_t index, Register pp = PP);
   // Note: clobbers TMP.
   void StoreWordToPoolIndex(Register rs, intptr_t index, Register pp = PP);
+  
+  void LoadDFromOffset(DRegister reg, Register base, int32_t offset) {
+    ASSERT(!in_delay_slot_);
+    FRegister lo = static_cast<FRegister>(reg * 2);
+    FRegister hi = static_cast<FRegister>(reg * 2 + 1);
+    lwc1(lo, PrepareLargeOffset(base, offset));
+    lwc1(hi, PrepareLargeOffset(base, offset + target::kWordSize));
+  }
+
+  void StoreDToOffset(DRegister reg, Register base, int32_t offset) {
+    ASSERT(!in_delay_slot_);
+    FRegister lo = static_cast<FRegister>(reg * 2);
+    FRegister hi = static_cast<FRegister>(reg * 2 + 1);
+    swc1(lo, PrepareLargeOffset(base, offset));
+    swc1(hi, PrepareLargeOffset(base, offset + target::kWordSize));
+  }
   
   void LoadPoolPointer(Register reg = PP);
   void CheckCodePointer();
@@ -871,6 +889,34 @@ class Assembler : public AssemblerBase {
 
   void ReserveAlignedFrameSpace(intptr_t frame_space);
   
+  void LoadUnboxedDouble(FpuRegister dst, Register base, int32_t offset) {
+    LoadDFromOffset(dst, base, offset);
+  }
+
+  void StoreUnboxedDouble(FpuRegister rs, Register base, int32_t offset) {
+    StoreDToOffset(rs, base, offset);
+  }
+
+  void MoveUnboxedDouble(FpuRegister dst, FpuRegister src) {
+    if (src != dst) {
+      movd(dst, src);
+    }
+  }
+
+  void LoadUnboxedSimd128(FpuRegister dst, Register base, int32_t offset) {
+    // No single register SIMD on MIPS.
+    UNREACHABLE();
+  }
+  void StoreUnboxedSimd128(FpuRegister src, Register base, int32_t offset) {
+    // No single register SIMD on MIPS.
+    UNREACHABLE();
+  }
+  void MoveUnboxedSimd128(FpuRegister dst, FpuRegister src) {
+    // No single register SIMD on MIPS.
+    UNREACHABLE();
+  }
+
+
  private:
   bool use_far_branches_;
   bool delay_slot_available_;
