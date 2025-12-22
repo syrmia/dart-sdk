@@ -882,6 +882,28 @@ class Assembler : public AssemblerBase {
     swc1(lo, PrepareLargeOffset(base, offset));
     swc1(hi, PrepareLargeOffset(base, offset + target::kWordSize));
   }
+
+  void Call(Address target) {
+    lw(T9, target);
+    jalr(T9);
+  }
+
+  void Call(Register target) {
+    jalr(target);
+  }
+
+  void Call(const Code& target) {
+    JumpAndLink(target);
+  }
+
+  void JumpAndLink(const Code& code,
+                   ObjectPoolBuilderEntry::Patchability patchable =
+                       ObjectPoolBuilderEntry::kNotPatchable,
+                   CodeEntryKind entry_kind = CodeEntryKind::kNormal,
+                   ObjectPoolBuilderEntry::SnapshotBehavior snapshot_behavior =
+                       ObjectPoolBuilderEntry::kSnapshotable);
+
+  void CallRuntime(const RuntimeEntry& entry, intptr_t argument_count);
   
   void LoadPoolPointer(Register reg = PP);
   void CheckCodePointer();
@@ -1044,6 +1066,8 @@ class Assembler : public AssemblerBase {
     Emit(Instr::kNopInstruction);  // Branch delay NOP.
     delay_slot_available_ = true;
   }
+
+  void JumpAndLink(intptr_t target_code_pool_index, CodeEntryKind entry_kind);
 };
 
 }  // namespace compiler
