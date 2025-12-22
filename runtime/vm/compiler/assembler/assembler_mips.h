@@ -805,6 +805,23 @@ class Assembler : public AssemblerBase {
 
   void SetIf(Condition condition, Register rd);
 
+  // For MIPS, the near argument is ignored.
+  void BranchIfSmi(Register reg,
+                   Label* label,
+                   JumpDistance distance = kFarJump) override {
+    ASSERT(reg != CMPRES1);
+    andi(CMPRES1, reg, Immediate(kSmiTagMask));
+    beq(CMPRES1, ZR, label);
+  }
+
+  // For MIPS, the near argument is ignored.
+  void BranchIfNotSmi(Register reg,
+                      Label* label,
+                      JumpDistance distance = kFarJump) {
+    andi(CMPRES1, reg, Immediate(kSmiTagMask));
+    bne(CMPRES1, ZR, label);
+  }
+
   void Bind(Label* label) override;
 
   // Unconditional jump to a given label. [distance] is ignored on MIPS.
