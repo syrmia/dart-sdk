@@ -450,6 +450,43 @@ void Assembler::StoreWordToPoolIndex(Register rs,
   }
 }
 
+void Assembler::JumpAndLink(intptr_t target_code_pool_index,
+                            CodeEntryKind entry_kind) {
+  // Avoid clobbering CODE_REG when invoking code in precompiled mode.
+  // We don't actually use CODE_REG in the callee and caller might
+  // be using CODE_REG for a live value (e.g. a value that is alive
+  // across invocation of a shared stub like the one we use for
+  // allocating Mint boxes).
+  const Register code_reg = FLAG_precompiled_mode ? TMP : CODE_REG;
+  LoadWordFromPoolIndex(code_reg, target_code_pool_index);
+  Call(FieldAddress(code_reg, target::Code::entry_point_offset(entry_kind)));
+}
+
+void Assembler::JumpAndLink(
+    const Code& target,
+    ObjectPoolBuilderEntry::Patchability patchable,
+    CodeEntryKind entry_kind,
+    ObjectPoolBuilderEntry::SnapshotBehavior snapshot_behavior) {
+  const intptr_t index = object_pool_builder().FindObject(
+      ToObject(target), patchable, snapshot_behavior);
+  JumpAndLink(index, entry_kind);
+}
+
+// Generate code to call into the stub which will call the runtime
+// function. Input for the stub is as follows:
+//   SP : points to the arguments and return value array.
+//   S5 : address of the runtime function to call.
+//   S4 : number of arguments to the call.
+void Assembler::CallRuntime(const RuntimeEntry& entry,
+                            intptr_t argument_count) {
+  ASSERT(!entry.is_leaf());
+  // Argument count is not checked here, but in the runtime entry for a more
+  // informative error message.
+  lw(S5, compiler::Address(THR, entry.OffsetFromThread()));
+  LoadImmediate(S4, argument_count);
+  Call(Address(THR, target::Thread::call_to_runtime_entry_point_offset()));
+}
+
 void Assembler::LoadPoolPointer(Register reg) {
   ASSERT(!in_delay_slot_);
   CheckCodePointer();
