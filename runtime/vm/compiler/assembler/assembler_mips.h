@@ -789,6 +789,14 @@ class Assembler : public AssemblerBase {
   void BranchUnsignedLessEqual(Register rd, const Immediate& imm, Label* l) {
     UNIMPLEMENTED();
   }
+    
+  void BranchIf(Condition cond, Label* l, JumpDistance distance = kFarJump);
+
+  void BranchIfZero(Register rn,
+                    Label* label,
+                    JumpDistance distance = kFarJump);
+
+  void SetIf(Condition condition, Register rd);
 
   void Bind(Label* label) override;
 

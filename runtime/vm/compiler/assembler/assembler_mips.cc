@@ -96,6 +96,212 @@ void Assembler::TestImmediate(Register rn, int32_t imm, OperandSize sz) {
   deferred_imm_ = imm;
 }
 
+// Branch to label if condition is true.
+void Assembler::BranchIf(Condition cond, Label* l, JumpDistance distance) {
+  ASSERT(!in_delay_slot_);
+  ASSERT(deferred_compare_ != kNone);
+
+  if (deferred_compare_ == kCompareImm || deferred_compare_ == kCompareReg) {
+    Register left = deferred_left_;
+    Register right;
+    if (deferred_compare_ == kCompareImm) {
+      if (deferred_imm_ == 0) {
+        right = ZR;
+      } else {
+        LoadImmediate(AT, deferred_imm_);
+        right = AT;
+      }
+    } else {
+      right = deferred_reg_;
+    }
+    switch (cond) {
+      case NV: {
+        deferred_compare_ = kNone; // Consumed.
+        return;
+      }
+      case AL: {
+        b(l);
+        deferred_compare_ = kNone; // Consumed.
+        return;
+      }
+      case EQ:{
+        beq(left, right, l);
+        break;
+      }
+      case NE:{
+        bne(left, right, l);
+        break;
+      }
+      case GT:{
+        slt(AT, right, left);
+        bne(AT, ZR, l);
+        break;
+      }
+      case GE: {
+        slt(AT, left, right);
+        beq(AT, ZR, l);
+        break;
+      }
+      case LT: {
+        slt(AT, left, right);
+        bne(AT, ZR, l);
+        break;
+      }
+      case LE: {
+        slt(AT, right, left);
+        beq(AT, ZR, l);
+        break;
+      }
+      case UGT: {
+        sltu(AT, right, left);
+        bne(AT, ZR, l);
+        break;
+      }
+      case UGE: {
+        sltu(AT, left, right);
+        beq(AT, ZR, l);
+        break;
+      }
+      case ULT: {
+        sltu(AT, left, right);
+        bne(AT, ZR, l);
+        break;
+      }
+      case ULE: {
+        sltu(AT, right, left);
+        beq(AT, ZR, l);
+        break;
+      }
+      default:
+        UNREACHABLE();
+    }
+  } else if (deferred_compare_ == kTestImm || deferred_compare_ == kTestReg) {
+    if (deferred_compare_ == kTestReg) {
+      and_(CMPRES1, deferred_left_, deferred_reg_);
+    } else {
+      AndImmediate(CMPRES1, deferred_left_, deferred_imm_);
+    }
+    switch (cond) {
+      case ZERO:
+        beq(CMPRES1, ZR, l);
+        break;
+      case NOT_ZERO:
+        bne(CMPRES1, ZR, l);
+        break;
+      default:
+        UNREACHABLE();
+    }
+  } else {
+    UNREACHABLE();
+  }
+  deferred_compare_ = kNone; // Consumed.
+}
+
+void Assembler::BranchIfZero(Register rn, Label* label, JumpDistance distance) {
+  beq(rn, ZR, label);
+}
+
+void Assembler::SetIf(Condition condition, Register rd) {
+  ASSERT(deferred_compare_ != kNone);
+
+  Register left = deferred_left_;
+  Register right;
+  if (deferred_compare_ == kCompareImm || deferred_compare_ == kCompareReg) {
+    if (deferred_compare_ == kCompareImm) {
+      if (deferred_imm_ == 0) {
+        right = ZR;
+      } else {
+        LoadImmediate(AT, deferred_imm_);
+        right = AT;
+      }
+    } else {
+      right = deferred_reg_;
+    }
+
+    switch (condition) {
+      case AL:
+      case NV:
+        deferred_compare_ = kNone;
+        return;  // Result holds true_value.
+      case EQ:{
+        xor_(rd, left, right);
+        sltiu(rd, rd, compiler::Immediate(1));
+        break;
+      }
+      case NE: {
+        xor_(rd, left, right);
+        break;
+      }
+      case GE:{
+        slt(rd, left, right);
+        xori(rd, rd, compiler::Immediate(1)); 
+        break;
+      }
+      case LT: {
+        slt(rd, left, right);
+        break;
+      }
+      case LE:{
+        slt(rd, right, left);
+        xori(rd, rd, compiler::Immediate(1)); 
+        break;
+      }
+      case GT: {
+        slt(rd, right, left);
+        break;
+      }
+      case UGE:{
+        sltu(rd, left, right);
+        xori(rd, rd, compiler::Immediate(1));
+        break;
+      }
+      case ULT: {
+        sltu(rd, left, right);
+        break;
+      }
+      case ULE:{
+        sltu(rd, right, left);
+        xori(rd, rd, compiler::Immediate(1));
+        break;
+      }
+      case UGT: {
+        sltu(rd, right, left);
+        break;
+      }
+      default:
+        UNREACHABLE();
+    }
+  } else if (deferred_compare_ == kTestImm) {
+    AndImmediate(rd, deferred_left_, deferred_imm_);
+    switch (condition) {
+      case ZERO:
+        sltiu(rd, rd, compiler::Immediate(1));
+        break;
+      case NOT_ZERO:
+        sltu(rd, ZR, rd);
+        break;
+      default:
+        UNREACHABLE();
+    }
+  } else if (deferred_compare_ == kTestReg) {
+    and_(rd, deferred_left_, deferred_reg_);
+    switch (condition) {
+      case ZERO:
+        sltiu(rd, rd, compiler::Immediate(1));
+        break;
+      case NOT_ZERO:
+        sltu(rd, ZR, rd);
+        break;
+      default:
+        UNREACHABLE();
+    }
+  } else {
+    UNREACHABLE();
+  }
+
+  deferred_compare_ = kNone;
+}
+
 void Assembler::Bind(Label* label) {
   UNIMPLEMENTED();
 }
