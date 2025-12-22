@@ -124,6 +124,13 @@ class Assembler : public AssemblerBase {
     sw(rt, Address(SP));
   }
 
+  void Drop(intptr_t stack_elements) {
+    ASSERT(stack_elements >= 0);
+    if (stack_elements > 0) {
+      addiu(SP, SP, Immediate(stack_elements * target::kWordSize));
+    }
+  }
+
   void Pop(Register rt) {
     ASSERT(!in_delay_slot_);
     lw(rt, Address(SP));
