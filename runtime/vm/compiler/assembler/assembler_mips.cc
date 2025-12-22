@@ -122,6 +122,70 @@ void Assembler::LoadTaggedClassIdMayBeSmi(Register result, Register object) {
   UNIMPLEMENTED();
 }
 
+bool Assembler::CanLoadFromObjectPool(const Object& object) const {
+  ASSERT(IsOriginalObject(object));
+  if (!constant_pool_allowed()) {
+    return false;
+  }
+
+#if defined(DEBUG)
+  ASSERT(IsNotTemporaryScopedHandle(object));
+#endif
+  ASSERT(IsInOldSpace(object));
+  return true;
+}
+
+void Assembler::LoadWordFromPoolIndex(Register rd,
+                                      intptr_t index,
+                                      Register pp) {
+  ASSERT((pp != PP) || constant_pool_allowed());
+  ASSERT(!in_delay_slot_);
+  ASSERT(rd != pp);
+
+  uint32_t offset = target::ObjectPool::element_offset(index) - kHeapObjectTag;
+
+  if (Address::CanHoldOffset(offset)) {
+    lw(rd, Address(pp, offset));
+  } else {
+    const int16_t offset_low = Utils::Low16Bits(offset);     // Signed.
+    offset -= offset_low;
+    const uint16_t offset_high = Utils::High16Bits(offset);  // Unsigned.
+    if (offset_high != 0) {
+      lui(rd, Immediate(offset_high));
+      addu(rd, rd, pp);
+      lw(rd, Address(rd, offset_low));
+    } else {
+      lw(rd, Address(pp, offset_low));
+    }
+  }
+}
+
+void Assembler::StoreWordToPoolIndex(Register rs,
+                                     intptr_t index,
+                                     Register pp) {
+  ASSERT((pp != PP) || constant_pool_allowed());
+  ASSERT(!in_delay_slot_);
+  ASSERT(rs != pp);
+
+  uint32_t offset =
+      target::ObjectPool::element_offset(index) - kHeapObjectTag;
+
+  if (Address::CanHoldOffset(offset)) {
+    sw(rs, Address(pp, offset));
+  } else {
+    const int16_t offset_low = Utils::Low16Bits(offset);     // Signed.
+    offset -= offset_low;
+    const uint16_t offset_high = Utils::High16Bits(offset);  // Unsigned.
+    if (offset_high != 0) {
+      lui(TMP, Immediate(offset_high));
+      addu(TMP, TMP, pp);
+      sw(rs, Address(TMP, offset_low));
+    } else {
+      sw(rs, Address(pp, offset_low));
+    }
+  }
+}
+
 void Assembler::LoadPoolPointer(Register reg) {
   ASSERT(!in_delay_slot_);
   CheckCodePointer();
