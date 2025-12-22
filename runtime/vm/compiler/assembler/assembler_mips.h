@@ -143,6 +143,7 @@ class Assembler : public AssemblerBase {
   void TestImmediate(Register rn, int32_t imm, OperandSize sz = kWordBytes);
 
   void CompareRegisters(Register rn, Register rm);
+  void CompareObjectRegisters(Register rn, Register rm);
   void TestRegisters(Register rn, Register rm);
 
   // A utility to be able to assemble an instruction into the delay slot.
@@ -930,6 +931,10 @@ class Assembler : public AssemblerBase {
   void MonomorphicCheckedEntryAOT();
 
   void ReserveAlignedFrameSpace(intptr_t frame_space);
+
+  void PushObject(const Object& object);
+
+  void CompareObject(Register reg, const Object& object);
   
   void LoadUnboxedDouble(FpuRegister dst, Register base, int32_t offset) {
     LoadDFromOffset(dst, base, offset);

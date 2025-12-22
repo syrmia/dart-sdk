@@ -75,6 +75,10 @@ void Assembler::CompareRegisters(Register rn, Register rm) {
   deferred_reg_ = rm;
 }
 
+void Assembler::CompareObjectRegisters(Register rn, Register rm) {
+  CompareRegisters(rn, rm);
+}
+
 void Assembler::TestRegisters(Register rn, Register rm) {
   ASSERT(deferred_compare_ == kNone);
   deferred_compare_ = kTestReg;
@@ -726,6 +730,26 @@ void Assembler::ReserveAlignedFrameSpace(intptr_t frame_space) {
   if (OS::ActivationFrameAlignment() > 1) {
     LoadImmediate(TMP, ~(OS::ActivationFrameAlignment() - 1));
     and_(SP, SP, TMP);
+  }
+}
+
+void Assembler::PushObject(const Object& object) {
+  ASSERT(IsOriginalObject(object));
+  ASSERT(!in_delay_slot_);
+  LoadObject(TMP, object);
+  Push(TMP);
+}
+
+void Assembler::CompareObject(Register reg, const Object& object) {
+  ASSERT(IsOriginalObject(object));
+  if (IsSameObject(compiler::NullObject(), object)) {
+    LoadObject(TMP, compiler::NullObject());
+    CompareObjectRegisters(reg, TMP);
+  } else if (target::IsSmi(object)) {
+    CompareImmediate(reg, target::ToRawSmi(object), kObjectBytes);
+  } else {
+    LoadObject(TMP, object);
+    CompareObjectRegisters(reg, TMP);
   }
 }
 
