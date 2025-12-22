@@ -800,6 +800,12 @@ class Assembler : public AssemblerBase {
   void LoadClassIdMayBeSmi(Register result, Register object);
   void LoadTaggedClassIdMayBeSmi(Register result, Register object);
 
+  bool CanLoadFromObjectPool(const Object& object) const;
+
+  void LoadWordFromPoolIndex(Register rd, intptr_t index, Register pp = PP);
+  // Note: clobbers TMP.
+  void StoreWordToPoolIndex(Register rs, intptr_t index, Register pp = PP);
+  
   void LoadPoolPointer(Register reg = PP);
   void CheckCodePointer();
   void GetNextPC(Register dest, Register temp = kNoRegister);
