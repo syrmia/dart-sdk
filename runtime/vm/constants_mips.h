@@ -380,6 +380,77 @@ extern const char* const cpu_reg_names[kNumberOfCpuRegisters];
 extern const char* const cpu_reg_abi_names[kNumberOfCpuRegisters];
 extern const char* const fpu_reg_names[kNumberOfFRegisters];
 
+// Registers in addition to those listed in TypeTestABI used inside the
+// implementation of type testing stubs that are _not_ preserved.
+struct TTSInternalRegs {
+  static constexpr Register kInstanceTypeArgumentsReg = S1;
+  static constexpr Register kScratchReg = S2;
+  static constexpr Register kSubTypeArgumentReg = S4;
+  static constexpr Register kSuperTypeArgumentReg = S5;
+
+  // Must be pushed/popped whenever generic type arguments are being checked as
+  // they overlap with registers in TypeTestABI.
+  static constexpr intptr_t kSavedTypeArgumentRegisters = 0;
+
+  static constexpr intptr_t kInternalRegisters =
+      ((1 << kInstanceTypeArgumentsReg) | (1 << kScratchReg) |
+       (1 << kSubTypeArgumentReg) | (1 << kSuperTypeArgumentReg)) &
+      ~kSavedTypeArgumentRegisters;
+};
+
+// Registers in addition to those listed in TypeTestABI used inside the
+// implementation of subtype test cache stubs that are _not_ preserved.
+struct STCInternalRegs {
+  static constexpr Register kInstanceCidOrSignatureReg = S1;
+
+  static constexpr intptr_t kInternalRegisters =
+      (1 << kInstanceCidOrSignatureReg);
+};
+
+// Calling convention when calling TypeTestingStub and SubtypeTestCacheStub.
+struct TypeTestABI {
+  static constexpr Register kInstanceReg = A0;
+  static constexpr Register kDstTypeReg = A3;
+  static constexpr Register kInstantiatorTypeArgumentsReg = A1;
+  static constexpr Register kFunctionTypeArgumentsReg = A2;
+  static constexpr Register kSubtypeTestCacheReg = V1;
+  static constexpr Register kScratchReg = T2;
+
+  // For calls to InstanceOfStub.
+  static constexpr Register kInstanceOfResultReg = V0;
+  // For calls to SubtypeNTestCacheStub. Must not be the same as any non-scratch
+  // register above.
+  static constexpr Register kSubtypeTestCacheResultReg = kScratchReg;
+
+  static constexpr intptr_t kPreservedAbiRegisters =
+      (1 << kInstanceReg) | (1 << kDstTypeReg) |
+      (1 << kInstantiatorTypeArgumentsReg) | (1 << kFunctionTypeArgumentsReg);
+
+  static constexpr intptr_t kNonPreservedAbiRegisters =
+      TTSInternalRegs::kInternalRegisters |
+      STCInternalRegs::kInternalRegisters | (1 << kSubtypeTestCacheReg) |
+      (1 << kScratchReg) | (1 << kSubtypeTestCacheResultReg) | (1 << CODE_REG);
+
+  static constexpr intptr_t kAbiRegisters =
+      kPreservedAbiRegisters | kNonPreservedAbiRegisters;
+};
+
+struct AssertSubtypeABI {
+  static constexpr Register kSubTypeReg = T1;
+  static constexpr Register kSuperTypeReg = T2;
+  static constexpr Register kInstantiatorTypeArgumentsReg = T3;
+  static constexpr Register kFunctionTypeArgumentsReg = T4;
+  static constexpr Register kDstNameReg = T5;
+
+  static constexpr intptr_t kAbiRegisters =
+      (1 << kSubTypeReg) | (1 << kSuperTypeReg) |
+      (1 << kInstantiatorTypeArgumentsReg) | (1 << kFunctionTypeArgumentsReg) |
+      (1 << kDstNameReg);
+
+  // No result register, as AssertSubtype is only run for side effect
+  // (throws if the subtype check fails).
+};
+
 enum ScaleFactor {
   TIMES_1 = 0,
   TIMES_2 = 1,
