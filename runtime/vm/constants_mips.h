@@ -539,6 +539,11 @@ struct CloneSuspendStateStubABI {
   static constexpr Register kDstFrameReg = T4;
 };
 
+// ABI for FfiAsyncCallbackSendStub.
+struct FfiAsyncCallbackSendStubABI {
+  static constexpr Register kArgsReg = A0;
+};
+
 enum ScaleFactor {
   TIMES_1 = 0,
   TIMES_2 = 1,
