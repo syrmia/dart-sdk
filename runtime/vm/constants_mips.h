@@ -457,6 +457,17 @@ struct AssertSubtypeABI {
   // (throws if the subtype check fails).
 };
 
+// ABI for LateInitializationError stubs.
+struct LateInitializationErrorABI {
+  static constexpr Register kFieldReg = T2;
+};
+
+// ABI for ReThrowStub.
+struct ReThrowABI {
+  static constexpr Register kExceptionReg = V0;
+  static constexpr Register kStackTraceReg = V1;
+};
+
 // ABI for AllocateObjectStub.
 struct AllocateObjectABI {
   static constexpr Register kResultReg = V0;
@@ -542,6 +553,14 @@ struct CloneSuspendStateStubABI {
 // ABI for FfiAsyncCallbackSendStub.
 struct FfiAsyncCallbackSendStubABI {
   static constexpr Register kArgsReg = A0;
+};
+
+// ABI for DispatchTableNullErrorStub and consequently for all dispatch
+// table calls (though normal functions will not expect or use this
+// register). This ABI is added to distinguish memory corruption errors from
+// null errors.
+struct DispatchTableNullErrorABI {
+  static constexpr Register kClassIdReg = V0;
 };
 
 enum ScaleFactor {
