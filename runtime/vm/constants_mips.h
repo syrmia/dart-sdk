@@ -500,6 +500,39 @@ struct DoubleToIntegerStubABI {
   static constexpr Register kResultReg = V0;
 };
 
+// ABI for SuspendStub (AwaitStub, AwaitWithTypeCheckStub, YieldAsyncStarStub,
+// SuspendSyncStarAtStartStub, SuspendSyncStarAtYieldStub).
+struct SuspendStubABI {
+  static constexpr Register kArgumentReg = A0;
+  static constexpr Register kTypeArgsReg = T0;  // Can be the same as kTempReg
+  static constexpr Register kTempReg = T0;
+  static constexpr Register kFrameSizeReg = T1;
+  static constexpr Register kSuspendStateReg = T2;
+  static constexpr Register kFunctionDataReg = T3;
+  static constexpr Register kSrcFrameReg = T4;
+  static constexpr Register kDstFrameReg = T5;
+
+  // Number of bytes to skip after
+  // suspend stub return address in order to resume.
+  static constexpr intptr_t kResumePcDistance = 0;
+};
+
+// ABI for InitSuspendableFunctionStub (InitAsyncStub, InitAsyncStarStub,
+// InitSyncStarStub).
+struct InitSuspendableFunctionStubABI {
+  static constexpr Register kTypeArgsReg = A0;
+};
+
+// ABI for CloneSuspendStateStub.
+struct CloneSuspendStateStubABI {
+  static constexpr Register kSourceReg = A0;
+  static constexpr Register kDestinationReg = A1;
+  static constexpr Register kTempReg = T1;
+  static constexpr Register kFrameSizeReg = T2;
+  static constexpr Register kSrcFrameReg = T3;
+  static constexpr Register kDstFrameReg = T4;
+};
+
 enum ScaleFactor {
   TIMES_1 = 0,
   TIMES_2 = 1,
