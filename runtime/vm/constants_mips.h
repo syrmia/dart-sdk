@@ -486,6 +486,20 @@ struct AllocateSmallRecordABI {
   static constexpr Register kTempReg = TMP;
 };
 
+// ABI for BoxDoubleStub.
+struct BoxDoubleStubABI {
+  static constexpr FpuRegister kValueReg = D6;
+  static constexpr Register kTempReg = T1;
+  static constexpr Register kResultReg = V0;
+};
+
+// ABI for DoubleToIntegerStub.
+struct DoubleToIntegerStubABI {
+  static constexpr FpuRegister kInputReg = D6;
+  static constexpr Register kRecognizedKindReg = V0;
+  static constexpr Register kResultReg = V0;
+};
+
 enum ScaleFactor {
   TIMES_1 = 0,
   TIMES_2 = 1,
