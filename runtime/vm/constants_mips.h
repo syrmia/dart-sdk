@@ -451,6 +451,41 @@ struct AssertSubtypeABI {
   // (throws if the subtype check fails).
 };
 
+// ABI for AllocateObjectStub.
+struct AllocateObjectABI {
+  static constexpr Register kResultReg = V0;
+  static constexpr Register kTypeArgumentsReg = A2;
+  static constexpr Register kTagsReg = A1;
+};
+
+// ABI for AllocateClosureStub.
+struct AllocateClosureABI {
+  static constexpr Register kResultReg = AllocateObjectABI::kResultReg;
+  static constexpr Register kFunctionReg = T1;
+  static constexpr Register kContextReg = T2;
+  static constexpr Register kInstantiatorTypeArgsReg = T3;
+  static constexpr Register kScratchReg = T4;
+};
+
+// ABI for AllocateRecordStub.
+struct AllocateRecordABI {
+  static constexpr Register kResultReg = AllocateObjectABI::kResultReg;
+  static constexpr Register kShapeReg = T1;
+  static constexpr Register kTemp1Reg = T2;
+  static constexpr Register kTemp2Reg = T3;
+};
+
+// ABI for AllocateSmallRecordStub (AllocateRecord2, AllocateRecord2Named,
+// AllocateRecord3, AllocateRecord3Named).
+struct AllocateSmallRecordABI {
+  static constexpr Register kResultReg = AllocateObjectABI::kResultReg;
+  static constexpr Register kShapeReg = T1;
+  static constexpr Register kValue0Reg = T2;
+  static constexpr Register kValue1Reg = T3;
+  static constexpr Register kValue2Reg = T4;
+  static constexpr Register kTempReg = TMP;
+};
+
 enum ScaleFactor {
   TIMES_1 = 0,
   TIMES_2 = 1,
