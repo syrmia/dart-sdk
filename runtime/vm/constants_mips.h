@@ -435,6 +435,12 @@ struct TypeTestABI {
       kPreservedAbiRegisters | kNonPreservedAbiRegisters;
 };
 
+// ABI for InitStaticFieldStub.
+struct InitStaticFieldABI {
+  static constexpr Register kFieldReg = T2;
+  static constexpr Register kResultReg = V0;
+};
+
 struct AssertSubtypeABI {
   static constexpr Register kSubTypeReg = T1;
   static constexpr Register kSuperTypeReg = T2;
