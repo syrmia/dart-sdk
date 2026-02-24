@@ -75,6 +75,10 @@ void Assembler::CompareRegisters(Register rn, Register rm) {
   deferred_reg_ = rm;
 }
 
+void Assembler::CompareObjectRegisters(Register rn, Register rm) {
+  CompareRegisters(rn, rm);
+}
+
 void Assembler::TestRegisters(Register rn, Register rm) {
   ASSERT(deferred_compare_ == kNone);
   deferred_compare_ = kTestReg;
@@ -96,8 +100,268 @@ void Assembler::TestImmediate(Register rn, int32_t imm, OperandSize sz) {
   deferred_imm_ = imm;
 }
 
+// Branch to label if condition is true.
+void Assembler::BranchIf(Condition cond, Label* l, JumpDistance distance) {
+  ASSERT(!in_delay_slot_);
+  ASSERT(deferred_compare_ != kNone);
+
+  if (deferred_compare_ == kCompareImm || deferred_compare_ == kCompareReg) {
+    Register left = deferred_left_;
+    Register right;
+    if (deferred_compare_ == kCompareImm) {
+      if (deferred_imm_ == 0) {
+        right = ZR;
+      } else {
+        LoadImmediate(AT, deferred_imm_);
+        right = AT;
+      }
+    } else {
+      right = deferred_reg_;
+    }
+    switch (cond) {
+      case NV: {
+        deferred_compare_ = kNone; // Consumed.
+        return;
+      }
+      case AL: {
+        b(l);
+        deferred_compare_ = kNone; // Consumed.
+        return;
+      }
+      case EQ:{
+        beq(left, right, l);
+        break;
+      }
+      case NE:{
+        bne(left, right, l);
+        break;
+      }
+      case GT:{
+        slt(AT, right, left);
+        bne(AT, ZR, l);
+        break;
+      }
+      case GE: {
+        slt(AT, left, right);
+        beq(AT, ZR, l);
+        break;
+      }
+      case LT: {
+        slt(AT, left, right);
+        bne(AT, ZR, l);
+        break;
+      }
+      case LE: {
+        slt(AT, right, left);
+        beq(AT, ZR, l);
+        break;
+      }
+      case UGT: {
+        sltu(AT, right, left);
+        bne(AT, ZR, l);
+        break;
+      }
+      case UGE: {
+        sltu(AT, left, right);
+        beq(AT, ZR, l);
+        break;
+      }
+      case ULT: {
+        sltu(AT, left, right);
+        bne(AT, ZR, l);
+        break;
+      }
+      case ULE: {
+        sltu(AT, right, left);
+        beq(AT, ZR, l);
+        break;
+      }
+      default:
+        UNREACHABLE();
+    }
+  } else if (deferred_compare_ == kTestImm || deferred_compare_ == kTestReg) {
+    if (deferred_compare_ == kTestReg) {
+      and_(CMPRES1, deferred_left_, deferred_reg_);
+    } else {
+      AndImmediate(CMPRES1, deferred_left_, deferred_imm_);
+    }
+    switch (cond) {
+      case ZERO:
+        beq(CMPRES1, ZR, l);
+        break;
+      case NOT_ZERO:
+        bne(CMPRES1, ZR, l);
+        break;
+      default:
+        UNREACHABLE();
+    }
+  } else {
+    UNREACHABLE();
+  }
+  deferred_compare_ = kNone; // Consumed.
+}
+
+void Assembler::BranchIfZero(Register rn, Label* label, JumpDistance distance) {
+  beq(rn, ZR, label);
+}
+
+void Assembler::SetIf(Condition condition, Register rd) {
+  ASSERT(deferred_compare_ != kNone);
+
+  Register left = deferred_left_;
+  Register right;
+  if (deferred_compare_ == kCompareImm || deferred_compare_ == kCompareReg) {
+    if (deferred_compare_ == kCompareImm) {
+      if (deferred_imm_ == 0) {
+        right = ZR;
+      } else {
+        LoadImmediate(AT, deferred_imm_);
+        right = AT;
+      }
+    } else {
+      right = deferred_reg_;
+    }
+
+    switch (condition) {
+      case AL:
+      case NV:
+        deferred_compare_ = kNone;
+        return;  // Result holds true_value.
+      case EQ:{
+        xor_(rd, left, right);
+        sltiu(rd, rd, compiler::Immediate(1));
+        break;
+      }
+      case NE: {
+        xor_(rd, left, right);
+        break;
+      }
+      case GE:{
+        slt(rd, left, right);
+        xori(rd, rd, compiler::Immediate(1)); 
+        break;
+      }
+      case LT: {
+        slt(rd, left, right);
+        break;
+      }
+      case LE:{
+        slt(rd, right, left);
+        xori(rd, rd, compiler::Immediate(1)); 
+        break;
+      }
+      case GT: {
+        slt(rd, right, left);
+        break;
+      }
+      case UGE:{
+        sltu(rd, left, right);
+        xori(rd, rd, compiler::Immediate(1));
+        break;
+      }
+      case ULT: {
+        sltu(rd, left, right);
+        break;
+      }
+      case ULE:{
+        sltu(rd, right, left);
+        xori(rd, rd, compiler::Immediate(1));
+        break;
+      }
+      case UGT: {
+        sltu(rd, right, left);
+        break;
+      }
+      default:
+        UNREACHABLE();
+    }
+  } else if (deferred_compare_ == kTestImm) {
+    AndImmediate(rd, deferred_left_, deferred_imm_);
+    switch (condition) {
+      case ZERO:
+        sltiu(rd, rd, compiler::Immediate(1));
+        break;
+      case NOT_ZERO:
+        sltu(rd, ZR, rd);
+        break;
+      default:
+        UNREACHABLE();
+    }
+  } else if (deferred_compare_ == kTestReg) {
+    and_(rd, deferred_left_, deferred_reg_);
+    switch (condition) {
+      case ZERO:
+        sltiu(rd, rd, compiler::Immediate(1));
+        break;
+      case NOT_ZERO:
+        sltu(rd, ZR, rd);
+        break;
+      default:
+        UNREACHABLE();
+    }
+  } else {
+    UNREACHABLE();
+  }
+
+  deferred_compare_ = kNone;
+}
+
 void Assembler::Bind(Label* label) {
   UNIMPLEMENTED();
+}
+
+Address Assembler::PrepareLargeOffset(Register base, int32_t offset) {
+  ASSERT(!in_delay_slot_);
+  if (Utils::IsInt(kImmBits, offset)) {
+    return Address(base, offset);
+  } else {
+    ASSERT(base != TMP);
+    LoadImmediate(TMP, offset);     
+    addu(TMP, base, TMP);            
+    return Address(TMP, 0);          
+  }
+}
+
+void Assembler::LoadObjectHelper(Register rd,
+                                 const Object& object,
+                                 bool is_unique,
+                                 ObjectPoolBuilderEntry::SnapshotBehavior snapshot_behavior) {
+  ASSERT(IsOriginalObject(object));
+  // `is_unique == true` effectively means object has to be patchable.
+  // (even if the object is null)
+  if(!is_unique){
+    intptr_t offset = 0;
+    if (target::CanLoadFromThread(object, &offset)) {
+      // Load common VM constants from the thread. This works also in places where
+      // no constant pool is set up (e.g. intrinsic code).
+      lw(rd, Address(THR, offset));
+      return;
+    }
+    if (target::IsSmi(object)) {
+      // Relocation doesn't apply to Smis.
+      LoadImmediate(rd, target::ToRawSmi(object));
+      return;
+    }
+  }
+  RELEASE_ASSERT(CanLoadFromObjectPool(object));
+  // Make sure that class CallPattern is able to decode this load from the
+  // object pool.
+  const intptr_t index =
+      is_unique ? object_pool_builder().AddObject(
+                      object, ObjectPoolBuilderEntry::kPatchable, snapshot_behavior)
+                : object_pool_builder().FindObject(
+                      object, ObjectPoolBuilderEntry::kNotPatchable,
+                      snapshot_behavior);
+  LoadWordFromPoolIndex(rd, index);
+}
+
+void Assembler::LoadObject(Register rd, const Object& object) {
+  LoadObjectHelper(rd, object, false);
+}
+
+void Assembler::LoadUniqueObject(Register rd, const Object& object, 
+                                ObjectPoolBuilderEntry::SnapshotBehavior snapshot_behavior) {
+  LoadObjectHelper(rd, object, true, snapshot_behavior);
 }
 
 void Assembler::LoadClassId(Register result, Register object) {
@@ -120,6 +384,107 @@ void Assembler::LoadClassIdMayBeSmi(Register result, Register object) {
 
 void Assembler::LoadTaggedClassIdMayBeSmi(Register result, Register object) {
   UNIMPLEMENTED();
+}
+
+bool Assembler::CanLoadFromObjectPool(const Object& object) const {
+  ASSERT(IsOriginalObject(object));
+  if (!constant_pool_allowed()) {
+    return false;
+  }
+
+#if defined(DEBUG)
+  ASSERT(IsNotTemporaryScopedHandle(object));
+#endif
+  ASSERT(IsInOldSpace(object));
+  return true;
+}
+
+void Assembler::LoadWordFromPoolIndex(Register rd,
+                                      intptr_t index,
+                                      Register pp) {
+  ASSERT((pp != PP) || constant_pool_allowed());
+  ASSERT(!in_delay_slot_);
+  ASSERT(rd != pp);
+
+  uint32_t offset = target::ObjectPool::element_offset(index) - kHeapObjectTag;
+
+  if (Address::CanHoldOffset(offset)) {
+    lw(rd, Address(pp, offset));
+  } else {
+    const int16_t offset_low = Utils::Low16Bits(offset);     // Signed.
+    offset -= offset_low;
+    const uint16_t offset_high = Utils::High16Bits(offset);  // Unsigned.
+    if (offset_high != 0) {
+      lui(rd, Immediate(offset_high));
+      addu(rd, rd, pp);
+      lw(rd, Address(rd, offset_low));
+    } else {
+      lw(rd, Address(pp, offset_low));
+    }
+  }
+}
+
+void Assembler::StoreWordToPoolIndex(Register rs,
+                                     intptr_t index,
+                                     Register pp) {
+  ASSERT((pp != PP) || constant_pool_allowed());
+  ASSERT(!in_delay_slot_);
+  ASSERT(rs != pp);
+
+  uint32_t offset =
+      target::ObjectPool::element_offset(index) - kHeapObjectTag;
+
+  if (Address::CanHoldOffset(offset)) {
+    sw(rs, Address(pp, offset));
+  } else {
+    const int16_t offset_low = Utils::Low16Bits(offset);     // Signed.
+    offset -= offset_low;
+    const uint16_t offset_high = Utils::High16Bits(offset);  // Unsigned.
+    if (offset_high != 0) {
+      lui(TMP, Immediate(offset_high));
+      addu(TMP, TMP, pp);
+      sw(rs, Address(TMP, offset_low));
+    } else {
+      sw(rs, Address(pp, offset_low));
+    }
+  }
+}
+
+void Assembler::JumpAndLink(intptr_t target_code_pool_index,
+                            CodeEntryKind entry_kind) {
+  // Avoid clobbering CODE_REG when invoking code in precompiled mode.
+  // We don't actually use CODE_REG in the callee and caller might
+  // be using CODE_REG for a live value (e.g. a value that is alive
+  // across invocation of a shared stub like the one we use for
+  // allocating Mint boxes).
+  const Register code_reg = FLAG_precompiled_mode ? TMP : CODE_REG;
+  LoadWordFromPoolIndex(code_reg, target_code_pool_index);
+  Call(FieldAddress(code_reg, target::Code::entry_point_offset(entry_kind)));
+}
+
+void Assembler::JumpAndLink(
+    const Code& target,
+    ObjectPoolBuilderEntry::Patchability patchable,
+    CodeEntryKind entry_kind,
+    ObjectPoolBuilderEntry::SnapshotBehavior snapshot_behavior) {
+  const intptr_t index = object_pool_builder().FindObject(
+      ToObject(target), patchable, snapshot_behavior);
+  JumpAndLink(index, entry_kind);
+}
+
+// Generate code to call into the stub which will call the runtime
+// function. Input for the stub is as follows:
+//   SP : points to the arguments and return value array.
+//   S5 : address of the runtime function to call.
+//   S4 : number of arguments to the call.
+void Assembler::CallRuntime(const RuntimeEntry& entry,
+                            intptr_t argument_count) {
+  ASSERT(!entry.is_leaf());
+  // Argument count is not checked here, but in the runtime entry for a more
+  // informative error message.
+  lw(S5, compiler::Address(THR, entry.OffsetFromThread()));
+  LoadImmediate(S4, argument_count);
+  Call(Address(THR, target::Thread::call_to_runtime_entry_point_offset()));
 }
 
 void Assembler::LoadPoolPointer(Register reg) {
@@ -402,6 +767,26 @@ void Assembler::ReserveAlignedFrameSpace(intptr_t frame_space) {
   if (OS::ActivationFrameAlignment() > 1) {
     LoadImmediate(TMP, ~(OS::ActivationFrameAlignment() - 1));
     and_(SP, SP, TMP);
+  }
+}
+
+void Assembler::PushObject(const Object& object) {
+  ASSERT(IsOriginalObject(object));
+  ASSERT(!in_delay_slot_);
+  LoadObject(TMP, object);
+  Push(TMP);
+}
+
+void Assembler::CompareObject(Register reg, const Object& object) {
+  ASSERT(IsOriginalObject(object));
+  if (IsSameObject(compiler::NullObject(), object)) {
+    LoadObject(TMP, compiler::NullObject());
+    CompareObjectRegisters(reg, TMP);
+  } else if (target::IsSmi(object)) {
+    CompareImmediate(reg, target::ToRawSmi(object), kObjectBytes);
+  } else {
+    LoadObject(TMP, object);
+    CompareObjectRegisters(reg, TMP);
   }
 }
 

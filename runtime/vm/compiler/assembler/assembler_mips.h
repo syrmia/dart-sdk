@@ -124,6 +124,13 @@ class Assembler : public AssemblerBase {
     sw(rt, Address(SP));
   }
 
+  void Drop(intptr_t stack_elements) {
+    ASSERT(stack_elements >= 0);
+    if (stack_elements > 0) {
+      addiu(SP, SP, Immediate(stack_elements * target::kWordSize));
+    }
+  }
+
   void Pop(Register rt) {
     ASSERT(!in_delay_slot_);
     lw(rt, Address(SP));
@@ -136,6 +143,7 @@ class Assembler : public AssemblerBase {
   void TestImmediate(Register rn, int32_t imm, OperandSize sz = kWordBytes);
 
   void CompareRegisters(Register rn, Register rm);
+  void CompareObjectRegisters(Register rn, Register rm);
   void TestRegisters(Register rn, Register rm);
 
   // A utility to be able to assemble an instruction into the delay slot.
@@ -789,8 +797,61 @@ class Assembler : public AssemblerBase {
   void BranchUnsignedLessEqual(Register rd, const Immediate& imm, Label* l) {
     UNIMPLEMENTED();
   }
+    
+  void BranchIf(Condition cond, Label* l, JumpDistance distance = kFarJump);
+
+  void BranchIfZero(Register rn,
+                    Label* label,
+                    JumpDistance distance = kFarJump);
+
+  void SetIf(Condition condition, Register rd);
+
+  // For MIPS, the near argument is ignored.
+  void BranchIfSmi(Register reg,
+                   Label* label,
+                   JumpDistance distance = kFarJump) override {
+    ASSERT(reg != CMPRES1);
+    andi(CMPRES1, reg, Immediate(kSmiTagMask));
+    beq(CMPRES1, ZR, label);
+  }
+
+  // For MIPS, the near argument is ignored.
+  void BranchIfNotSmi(Register reg,
+                      Label* label,
+                      JumpDistance distance = kFarJump) {
+    andi(CMPRES1, reg, Immediate(kSmiTagMask));
+    bne(CMPRES1, ZR, label);
+  }
 
   void Bind(Label* label) override;
+
+  // Unconditional jump to a given label. [distance] is ignored on MIPS.
+  void Jump(Label* label, JumpDistance distance = kFarJump) { b(label); }
+  // Unconditional jump to a given address in register.
+  void Jump(Register target) { jr(target); }
+  // Unconditional jump to a given address in memory. Clobbers TMP.
+  void Jump(const Address& address) {
+    lw(TMP, address);
+    jr(TMP);
+  }
+
+  void LoadMemoryValue(Register dst, Register base, int32_t offset) {
+    LoadFromOffset(dst, base, offset, kWordBytes);
+  }
+
+  void StoreMemoryValue(Register src, Register base, int32_t offset) {
+    StoreToOffset(src, base, offset);
+  }
+
+  Address PrepareLargeOffset(Register base, int32_t offset);
+
+  void LoadObjectHelper(Register rd, const Object& object, bool is_unique,
+                        ObjectPoolBuilderEntry::SnapshotBehavior snapshot_behavior =
+                          ObjectPoolBuilderEntry::kSnapshotable);
+  void LoadObject(Register rd, const Object& object);
+  void LoadUniqueObject(Register rd, const Object& object,
+                        ObjectPoolBuilderEntry::SnapshotBehavior snapshot_behavior =
+                          ObjectPoolBuilderEntry::kSnapshotable);
 
   void LoadClassId(Register result, Register object);
   void LoadClassById(Register result, Register class_id);
@@ -800,6 +861,50 @@ class Assembler : public AssemblerBase {
   void LoadClassIdMayBeSmi(Register result, Register object);
   void LoadTaggedClassIdMayBeSmi(Register result, Register object);
 
+  bool CanLoadFromObjectPool(const Object& object) const;
+
+  void LoadWordFromPoolIndex(Register rd, intptr_t index, Register pp = PP);
+  // Note: clobbers TMP.
+  void StoreWordToPoolIndex(Register rs, intptr_t index, Register pp = PP);
+  
+  void LoadDFromOffset(DRegister reg, Register base, int32_t offset) {
+    ASSERT(!in_delay_slot_);
+    FRegister lo = static_cast<FRegister>(reg * 2);
+    FRegister hi = static_cast<FRegister>(reg * 2 + 1);
+    lwc1(lo, PrepareLargeOffset(base, offset));
+    lwc1(hi, PrepareLargeOffset(base, offset + target::kWordSize));
+  }
+
+  void StoreDToOffset(DRegister reg, Register base, int32_t offset) {
+    ASSERT(!in_delay_slot_);
+    FRegister lo = static_cast<FRegister>(reg * 2);
+    FRegister hi = static_cast<FRegister>(reg * 2 + 1);
+    swc1(lo, PrepareLargeOffset(base, offset));
+    swc1(hi, PrepareLargeOffset(base, offset + target::kWordSize));
+  }
+
+  void Call(Address target) {
+    lw(T9, target);
+    jalr(T9);
+  }
+
+  void Call(Register target) {
+    jalr(target);
+  }
+
+  void Call(const Code& target) {
+    JumpAndLink(target);
+  }
+
+  void JumpAndLink(const Code& code,
+                   ObjectPoolBuilderEntry::Patchability patchable =
+                       ObjectPoolBuilderEntry::kNotPatchable,
+                   CodeEntryKind entry_kind = CodeEntryKind::kNormal,
+                   ObjectPoolBuilderEntry::SnapshotBehavior snapshot_behavior =
+                       ObjectPoolBuilderEntry::kSnapshotable);
+
+  void CallRuntime(const RuntimeEntry& entry, intptr_t argument_count);
+  
   void LoadPoolPointer(Register reg = PP);
   void CheckCodePointer();
   void GetNextPC(Register dest, Register temp = kNoRegister);
@@ -848,7 +953,39 @@ class Assembler : public AssemblerBase {
   void MonomorphicCheckedEntryAOT();
 
   void ReserveAlignedFrameSpace(intptr_t frame_space);
+
+  void PushObject(const Object& object);
+
+  void CompareObject(Register reg, const Object& object);
   
+  void LoadUnboxedDouble(FpuRegister dst, Register base, int32_t offset) {
+    LoadDFromOffset(dst, base, offset);
+  }
+
+  void StoreUnboxedDouble(FpuRegister rs, Register base, int32_t offset) {
+    StoreDToOffset(rs, base, offset);
+  }
+
+  void MoveUnboxedDouble(FpuRegister dst, FpuRegister src) {
+    if (src != dst) {
+      movd(dst, src);
+    }
+  }
+
+  void LoadUnboxedSimd128(FpuRegister dst, Register base, int32_t offset) {
+    // No single register SIMD on MIPS.
+    UNREACHABLE();
+  }
+  void StoreUnboxedSimd128(FpuRegister src, Register base, int32_t offset) {
+    // No single register SIMD on MIPS.
+    UNREACHABLE();
+  }
+  void MoveUnboxedSimd128(FpuRegister dst, FpuRegister src) {
+    // No single register SIMD on MIPS.
+    UNREACHABLE();
+  }
+
+
  private:
   bool use_far_branches_;
   bool delay_slot_available_;
@@ -929,6 +1066,8 @@ class Assembler : public AssemblerBase {
     Emit(Instr::kNopInstruction);  // Branch delay NOP.
     delay_slot_available_ = true;
   }
+
+  void JumpAndLink(intptr_t target_code_pool_index, CodeEntryKind entry_kind);
 };
 
 }  // namespace compiler
