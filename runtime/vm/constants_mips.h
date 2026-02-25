@@ -457,6 +457,13 @@ struct AssertSubtypeABI {
   // (throws if the subtype check fails).
 };
 
+// ABI for InitInstanceFieldStub.
+struct InitInstanceFieldABI {
+  static constexpr Register kInstanceReg = T1;
+  static constexpr Register kFieldReg = T2;
+  static constexpr Register kResultReg = V0;
+};
+
 // ABI for LateInitializationError stubs.
 struct LateInitializationErrorABI {
   static constexpr Register kFieldReg = T2;
