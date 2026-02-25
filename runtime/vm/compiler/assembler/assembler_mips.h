@@ -973,11 +973,26 @@ class Assembler : public AssemblerBase {
 
   void EnterFullSafepoint(Register scratch0, Register scratch1);
   void ExitFullSafepoint(Register scratch0,
-                         Register scratch1,
-                         bool ignore_unwind_in_progress);
+                         Register scratch1);
 
   void MonomorphicCheckedEntryJIT();
   void MonomorphicCheckedEntryAOT();
+
+  // Emit code to transition between generated mode and native mode.
+  //
+  // These require that CSP and SP are equal and aligned and require two scratch
+  // registers (in addition to TMP).
+  void TransitionGeneratedToNative(Register destination_address,
+                                   Register exit_frame_fp,
+                                   Register exit_through_ffi,
+                                   Register scratch0,
+                                   bool enter_safepoint);
+  void TransitionNativeToGenerated(Register scratch0,
+                                   Register scratch1,
+                                   bool exit_safepoint,
+                                   bool set_tag = true);
+  void VerifyInGenerated(Register scratch);
+  void VerifyNotInGenerated(Register scratch);
 
   void ReserveAlignedFrameSpace(intptr_t frame_space);
 
