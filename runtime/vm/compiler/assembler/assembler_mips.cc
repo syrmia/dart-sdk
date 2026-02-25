@@ -770,6 +770,21 @@ void Assembler::ReserveAlignedFrameSpace(intptr_t frame_space) {
   }
 }
 
+void Assembler::EmitEntryFrameVerification(Register scratch) {
+#if defined(DEBUG)
+  Label done;
+  ASSERT(!constant_pool_allowed());
+  LoadImmediate(scratch, target::frame_layout.exit_link_slot_from_entry_fp *
+                             target::kWordSize);
+  addu(scratch, scratch, FPREG);
+  BranchEqual(scratch, SPREG, &done);
+
+  Breakpoint();
+
+  Bind(&done);
+#endif
+}
+
 void Assembler::PushObject(const Object& object) {
   ASSERT(IsOriginalObject(object));
   ASSERT(!in_delay_slot_);

@@ -139,6 +139,18 @@ class Assembler : public AssemblerBase {
 
   void Ret() { jr(RA); }
 
+  void SmiTag(Register reg) override { sll(reg, reg, kSmiTagSize); }
+
+  void SmiTag(Register dst, Register src) { sll(dst, src, kSmiTagSize); }
+
+  void SmiUntag(Register reg) { sra(reg, reg, kSmiTagSize); }
+
+  void SmiUntag(Register dst, Register src) { sra(dst, src, kSmiTagSize); }
+
+  static Address VMTagAddress() {
+    return Address(THR, target::Thread::vm_tag_offset());
+  }
+
   void CompareImmediate(Register rn, int32_t imm, OperandSize sz = kWordBytes) override;
   void TestImmediate(Register rn, int32_t imm, OperandSize sz = kWordBytes);
 
@@ -953,6 +965,13 @@ class Assembler : public AssemblerBase {
   void MonomorphicCheckedEntryAOT();
 
   void ReserveAlignedFrameSpace(intptr_t frame_space);
+
+  // In debug mode, this generates code to check that:
+  //   FP + kExitLinkSlotFromEntryFp == SP
+  // or triggers breakpoint otherwise.
+  //
+  // Requires a scratch register in addition to the assembler temporary.
+  void EmitEntryFrameVerification(Register scratch);
 
   void PushObject(const Object& object);
 
