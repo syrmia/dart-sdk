@@ -46,6 +46,12 @@ static constexpr int kParamEndSlotFromFp = 1;  // One slot past last parameter.
 static constexpr int kCallerSpSlotFromFp = 2;
 static constexpr int kLastParamSlotFromEntrySp = 0;
 
+//Dart callbacks, this is the number of stack slots between
+// arguments passed on stack and arguments saved in callback prologue.
+//
+// 2 = return address (1) + saved frame pointer (1).
+constexpr intptr_t kCallbackSlotsBeforeSavedArguments = 2;
+
 // Entry and exit frame layout.
 static constexpr int kExitLinkSlotFromEntryFp = -25;
 COMPILE_ASSERT(kAbiPreservedCpuRegCount == 8);
