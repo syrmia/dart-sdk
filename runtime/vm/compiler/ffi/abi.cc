@@ -38,7 +38,7 @@ static_assert(offsetof(AbiAlignmentDouble, d) == 4,
 static_assert(offsetof(AbiAlignmentUint64, i) == 4,
               "FFI transformation alignment");
 #elif defined(HOST_ARCH_IA32) && defined(DART_HOST_OS_WINDOWS) ||              \
-    defined(HOST_ARCH_ARM)
+    defined(HOST_ARCH_ARM) || defined(HOST_ARCH_MIPS)
 static_assert(offsetof(AbiAlignmentDouble, d) == 8,
               "FFI transformation alignment");
 static_assert(offsetof(AbiAlignmentUint64, i) == 8,
@@ -73,6 +73,8 @@ static_assert(offsetof(AbiAlignmentUint64, i) == 8,
 #define TARGET_ARCH_NAME Arm
 #elif defined(TARGET_ARCH_ARM64)
 #define TARGET_ARCH_NAME Arm64
+#elif defined(TARGET_ARCH_MIPS)
+#define TARGET_ARCH_NAME MIPS
 #elif defined(TARGET_ARCH_RISCV32)
 #define TARGET_ARCH_NAME Riscv32
 #elif defined(TARGET_ARCH_RISCV64)
