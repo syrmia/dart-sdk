@@ -503,6 +503,12 @@ struct AllocateSmallRecordABI {
   static constexpr Register kTempReg = TMP;
 };
 
+// ABI for AllocateTypedDataArrayStub.
+struct AllocateTypedDataArrayABI {
+  static constexpr Register kResultReg = AllocateObjectABI::kResultReg;
+  static constexpr Register kLengthReg = A1;
+};
+
 // ABI for BoxDoubleStub.
 struct BoxDoubleStubABI {
   static constexpr FpuRegister kValueReg = D6;
