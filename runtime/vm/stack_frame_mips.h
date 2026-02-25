@@ -42,6 +42,11 @@ static constexpr int kParamEndSlotFromFp = 1;  // One slot past last parameter.
 static constexpr int kCallerSpSlotFromFp = 2;
 static constexpr int kLastParamSlotFromEntrySp = 0;
 
+// Entry and exit frame layout.
+static constexpr int kExitLinkSlotFromEntryFp = -25;
+COMPILE_ASSERT(kAbiPreservedCpuRegCount == 8);
+COMPILE_ASSERT(kAbiPreservedFRegCount == 12);
+
 }  // namespace dart
 
 #endif  // RUNTIME_VM_STACK_FRAME_MIPS_H_
