@@ -5,6 +5,10 @@
 #ifndef RUNTIME_VM_CONSTANTS_MIPS_H_
 #define RUNTIME_VM_CONSTANTS_MIPS_H_
 
+#ifndef RUNTIME_VM_CONSTANTS_H_
+#error Do not include constants_mips.h directly; use constants.h instead.
+#endif
+
 #include "vm/allocation.h"
 #include "vm/constants_base.h"
 

@@ -5,6 +5,10 @@
 #ifndef RUNTIME_VM_CPU_MIPS_H_
 #define RUNTIME_VM_CPU_MIPS_H_
 
+#if !defined(RUNTIME_VM_CPU_H_)
+#error Do not include cpu_mips.h directly; use cpu.h instead.
+#endif
+
 #include "vm/allocation.h"
 
 namespace dart {

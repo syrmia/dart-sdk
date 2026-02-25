@@ -5,6 +5,10 @@
 #ifndef RUNTIME_VM_STACK_FRAME_MIPS_H_
 #define RUNTIME_VM_STACK_FRAME_MIPS_H_
 
+#if !defined(RUNTIME_VM_STACK_FRAME_H_)
+#error Do not include stack_frame_mips.h directly; use stack_frame.h instead.
+#endif
+
 namespace dart {
 
 /* MIPS Dart Frame Layout

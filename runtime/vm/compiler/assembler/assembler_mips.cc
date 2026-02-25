@@ -4,6 +4,8 @@
 
 #if defined(TARGET_ARCH_MIPS)
 
+#define SHOULD_NOT_INCLUDE_RUNTIME
+
 #include "vm/compiler/assembler/assembler.h"
 #include "vm/compiler/backend/locations.h"
 

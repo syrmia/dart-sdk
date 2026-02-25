@@ -5,6 +5,16 @@
 #ifndef RUNTIME_VM_ASSEMBLER_MIPS_H_
 #define RUNTIME_VM_ASSEMBLER_MIPS_H_
 
+#if defined(DART_PRECOMPILED_RUNTIME)
+#error "AOT runtime should not use compiler sources (including header files)"
+#endif  // defined(DART_PRECOMPILED_RUNTIME)
+
+#ifndef RUNTIME_VM_COMPILER_ASSEMBLER_ASSEMBLER_H_
+#error Do not include assembler_mips.h directly; use assembler.h instead.
+#endif
+
+#include <functional>
+
 #include "platform/assert.h"
 #include "vm/compiler/assembler/assembler_base.h"
 #include "vm/constants.h"
