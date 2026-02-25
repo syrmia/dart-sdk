@@ -931,6 +931,11 @@ class Assembler : public AssemblerBase {
   void CheckCodePointer();
   void GetNextPC(Register dest, Register temp = kNoRegister);
 
+  // On some other platforms, we draw a distinction between safe and unsafe
+  // smis.
+  static bool IsSafe(const Object& object) { return true; }
+  static bool IsSafeSmi(const Object& object) { return target::IsSmi(object); }
+
   bool constant_pool_allowed() const { return constant_pool_allowed_; }
   void set_constant_pool_allowed(bool b) { constant_pool_allowed_ = b; }
 
