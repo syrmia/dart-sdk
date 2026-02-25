@@ -243,6 +243,12 @@ const Register CALLEE_SAVED_TEMP = S5;
 // since TMP is clobbered by a far branch.
 const Register CMPRES1 = T8;
 const Register CMPRES2 = T9;
+
+// ABI for write barrier stub.
+const Register kWriteBarrierObjectReg = A0;
+const Register kWriteBarrierValueReg = A1;
+const Register kWriteBarrierSlotReg = S5;
+
 struct InstantiationABI {
   static constexpr Register kUninstantiatedTypeArgumentsReg = T1;
   static constexpr Register kInstantiatorTypeArgumentsReg = T2;
