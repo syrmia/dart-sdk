@@ -480,6 +480,12 @@ struct ReThrowABI {
   static constexpr Register kStackTraceReg = V1;
 };
 
+// ABI for RangeErrorStub.
+struct RangeErrorABI {
+  static constexpr Register kLengthReg = T1;
+  static constexpr Register kIndexReg = T2;
+};
+
 // ABI for AllocateObjectStub.
 struct AllocateObjectABI {
   static constexpr Register kResultReg = V0;
