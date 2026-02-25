@@ -248,6 +248,14 @@ const Register CALLEE_SAVED_TEMP = S5;
 const Register CMPRES1 = T8;
 const Register CMPRES2 = T9;
 
+// Exception object is passed in this register to the catch handlers when an
+// exception is thrown.
+const Register kExceptionObjectReg = V0;
+
+// Stack trace object is passed in this register to the catch handlers when
+// an exception is thrown.
+const Register kStackTraceObjectReg = V1;
+
 // ABI for write barrier stub.
 const Register kWriteBarrierObjectReg = A0;
 const Register kWriteBarrierValueReg = A1;
