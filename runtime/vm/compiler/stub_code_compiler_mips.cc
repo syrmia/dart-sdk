@@ -30,6 +30,41 @@
 namespace dart {
 namespace compiler {
 
+// Call a native function within a safepoint.
+//
+// On entry:
+//   Stack: set up for call
+//   T0: target to call
+//
+// On exit:
+//   Stack: preserved
+//   NOTFP, S2: clobbered, although normally callee-saved
+void StubCodeCompiler::GenerateCallNativeThroughSafepointStub() {
+  COMPILE_ASSERT(IsAbiPreservedRegister(S2));
+
+  __ mov(S2, RA);
+
+  __ LoadImmediate(T1, target::Thread::exit_through_ffi());
+  __ TransitionGeneratedToNative(T0, FPREG, T1 /*volatile*/, T2,
+                                 /*enter_safepoint=*/true);
+
+#if defined(DEBUG)
+  // Check SP alignment.
+  __ AndImmediate(T2 /*volatile*/, SP, ~(OS::ActivationFrameAlignment() - 1));
+  Label done;
+  __ beq(T2, SP, &done);
+  __ Breakpoint();
+  __ Bind(&done);
+#endif
+  __ mov(T9, T0);
+  __ jalr(T9);
+
+  __ TransitionNativeToGenerated(T1 /*volatile*/, T2,
+                                 /*exit_safepoint=*/true);
+
+  __ jr(S2);
+}
+
 void StubCodeCompiler::GenerateLoadFfiCallbackMetadataRuntimeFunction(
     uword function_index,
     Register dst) {
