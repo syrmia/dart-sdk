@@ -66,6 +66,7 @@ compiler_sources = [
   "backend/il_arm.cc",
   "backend/il_arm64.cc",
   "backend/il_ia32.cc",
+  "backend/il_mips.cc",
   "backend/il_printer.cc",
   "backend/il_printer.h",
   "backend/il_riscv.cc",
