@@ -352,12 +352,16 @@ class CallingConventions {
   static const Register ArgumentRegisters[];
   static constexpr intptr_t kArgumentRegisters = kAbiArgumentCpuRegs;
   static constexpr intptr_t kNumArgRegs = 4;
+  static constexpr Register kPointerToReturnStructRegisterCall = A0;
 
   static constexpr intptr_t kFpuArgumentRegisters = (1 << D6) | (1 << D7);
   static const FpuRegister FpuArgumentRegisters[];
   static constexpr intptr_t kNumFpuArgRegs = 2;
+  static constexpr intptr_t kNumFArgRegs = 4;
 
   static constexpr intptr_t kCalleeSaveCpuRegisters = kAbiPreservedCpuRegs;
+
+  static constexpr bool kArgumentIntRegXorFpuReg = false;
 
   static constexpr Register kReturnReg = V0;
   static constexpr Register kSecondReturnReg = V1;
@@ -397,6 +401,7 @@ struct DartCallingConvention {
 
 extern const char* const cpu_reg_names[kNumberOfCpuRegisters];
 extern const char* const cpu_reg_abi_names[kNumberOfCpuRegisters];
+extern const char* const fpu_f_reg_names[kNumberOfFRegisters];
 extern const char* const fpu_reg_names[kNumberOfFRegisters];
 
 // Registers in addition to those listed in TypeTestABI used inside the

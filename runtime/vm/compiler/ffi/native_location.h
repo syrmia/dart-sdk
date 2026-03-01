@@ -263,7 +263,14 @@ class NativeFpuRegistersLocation : public NativeLocation {
   }
   virtual bool IsFpuRegisters() const { return true; }
   virtual bool IsExpressibleAsLocation() const {
+#if defined(TARGET_ARCH_MIPS)
+    // On MIPS, FpuRegister = DRegister, so kSingleFpuReg and kDoubleFpuReg
+    // both store DRegister values that can be expressed as Location.
+    return fpu_reg_kind_ == kSingleFpuReg ||
+           fpu_reg_kind_ == kDoubleFpuReg;
+#else
     return fpu_reg_kind_ == kQuadFpuReg;
+#endif
   }
 #if !defined(FFI_UNIT_TESTS)
   virtual Location AsLocation() const {
@@ -273,7 +280,14 @@ class NativeFpuRegistersLocation : public NativeLocation {
 #endif
   FpuRegisterKind fpu_reg_kind() const { return fpu_reg_kind_; }
   FpuRegister fpu_reg() const {
+#if defined(TARGET_ARCH_MIPS)
+    // On MIPS, FpuRegister = DRegister, and we store DRegister values
+    // for both single and double floats.
+    ASSERT(fpu_reg_kind_ == kSingleFpuReg ||
+           fpu_reg_kind_ == kDoubleFpuReg);
+#else
     ASSERT(fpu_reg_kind_ == kQuadFpuReg);
+#endif
     return static_cast<FpuRegister>(fpu_reg_);
   }
 #if defined(TARGET_ARCH_ARM)
@@ -290,6 +304,16 @@ class NativeFpuRegistersLocation : public NativeLocation {
 
   bool IsLowestBits() const;
 #endif  // defined(TARGET_ARCH_ARM)
+#if defined(TARGET_ARCH_MIPS)
+  DRegister fpu_d_reg() const {
+    ASSERT(fpu_reg_kind_ == kDoubleFpuReg);
+    return static_cast<DRegister>(fpu_reg_);
+  }
+  FRegister fpu_f_reg() const {
+    ASSERT(fpu_reg_kind_ == kSingleFpuReg);
+    return static_cast<FRegister>(fpu_reg_*2);
+  }
+#endif  // defined(TARGET_ARCH_MIPS)
 
   virtual void PrintTo(BaseTextBuffer* f) const;
 
