@@ -41,8 +41,16 @@ NativeLocation& NativeLocation::FromLocation(Zone* zone,
       return *new (zone)
           NativeRegistersLocation(zone, native_rep, native_rep, loc.reg());
     case Location::Kind::kFpuRegister:
+#if defined(TARGET_ARCH_MIPS)
+      // On MIPS, we need to determine the register kind from the native type size
+      return *new (zone)
+          NativeFpuRegistersLocation(native_rep, native_rep,
+                                     FpuRegisterKindFromSize(native_rep.SizeInBytes()),
+                                     static_cast<intptr_t>(loc.fpu_reg()));
+#else
       return *new (zone)
           NativeFpuRegistersLocation(native_rep, native_rep, loc.fpu_reg());
+#endif
     case Location::Kind::kStackSlot:
       return *new (zone)
           NativeStackLocation(native_rep, native_rep, loc.base_reg(),
@@ -307,6 +315,20 @@ void NativeRegistersLocation::PrintTo(BaseTextBuffer* f) const {
 
 void NativeFpuRegistersLocation::PrintTo(BaseTextBuffer* f) const {
   switch (fpu_reg_kind()) {
+#if defined(TARGET_ARCH_MIPS)
+    case kDoubleFpuReg: {
+      DRegister reg_d = fpu_d_reg();
+      ASSERT((0 <= reg_d) && (reg_d < kNumberOfDRegisters));
+      f->Printf("%s", fpu_reg_names[reg_d]);
+      break;
+    }
+    case kSingleFpuReg: {
+      FRegister reg_f = fpu_f_reg();
+      ASSERT((0 <= reg_f) && (reg_f < kNumberOfFRegisters));
+      f->Printf("%s", fpu_f_reg_names[reg_f]);
+      break;
+    }
+#else
     case kQuadFpuReg:
       f->Printf("%s", RegisterNames::FpuRegisterName(fpu_reg()));
       break;
@@ -318,6 +340,7 @@ void NativeFpuRegistersLocation::PrintTo(BaseTextBuffer* f) const {
       f->Printf("%s", RegisterNames::FpuSRegisterName(fpu_s_reg()));
       break;
 #endif  // defined(TARGET_ARCH_ARM)
+#endif  // defined(TARGET_ARCH_MIPS)
     default:
       UNREACHABLE_THIS();
   }

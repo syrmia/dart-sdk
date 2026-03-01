@@ -117,6 +117,11 @@ class ArgumentAllocator : public ValueObject {
       BlockAllFpuRegisters();
     }
 #endif
+#if defined(TARGET_ARCH_MIPS)
+    if(has_varargs_){
+      BlockAllFpuRegisters();
+    }
+#endif
     const auto& result = AllocateArgument(payload_type, is_vararg);
 #if defined(TARGET_ARCH_X64) && defined(DART_TARGET_OS_WINDOWS)
     if (has_varargs_) {
@@ -177,6 +182,21 @@ class ArgumentAllocator : public ValueObject {
       if (CallingConventions::kArgumentIntRegXorFpuReg) {
         cpu_regs_used++;
       }
+#if defined(TARGET_ARCH_MIPS)
+      // MIPS O32 hard float ABI: when a scalar float uses an FPU register,
+      // the corresponding integer register slot(s) are consumed.
+      // $f12 at position 0 → consumes $4
+      // $f14 at position 2 → consumes $6
+      if (fpu_reg_parts_used >= 0x4) BlockAllFpuRegisters();
+      if (kind == kSingleFpuReg) {
+        // Single float: consumes 1 slot (4 bytes)
+        cpu_regs_used++;
+      } else if (kind == kDoubleFpuReg) {
+        // Double: consumes 2 slots (8 bytes), must be at even position
+        cpu_regs_used += 2;
+        if (cpu_regs_used == 3) cpu_regs_used = 4;
+      }
+#endif
 #if defined(TARGET_ARCH_ARM)
       if (kind == kSingleFpuReg) {
         return *new (zone_)
@@ -189,10 +209,31 @@ class ArgumentAllocator : public ValueObject {
                                        static_cast<DRegister>(reg_index));
       }
 #endif
+#if defined(TARGET_ARCH_MIPS)
+      // MIPS O32 ABI: FPU argument registers are $f12 and $f14.
+      // FpuArgumentRegisters contains D registers: D6 ($f12/$f13), D7 ($f14/$f15).
+      // For single floats: index 0 -> D6 ($f12), index 2 -> D7 ($f14)
+      // For doubles: index 0 -> D6, index 1 -> D7
+      // We store the DRegister value and use the kind to distinguish single vs double.
+      DRegister d_reg;
+      if (kind == kSingleFpuReg) {
+        // Single floats at index 0 use D6 ($f12), at index 2 use D7 ($f14)
+        d_reg = static_cast<DRegister>(CallingConventions::FpuArgumentRegisters[reg_index/2]);
+      } else if (kind == kDoubleFpuReg) {
+        // Doubles use FpuArgumentRegisters directly
+        d_reg = static_cast<DRegister>(CallingConventions::FpuArgumentRegisters[reg_index]);
+      } else {
+        UNREACHABLE();
+      }
+      return *new (zone_)
+          NativeFpuRegistersLocation(payload_type, payload_type, kind,
+                                      static_cast<intptr_t>(d_reg));
+#else
       ASSERT(kind == kQuadFpuReg);
       FpuRegister reg = CallingConventions::FpuArgumentRegisters[reg_index];
       return *new (zone_)
           NativeFpuRegistersLocation(payload_type, payload_type, reg);
+#endif
     }
 
 #if defined(TARGET_ARCH_RISCV64)
@@ -210,6 +251,14 @@ class ArgumentAllocator : public ValueObject {
       const auto& container_type = ConvertFloatToInt(zone_, payload_type);
       return AllocateInt(payload_type, container_type, is_vararg);
     }
+#elif defined(TARGET_ARCH_MIPS)
+    // After using up F registers (or when blocked by struct arguments),
+    // start bitcasting floats to integer registers.
+    if (((payload_type.SizeInBytes() == 4) && HasAvailableCpuRegisters(1)) ||
+        ((payload_type.SizeInBytes() == 8) && HasAvailableCpuRegisters(2))) {
+      const auto& container_type = ConvertFloatToInt(zone_, payload_type);
+      return AllocateInt(payload_type, container_type, is_vararg);
+    }
 #endif
 
     BlockAllFpuRegisters();
@@ -222,6 +271,10 @@ class ArgumentAllocator : public ValueObject {
   const NativeLocation& AllocateInt(const NativeType& payload_type,
                                     const NativeType& container_type,
                                     bool is_vararg) {
+#if defined(TARGET_ARCH_MIPS)
+    // Once we start using Integer registers or stack, no more FPU regs are needed.
+    BlockAllFpuRegisters();
+#endif
     if (target::kWordSize == 4 && payload_type.SizeInBytes() == 8) {
       if (CallingConventions::kArgumentRegisterAlignment ==
               kAlignedToWordSizeAndValueSize ||
@@ -480,6 +533,29 @@ class ArgumentAllocator : public ValueObject {
   }
 #endif  // defined(TARGET_ARCH_ARM64)
 
+#if defined(TARGET_ARCH_MIPS)
+  const NativeLocation& AllocateCompound(const NativeCompoundType& payload_type,
+                                         bool is_vararg,
+                                         bool is_result) {
+    const auto& compound_type = payload_type.AsCompound();
+    const auto& result = AllocateCompoundAsMultiple(compound_type);
+
+    // If any part of the struct used integer registers, block all FPU registers
+    // so that subsequent scalar floats use integer registers instead.
+    if (result.IsMultiple()) {
+      const auto& multiple = result.AsMultiple();
+      for (intptr_t i = 0; i < multiple.locations().length(); i++) {
+        if (multiple.locations()[i]->IsRegisters()) {
+          BlockAllFpuRegisters();
+          break;
+        }
+      }
+    }
+
+    return result;
+  }
+#endif  // defined(TARGET_ARCH_MIPS)
+
 #if defined(TARGET_ARCH_RISCV32) || defined(TARGET_ARCH_RISCV64)
   // See RISC-V ABIs Specification
   // https://github.com/riscv-non-isa/riscv-elf-psabi-doc/releases
@@ -563,6 +639,20 @@ class ArgumentAllocator : public ValueObject {
   // in-bounds.
   const NativeLocation& AllocateCompoundAsMultiple(
       const NativeCompoundType& compound_type) {
+#if defined(TARGET_ARCH_MIPS)
+    // MIPS O32 ABI: Structures are passed as if they were very wide integers
+    // with their size rounded up to an integral number of words.
+    // Block FPU registers since struct arguments use integer registers.
+    BlockAllFpuRegisters();
+
+    const intptr_t struct_alignment = compound_type.AlignmentInBytesField();
+    if (struct_alignment >= 8) {
+      // Align to even register (8-byte boundary)
+      cpu_regs_used += cpu_regs_used % 2;
+      // Also align stack if struct will go to stack
+      align_stack(8);
+    }
+#endif
     const intptr_t chunk_size = compiler::target::kWordSize;
     const intptr_t num_chunks =
         Utils::RoundUp(compound_type.SizeInBytes(), chunk_size) / chunk_size;
@@ -585,7 +675,8 @@ class ArgumentAllocator : public ValueObject {
   }
 
   static FpuRegisterKind FpuRegKind(const NativeType& payload_type) {
-#if defined(TARGET_ARCH_ARM)
+#if defined(TARGET_ARCH_ARM) || defined(TARGET_ARCH_MIPS)
+    // ARM and MIPS both distinguish between single (float) and double precision.
     return FpuRegisterKindFromSize(payload_type.SizeInBytes());
 #else
     return kQuadFpuReg;
@@ -606,8 +697,14 @@ class ArgumentAllocator : public ValueObject {
 
   const NativeLocation& AllocateStack(const NativeType& payload_type,
                                       bool is_vararg = false) {
+#if defined(TARGET_ARCH_MIPS)
+    // Once we start using stack, no more CPU regs needed.
+    cpu_regs_used = 4;
+#endif
     align_stack(payload_type.AlignmentInBytesStack(is_vararg));
+#if !defined(TARGET_ARCH_MIPS)
     const intptr_t size = payload_type.SizeInBytes();
+#endif
     // If the stack arguments are not packed, the 32 lowest bits should not
     // contain garbage.
     const auto& container_type =
@@ -615,7 +712,11 @@ class ArgumentAllocator : public ValueObject {
     const auto& result = *new (zone_) NativeStackLocation(
         payload_type, container_type, CallingConventions::kStackPointerRegister,
         stack_height_in_bytes);
+#if defined(TARGET_ARCH_MIPS)
+    stack_height_in_bytes += container_type.SizeInBytes();
+#else
     stack_height_in_bytes += size;
+#endif
     align_stack(payload_type.AlignmentInBytesStack(is_vararg));
     return result;
   }
@@ -630,7 +731,13 @@ class ArgumentAllocator : public ValueObject {
     if (kind == kSingleFpuReg) return CallingConventions::kNumSFpuArgRegs;
     if (kind == kDoubleFpuReg) return CallingConventions::kNumDFpuArgRegs;
 #endif  // defined(TARGET_ARCH_ARM)
+#if defined(TARGET_ARCH_MIPS)
+    // MIPS has 4 FPU argument registers, usable as either S or D registers.
+    if (kind == kSingleFpuReg) return CallingConventions::kNumFArgRegs;
+    if (kind == kDoubleFpuReg) return CallingConventions::kNumFArgRegs;
+#else
     if (kind == kQuadFpuReg) return CallingConventions::kNumFpuArgRegs;
+#endif  // defined(TARGET_ARCH_MIPS)
     UNREACHABLE();
   }
 
@@ -646,7 +753,14 @@ class ArgumentAllocator : public ValueObject {
       if ((fpu_reg_parts_used & mask_shifted) == 0) {
         return index;
       }
+#if defined(TARGET_ARCH_MIPS)
+      if (size == 1)
+         index = index + 2;
+      else
+         index++;
+#else
       index++;
+#endif
     }
     return kNoFpuRegister;
   }
@@ -688,7 +802,12 @@ class ArgumentAllocator : public ValueObject {
   intptr_t cpu_regs_used = 0;
   // Every bit denotes 32 bits of FPU registers.
   intptr_t fpu_reg_parts_used = 0;
+#if defined(TARGET_ARCH_MIPS)
+  // MIPS O32 ABI requires stack space for argument registers (home space).
+  intptr_t stack_height_in_bytes = CallingConventions::kNumArgRegs * compiler::target::kWordSize;
+#else
   intptr_t stack_height_in_bytes = 0;
+#endif
   const bool has_varargs_;
   Zone* zone_;
 };
@@ -928,6 +1047,15 @@ static const NativeLocation& CompoundResultLocation(
 }
 #endif  // defined(TARGET_ARCH_ARM64)
 
+#if defined(TARGET_ARCH_MIPS)
+static const NativeLocation& CompoundResultLocation(
+    Zone* zone,
+    const NativeCompoundType& payload_type,
+    bool has_varargs) {
+  return PointerToMemoryResultLocation(zone, payload_type);
+}
+#endif  // defined(TARGET_ARCH_MIPS)
+
 #if defined(TARGET_ARCH_RISCV32) || defined(TARGET_ARCH_RISCV64)
 static const NativeLocation& CompoundResultLocation(
     Zone* zone,
@@ -954,12 +1082,17 @@ static const NativeLocation& ResultLocation(Zone* zone,
       ConvertIfSoftFp(zone, payload_type, has_varargs, /*is_result*/ true);
   const auto& container_type = payload_type_converted.Extend(
       zone, CallingConventions::kReturnRegisterExtension);
-
+#if defined(TARGET_ARCH_MIPS)
+  if (container_type.IsFloat()) {
+    return *new (zone) NativeFpuRegistersLocation(
+        payload_type, container_type, FpuRegisterKindFromSize(container_type.SizeInBytes()), CallingConventions::kReturnFpuReg);
+  }
+#else
   if (container_type.IsFloat()) {
     return *new (zone) NativeFpuRegistersLocation(
         payload_type, container_type, CallingConventions::kReturnFpuReg);
   }
-
+#endif
   if (container_type.IsInt() || container_type.IsVoid()) {
     if (container_type.SizeInBytes() == 8 && target::kWordSize == 4) {
       return *new (zone) NativeRegistersLocation(
