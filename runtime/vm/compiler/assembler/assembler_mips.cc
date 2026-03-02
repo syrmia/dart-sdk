@@ -4,6 +4,8 @@
 
 #if defined(TARGET_ARCH_MIPS)
 
+#define SHOULD_NOT_INCLUDE_RUNTIME
+
 #include "vm/compiler/assembler/assembler.h"
 #include "vm/compiler/backend/locations.h"
 
@@ -665,8 +667,7 @@ void Assembler::EnterFullSafepoint(Register addr, Register state) {
 }
 
 void Assembler::ExitFullSafepoint(Register addr,
-                                  Register state,
-                                  bool ignore_unwind_in_progress) {
+                                  Register state) {
   // We generate the same number of instructions whether or not the slow-path is
   // forced, for consistency with EnterFullSafepoint.
   Label slow_path, done, retry;
@@ -759,6 +760,90 @@ void Assembler::MonomorphicCheckedEntryAOT() {
   set_use_far_branches(saved_use_far_branches);
 }
 
+void Assembler::TransitionGeneratedToNative(Register destination_address,
+                                            Register exit_frame_fp,
+                                            Register exit_through_ffi,
+                                            Register tmp1,
+                                            bool enter_safepoint) {
+  // Save exit frame information to enable stack walking.
+  sw(exit_frame_fp,
+     Address(THR, target::Thread::top_exit_frame_info_offset()));
+
+  sw(exit_through_ffi,
+     Address(THR, target::Thread::exit_through_ffi_offset()));
+  Register tmp2 = exit_through_ffi;
+
+  VerifyInGenerated(tmp1);
+  // Mark that the thread is executing native code.
+  sw(destination_address, Address(THR, target::Thread::vm_tag_offset()));
+  LoadImmediate(tmp1, target::Thread::native_execution_state());
+  sw(tmp1, Address(THR, target::Thread::execution_state_offset()));
+
+  if (enter_safepoint) {
+    EnterFullSafepoint(tmp1, tmp2);
+  }
+}
+
+void Assembler::TransitionNativeToGenerated(Register addr,
+                                            Register state,
+                                            bool exit_safepoint,
+                                            bool set_tag) {
+  if (exit_safepoint) {
+    ExitFullSafepoint(addr, state);
+  } else {
+#if defined(DEBUG)
+    // Ensure we've already left the safepoint.
+    ASSERT(target::Thread::native_safepoint_state_acquired() != 0);
+    LoadImmediate(state, target::Thread::native_safepoint_state_acquired());
+    lw(TMP, Address(THR, target::Thread::safepoint_state_offset()));
+    and_(TMP, TMP, state);
+    Label ok;
+    BranchEqual(TMP, ZR, &ok);
+    Breakpoint();
+    Bind(&ok);
+#endif
+  }
+
+  VerifyNotInGenerated(state);
+  // Mark that the thread is executing Dart code.
+  if (set_tag) {
+    LoadImmediate(state, target::Thread::vm_tag_dart_id());
+    sw(state, Address(THR, target::Thread::vm_tag_offset()));
+  }
+  LoadImmediate(state, target::Thread::generated_execution_state());
+  sw(state, Address(THR, target::Thread::execution_state_offset()));
+
+  // Reset exit frame information in Isolate's mutator thread structure.
+  sw(ZR, Address(THR, target::Thread::top_exit_frame_info_offset()));
+  sw(ZR, Address(THR, target::Thread::exit_through_ffi_offset()));
+}
+
+void Assembler::VerifyInGenerated(Register scratch) {
+#if defined(DEBUG)
+  // Verify the thread is in generated.
+  Comment("VerifyInGenerated");
+  lw(scratch, Address(THR, target::Thread::execution_state_offset()));
+  Label ok;
+  CompareImmediate(scratch, target::Thread::generated_execution_state());
+  BranchIf(EQUAL, &ok);
+  Breakpoint();
+  Bind(&ok);
+#endif
+}
+
+void Assembler::VerifyNotInGenerated(Register scratch) {
+#if defined(DEBUG)
+  // Verify the thread is in native or VM.
+  Comment("VerifyNotInGenerated");
+  lw(scratch, Address(THR, target::Thread::execution_state_offset()));
+  CompareImmediate(scratch, target::Thread::generated_execution_state());
+  Label ok;
+  BranchIf(NOT_EQUAL, &ok, Assembler::kNearJump);
+  Breakpoint();
+  Bind(&ok);
+#endif
+}
+
 void Assembler::ReserveAlignedFrameSpace(intptr_t frame_space) {
   ASSERT(!in_delay_slot_);
   // Reserve space for arguments and align frame before entering
@@ -768,6 +853,21 @@ void Assembler::ReserveAlignedFrameSpace(intptr_t frame_space) {
     LoadImmediate(TMP, ~(OS::ActivationFrameAlignment() - 1));
     and_(SP, SP, TMP);
   }
+}
+
+void Assembler::EmitEntryFrameVerification(Register scratch) {
+#if defined(DEBUG)
+  Label done;
+  ASSERT(!constant_pool_allowed());
+  LoadImmediate(scratch, target::frame_layout.exit_link_slot_from_entry_fp *
+                             target::kWordSize);
+  addu(scratch, scratch, FPREG);
+  BranchEqual(scratch, SPREG, &done);
+
+  Breakpoint();
+
+  Bind(&done);
+#endif
 }
 
 void Assembler::PushObject(const Object& object) {

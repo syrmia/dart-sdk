@@ -1,0 +1,187 @@
+// Copyright (c) 2026, the Dart project authors.  Please see the AUTHORS file
+// for details. All rights reserved. Use of this source code is governed by a
+// BSD-style license that can be found in the LICENSE file.
+
+#include "vm/globals.h"  // Needed here to get TARGET_ARCH_MIPS.
+#if defined(TARGET_ARCH_MIPS)
+
+#include "vm/compiler/backend/il.h"
+
+#include "vm/compiler/backend/flow_graph_compiler.h"
+#include "vm/compiler/backend/locations.h"
+
+#define __ compiler->assembler()->
+#define Z (compiler->zone())
+
+namespace dart {
+
+#define R(r) (1 << r)
+
+LocationSummary* FfiCallInstr::MakeLocationSummary(Zone* zone,
+                                                   bool is_optimizing) const {
+  return MakeLocationSummaryInternal(
+      zone, is_optimizing,
+      (R(CallingConventions::kSecondNonArgumentRegister) |
+       R(CallingConventions::kFfiAnyNonAbiRegister) | R(CALLEE_SAVED_TEMP)));
+}
+
+#undef R
+
+
+void FfiCallInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  const Register target = locs()->in(TargetAddressIndex()).reg();
+
+  // The temps are indexed according to their register number.
+  const Register temp1 = locs()->temp(0).reg();
+  // For regular calls, this holds the FP for rebasing the original locations
+  // during EmitParamMoves.
+  // For leaf calls, this holds the SP used to restore the pre-aligned SP after
+  // the call.
+  const Register saved_fp_or_sp = locs()->temp(1).reg();
+  const Register temp2 = locs()->temp(2).reg();
+
+  ASSERT(temp1 != target);
+  ASSERT(temp2 != target);
+  ASSERT(temp1 != saved_fp_or_sp);
+  ASSERT(temp2 != saved_fp_or_sp);
+  ASSERT(saved_fp_or_sp != target);
+
+  // Ensure these are callee-saved register and are preserved across the call.
+  ASSERT(IsCalleeSavedRegister(saved_fp_or_sp));
+  // Other temps don't need to be preserved.
+
+  __ mov(saved_fp_or_sp, is_leaf_ ? SPREG : FPREG);
+
+  if (!is_leaf_) {
+    // Make a space to put the return address.
+    __ Push(ZR);
+
+    // We need to create a dummy "exit frame". It will have a null code object.
+    __ LoadObject(CODE_REG, Object::null_object());
+    __ set_constant_pool_allowed(false);
+    __ EnterDartFrame(0, /*load_pool_pointer=*/false);
+  }
+
+  __ ReserveAlignedFrameSpace((marshaller_.RequiredStackSpaceInBytes()==0) ? 
+                              4 * kWordSize : marshaller_.RequiredStackSpaceInBytes());
+  if (FLAG_target_memory_sanitizer) {
+    UNIMPLEMENTED();
+  }
+
+  EmitParamMoves(compiler, is_leaf_ ? FPREG : saved_fp_or_sp, temp1, temp2);
+
+  if (compiler::Assembler::EmittingComments()) {
+    __ Comment(is_leaf_ ? "Leaf Call" : "Call");
+  }
+
+  if (is_leaf_) {
+#if !defined(PRODUCT)
+    // Set the thread object's top_exit_frame_info and VMTag to enable the
+    // profiler to determine that thread is no longer executing Dart code.
+    __ StoreToOffset(FPREG, THR,
+                     compiler::target::Thread::top_exit_frame_info_offset());
+    __ StoreToOffset(target, THR, compiler::target::Thread::vm_tag_offset());
+#endif
+    __ mov(T9, target);
+    __ jalr(T9);
+
+#if !defined(PRODUCT)
+    __ LoadImmediate(temp1, compiler::target::Thread::vm_tag_dart_id());
+    __ StoreToOffset(temp1, THR, compiler::target::Thread::vm_tag_offset());
+    __ StoreToOffset(ZR, THR,
+                     compiler::target::Thread::top_exit_frame_info_offset());
+#endif
+  } else {
+    // We need to copy a dummy return address up into the dummy stack frame so
+    // the stack walker will know which safepoint to use.
+    compiler::Label label_for_getting_pc;
+    __ bal(&label_for_getting_pc);
+    __ Bind(&label_for_getting_pc);
+    __ addiu(RA, RA, compiler::Immediate(8));
+    __ StoreToOffset(RA, FPREG, kSavedCallerPcSlotFromFp * kWordSize);
+    compiler->EmitCallsiteMetadata(source(), deopt_id(),
+                                   UntaggedPcDescriptors::Kind::kOther, locs(),
+                                   env());
+
+    if (CanExecuteGeneratedCodeInSafepoint()) {
+      // Update information in the thread object and enter a safepoint.
+      __ LoadImmediate(temp1, compiler::target::Thread::exit_through_ffi());
+      __ TransitionGeneratedToNative(target, FPREG, temp1, temp2,
+                                     /*enter_safepoint=*/true);
+
+      __ mov(T9, target);
+      __ jalr(T9);
+
+      // Update information in the thread object and leave the safepoint.
+      __ TransitionNativeToGenerated(temp1, temp2, /*leave_safepoint=*/true);
+    } else {
+      // Update information in the thread object and enter a safepoint.
+      // Outline state transition. In AOT, for code size. In JIT, because we
+      // cannot trust that code will be executable.
+      __ lw(temp1,
+            compiler::Address(
+                THR, compiler::target::Thread::
+                         call_native_through_safepoint_entry_point_offset()));
+
+      // Calls T0 and clobbers S1 (along with volatile registers).
+      ASSERT(target == T0);
+      __ mov(T9, temp1);
+      __ jalr(T9);
+    }
+
+    if (marshaller_.IsHandleCType(compiler::ffi::kResultIndex)) {
+      __ Comment("Check Dart_Handle for Error.");
+      ASSERT(temp1 != CallingConventions::kReturnReg);
+      ASSERT(temp2 != CallingConventions::kReturnReg);
+      compiler::Label not_error;
+      __ LoadFromOffset(temp1, CallingConventions::kReturnReg,
+                        compiler::target::LocalHandle::ptr_offset());
+      __ BranchIfSmi(temp1, &not_error);
+      __ LoadClassId(temp1, temp1);
+      __ RangeCheck(temp1, temp2, kFirstErrorCid, kLastErrorCid,
+                    compiler::AssemblerBase::kIfNotInRange, &not_error);
+
+      // Slow path, use the stub to propagate error, to save on code-size.
+      __ Comment("Slow path: call Dart_PropagateError through stub.");
+      __ lw(temp1,
+            compiler::Address(
+                THR, compiler::target::Thread::
+                         call_native_through_safepoint_entry_point_offset()));
+      __ lw(target, compiler::Address(
+                        THR, kPropagateErrorRuntimeEntry.OffsetFromThread()));
+      __ mov(CallingConventions::ArgumentRegisters[0], CallingConventions::kReturnReg);
+      ASSERT(target == T0);
+      __ mov(T9, temp1);
+      __ jalr(T9);
+#if defined(DEBUG)
+      // We should never return with normal controlflow from this.
+      __ Breakpoint();
+#endif
+
+      __ Bind(&not_error);
+    }
+
+    // Restore the global object pool after returning from runtime.
+    if (FLAG_precompiled_mode) {
+    __ lw(PP, compiler::Address(THR, compiler::target::Thread::global_object_pool_offset()));
+    }
+  }
+
+  EmitReturnMoves(compiler, temp1, temp2);
+
+  if (is_leaf_) {
+    // Restore the pre-aligned SP.
+    __ mov(SPREG, saved_fp_or_sp);
+  } else {
+    // Leave dummy exit frame.
+    __ LeaveDartFrame();
+    __ set_constant_pool_allowed(true);
+
+    // Instead of returning to the "fake" return address, we just pop it.
+    __ PopRegister(temp1);
+  }
+}
+
+}  // namespace dart
+
+#endif  // defined TARGET_ARCH_MIPS

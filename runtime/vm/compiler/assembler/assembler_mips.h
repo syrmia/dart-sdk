@@ -5,6 +5,16 @@
 #ifndef RUNTIME_VM_ASSEMBLER_MIPS_H_
 #define RUNTIME_VM_ASSEMBLER_MIPS_H_
 
+#if defined(DART_PRECOMPILED_RUNTIME)
+#error "AOT runtime should not use compiler sources (including header files)"
+#endif  // defined(DART_PRECOMPILED_RUNTIME)
+
+#ifndef RUNTIME_VM_COMPILER_ASSEMBLER_ASSEMBLER_H_
+#error Do not include assembler_mips.h directly; use assembler.h instead.
+#endif
+
+#include <functional>
+
 #include "platform/assert.h"
 #include "vm/compiler/assembler/assembler_base.h"
 #include "vm/constants.h"
@@ -138,6 +148,18 @@ class Assembler : public AssemblerBase {
   }
 
   void Ret() { jr(RA); }
+
+  void SmiTag(Register reg) override { sll(reg, reg, kSmiTagSize); }
+
+  void SmiTag(Register dst, Register src) { sll(dst, src, kSmiTagSize); }
+
+  void SmiUntag(Register reg) { sra(reg, reg, kSmiTagSize); }
+
+  void SmiUntag(Register dst, Register src) { sra(dst, src, kSmiTagSize); }
+
+  static Address VMTagAddress() {
+    return Address(THR, target::Thread::vm_tag_offset());
+  }
 
   void CompareImmediate(Register rn, int32_t imm, OperandSize sz = kWordBytes) override;
   void TestImmediate(Register rn, int32_t imm, OperandSize sz = kWordBytes);
@@ -909,6 +931,11 @@ class Assembler : public AssemblerBase {
   void CheckCodePointer();
   void GetNextPC(Register dest, Register temp = kNoRegister);
 
+  // On some other platforms, we draw a distinction between safe and unsafe
+  // smis.
+  static bool IsSafe(const Object& object) { return true; }
+  static bool IsSafeSmi(const Object& object) { return target::IsSmi(object); }
+
   bool constant_pool_allowed() const { return constant_pool_allowed_; }
   void set_constant_pool_allowed(bool b) { constant_pool_allowed_ = b; }
 
@@ -946,13 +973,35 @@ class Assembler : public AssemblerBase {
 
   void EnterFullSafepoint(Register scratch0, Register scratch1);
   void ExitFullSafepoint(Register scratch0,
-                         Register scratch1,
-                         bool ignore_unwind_in_progress);
+                         Register scratch1);
 
   void MonomorphicCheckedEntryJIT();
   void MonomorphicCheckedEntryAOT();
 
+  // Emit code to transition between generated mode and native mode.
+  //
+  // These require that CSP and SP are equal and aligned and require two scratch
+  // registers (in addition to TMP).
+  void TransitionGeneratedToNative(Register destination_address,
+                                   Register exit_frame_fp,
+                                   Register exit_through_ffi,
+                                   Register scratch0,
+                                   bool enter_safepoint);
+  void TransitionNativeToGenerated(Register scratch0,
+                                   Register scratch1,
+                                   bool exit_safepoint,
+                                   bool set_tag = true);
+  void VerifyInGenerated(Register scratch);
+  void VerifyNotInGenerated(Register scratch);
+
   void ReserveAlignedFrameSpace(intptr_t frame_space);
+
+  // In debug mode, this generates code to check that:
+  //   FP + kExitLinkSlotFromEntryFp == SP
+  // or triggers breakpoint otherwise.
+  //
+  // Requires a scratch register in addition to the assembler temporary.
+  void EmitEntryFrameVerification(Register scratch);
 
   void PushObject(const Object& object);
 

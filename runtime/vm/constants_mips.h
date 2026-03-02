@@ -5,6 +5,10 @@
 #ifndef RUNTIME_VM_CONSTANTS_MIPS_H_
 #define RUNTIME_VM_CONSTANTS_MIPS_H_
 
+#ifndef RUNTIME_VM_CONSTANTS_H_
+#error Do not include constants_mips.h directly; use constants.h instead.
+#endif
+
 #include "vm/allocation.h"
 #include "vm/constants_base.h"
 
@@ -243,6 +247,20 @@ const Register CALLEE_SAVED_TEMP = S5;
 // since TMP is clobbered by a far branch.
 const Register CMPRES1 = T8;
 const Register CMPRES2 = T9;
+
+// Exception object is passed in this register to the catch handlers when an
+// exception is thrown.
+const Register kExceptionObjectReg = V0;
+
+// Stack trace object is passed in this register to the catch handlers when
+// an exception is thrown.
+const Register kStackTraceObjectReg = V1;
+
+// ABI for write barrier stub.
+const Register kWriteBarrierObjectReg = A0;
+const Register kWriteBarrierValueReg = A1;
+const Register kWriteBarrierSlotReg = S5;
+
 struct InstantiationABI {
   static constexpr Register kUninstantiatedTypeArgumentsReg = T1;
   static constexpr Register kInstantiatorTypeArgumentsReg = T2;
@@ -334,12 +352,16 @@ class CallingConventions {
   static const Register ArgumentRegisters[];
   static constexpr intptr_t kArgumentRegisters = kAbiArgumentCpuRegs;
   static constexpr intptr_t kNumArgRegs = 4;
+  static constexpr Register kPointerToReturnStructRegisterCall = A0;
 
   static constexpr intptr_t kFpuArgumentRegisters = (1 << D6) | (1 << D7);
   static const FpuRegister FpuArgumentRegisters[];
   static constexpr intptr_t kNumFpuArgRegs = 2;
+  static constexpr intptr_t kNumFArgRegs = 4;
 
   static constexpr intptr_t kCalleeSaveCpuRegisters = kAbiPreservedCpuRegs;
+
+  static constexpr bool kArgumentIntRegXorFpuReg = false;
 
   static constexpr Register kReturnReg = V0;
   static constexpr Register kSecondReturnReg = V1;
@@ -348,6 +370,7 @@ class CallingConventions {
   static constexpr FpuRegister kReturnFpuReg = D0;
   static constexpr FpuRegister kSecondReturnFpuReg = D1;
 
+  static constexpr Register kFfiAnyNonAbiRegister = S2;
   static constexpr Register kFirstNonArgumentRegister = T0;
   static constexpr Register kSecondNonArgumentRegister = T1;
   static constexpr Register kStackPointerRegister = SPREG;
@@ -378,6 +401,7 @@ struct DartCallingConvention {
 
 extern const char* const cpu_reg_names[kNumberOfCpuRegisters];
 extern const char* const cpu_reg_abi_names[kNumberOfCpuRegisters];
+extern const char* const fpu_f_reg_names[kNumberOfFRegisters];
 extern const char* const fpu_reg_names[kNumberOfFRegisters];
 
 // Registers in addition to those listed in TypeTestABI used inside the
@@ -457,15 +481,33 @@ struct AssertSubtypeABI {
   // (throws if the subtype check fails).
 };
 
+// ABI for InitInstanceFieldStub.
+struct InitInstanceFieldABI {
+  static constexpr Register kInstanceReg = T1;
+  static constexpr Register kFieldReg = T2;
+  static constexpr Register kResultReg = V0;
+};
+
 // ABI for LateInitializationError stubs.
 struct LateInitializationErrorABI {
   static constexpr Register kFieldReg = T2;
+};
+
+// ABI for ThrowStub.
+struct ThrowABI {
+  static constexpr Register kExceptionReg = V0;
 };
 
 // ABI for ReThrowStub.
 struct ReThrowABI {
   static constexpr Register kExceptionReg = V0;
   static constexpr Register kStackTraceReg = V1;
+};
+
+// ABI for RangeErrorStub.
+struct RangeErrorABI {
+  static constexpr Register kLengthReg = T1;
+  static constexpr Register kIndexReg = T2;
 };
 
 // ABI for AllocateObjectStub.
@@ -482,6 +524,12 @@ struct AllocateClosureABI {
   static constexpr Register kContextReg = T2;
   static constexpr Register kInstantiatorTypeArgsReg = T3;
   static constexpr Register kScratchReg = T4;
+};
+
+// ABI for Allocate{Mint,Double,Float32x4,Float64x2}Stub.
+struct AllocateBoxABI {
+  static constexpr Register kResultReg = AllocateObjectABI::kResultReg;
+  static constexpr Register kTempReg = T2;
 };
 
 // ABI for AllocateRecordStub.
@@ -501,6 +549,12 @@ struct AllocateSmallRecordABI {
   static constexpr Register kValue1Reg = T3;
   static constexpr Register kValue2Reg = T4;
   static constexpr Register kTempReg = TMP;
+};
+
+// ABI for AllocateTypedDataArrayStub.
+struct AllocateTypedDataArrayABI {
+  static constexpr Register kResultReg = AllocateObjectABI::kResultReg;
+  static constexpr Register kLengthReg = A1;
 };
 
 // ABI for BoxDoubleStub.
