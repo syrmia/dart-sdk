@@ -1062,6 +1062,55 @@ class Assembler : public AssemblerBase {
   void MonomorphicCheckedEntryJIT();
   void MonomorphicCheckedEntryAOT();
 
+  void LoadStaticFieldAddress(Register address,
+                              Register field,
+                              Register scratch,
+                              bool is_shared);
+
+  void MaybeTraceAllocation(intptr_t cid,
+                            Label* trace,
+                            Register temp_reg,
+                            JumpDistance distance = JumpDistance::kFarJump);
+
+  void MaybeTraceAllocation(Register cid,
+                            Label* trace,
+                            Register temp_reg,
+                            JumpDistance distance = JumpDistance::kFarJump);
+
+  void TryAllocateObject(intptr_t cid,
+                         intptr_t instance_size,
+                         Label* failure,
+                         JumpDistance distance,
+                         Register instance_reg,
+                         Register temp_reg) override;
+
+  void TryAllocateArray(intptr_t cid,
+                        intptr_t instance_size,
+                        Label* failure,
+                        Register instance,
+                        Register end_address,
+                        Register temp1,
+                        Register temp2);
+
+  void CheckAllocationCanary(Register top, Register tmp = TMP) {
+#if defined(DEBUG)
+    Label okay;
+    lw(tmp, Address(top, 0));
+    AddImmediate(tmp, tmp, -kAllocationCanary);
+    beq(tmp, ZR, &okay);
+    Stop("Allocation canary");
+    Bind(&okay);
+#endif
+  }
+
+  void WriteAllocationCanary(Register top) {
+#if defined(DEBUG)
+    ASSERT(top != TMP);
+    LoadImmediate(TMP, kAllocationCanary);
+    sw(TMP, Address(top, 0));
+#endif
+  }
+
   // Emit code to transition between generated mode and native mode.
   //
   // These require that CSP and SP are equal and aligned and require two scratch

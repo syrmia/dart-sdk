@@ -1020,6 +1020,127 @@ void Assembler::MonomorphicCheckedEntryAOT() {
   set_use_far_branches(saved_use_far_branches);
 }
 
+#ifndef PRODUCT
+void Assembler::MaybeTraceAllocation(intptr_t cid,
+                                     Label* trace,
+                                     Register temp_reg,
+                                     JumpDistance distance) {
+  ASSERT(cid > 0);
+  ASSERT(!in_delay_slot_);
+  ASSERT(temp_reg != kNoRegister);
+  LoadIsolateGroup(temp_reg);
+  lw(temp_reg, Address(temp_reg, target::IsolateGroup::class_table_offset()));
+  lw(temp_reg, Address(temp_reg, target::ClassTable::allocation_tracing_state_table_offset()));
+  LoadFromOffset(temp_reg, temp_reg, target::ClassTable::AllocationTracingStateSlotOffsetFor(cid), kUnsignedByte);
+  bne(temp_reg, ZR, trace);
+}
+
+void Assembler::MaybeTraceAllocation(Register cid,
+                                     Label* trace,
+                                     Register temp_reg,
+                                     JumpDistance distance) {
+  ASSERT(temp_reg != cid);
+  ASSERT(!in_delay_slot_);
+  ASSERT(temp_reg != kNoRegister);
+  LoadIsolateGroup(temp_reg);
+  lw(temp_reg, Address(temp_reg, target::IsolateGroup::class_table_offset()));
+  lw(temp_reg,
+    Address(temp_reg,
+            target::ClassTable::allocation_tracing_state_table_offset()));
+  AddRegisters(temp_reg, cid);
+  LoadFromOffset(temp_reg, temp_reg, target::ClassTable::AllocationTracingStateSlotOffsetFor(0), kUnsignedByte);
+  bne(temp_reg, ZR, trace);
+}
+#endif  // !PRODUCT
+
+void Assembler::TryAllocateObject(intptr_t cid,
+                                  intptr_t instance_size,
+                                  Label* failure,
+                                  JumpDistance distance,
+                                  Register instance_reg,
+                                  Register temp_reg) {
+  ASSERT(failure != nullptr);
+  ASSERT(instance_reg != kNoRegister);
+  ASSERT(instance_reg != temp_reg);
+  ASSERT(temp_reg != kNoRegister);
+  ASSERT(temp_reg != T8);
+  ASSERT(instance_size != 0);
+  ASSERT(Utils::IsAligned(instance_size,
+                          target::ObjectAlignment::kObjectAlignment));
+  if (FLAG_inline_alloc &&
+      target::Heap::IsAllocatableInNewSpace(instance_size)) {
+    lw(instance_reg, Address(THR, target::Thread::top_offset()));
+    AddImmediate(instance_reg, instance_size);
+
+    // instance_reg: potential next object start.
+    lw(T8, Address(THR, target::Thread::end_offset()));
+    // Fail if heap end unsigned less than or equal to instance_reg.
+    BranchUnsignedLessEqual(T8, instance_reg, failure);
+    CheckAllocationCanary(instance_reg, temp_reg);
+
+    // If this allocation is traced, program will jump to failure path
+    // (i.e. the allocation stub) which will allocate the object and trace the
+    // allocation call site.
+    NOT_IN_PRODUCT(MaybeTraceAllocation(cid, failure, temp_reg));
+
+    // Successfully allocated the object, now update top to point to
+    // next object start and store the class in the class field of object.
+    sw(instance_reg, Address(THR, target::Thread::top_offset()));
+
+    ASSERT(instance_size >= kHeapObjectTag);
+    AddImmediate(instance_reg, -instance_size + kHeapObjectTag);
+
+    const uword tags = target::MakeTagWordForNewSpaceObject(cid, instance_size);
+    LoadImmediate(temp_reg, tags);
+    InitializeHeader(temp_reg, instance_reg);
+  } else {
+    b(failure);
+  }
+}
+
+void Assembler::TryAllocateArray(intptr_t cid,
+                                 intptr_t instance_size,
+                                 Label* failure,
+                                 Register instance,
+                                 Register end_address,
+                                 Register temp1,
+                                 Register temp2) {
+  if (FLAG_inline_alloc &&
+      target::Heap::IsAllocatableInNewSpace(instance_size)) {
+    // If this allocation is traced, program will jump to failure path
+    // (i.e. the allocation stub) which will allocate the object and trace the
+    // allocation call site.
+    NOT_IN_PRODUCT(MaybeTraceAllocation(cid, failure, temp1));
+    // Potential new object start.
+    lw(instance, Address(THR, target::Thread::top_offset()));
+    // Potential next object start.
+    AddImmediate(end_address, instance, instance_size);
+    // Branch on unsigned overflow.
+    BranchUnsignedLess(end_address, instance, failure);
+
+    // Check if the allocation fits into the remaining space.
+    // instance: potential new object start, /* inline_isolate = */ false.
+    // end_address: potential next object start.
+    lw(temp2, Address(THR, target::Thread::end_offset()));
+    BranchUnsignedGreaterEqual(end_address, temp2, failure);
+    CheckAllocationCanary(instance, temp2);
+
+    // Successfully allocated the object(s), now update top to point to
+    // next object start and initialize the object.
+    sw(end_address, Address(THR, target::Thread::top_offset()));
+    addiu(instance, instance, Immediate(kHeapObjectTag));
+    LoadImmediate(temp1, instance_size);
+
+    // Initialize the tags.
+    // instance: new object start as a tagged pointer.
+    const uword tags = target::MakeTagWordForNewSpaceObject(cid, instance_size);
+    LoadImmediate(temp1, tags);
+    InitializeHeader(temp1, instance);  // Store tags.
+  } else {
+    b(failure);
+  }
+}
+
 void Assembler::TransitionGeneratedToNative(Register destination_address,
                                             Register exit_frame_fp,
                                             Register exit_through_ffi,
