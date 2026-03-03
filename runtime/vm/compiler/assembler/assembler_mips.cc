@@ -618,6 +618,181 @@ void Assembler::GetNextPC(Register dest, Register temp) {
   }
 }
 
+void Assembler::StoreObjectIntoObjectNoBarrier(Register object,
+                                               const Address& address,
+                                               const Object& value,
+                                               MemoryOrder memory_order,
+                                               OperandSize size) {
+  ASSERT(IsOriginalObject(value));
+  ASSERT(!in_delay_slot_);
+  DEBUG_ASSERT(IsNotTemporaryScopedHandle(value));
+
+  Register value_reg;
+  if (IsSameObject(compiler::NullObject(), value)) {
+    ASSERT(object != TMP);
+    LoadObject(TMP, compiler::NullObject());
+    value_reg = TMP;
+  } else if (target::IsSmi(value) && (target::ToRawSmi(value) == 0)) {
+    value_reg = ZR;
+  } else {
+    ASSERT(object != TMP);
+    LoadObject(TMP, value);
+    value_reg = TMP;
+  }
+  if (memory_order == kRelease) {
+    sync(0);
+  }
+  Store(value_reg, address, size);
+}
+
+void Assembler::StoreBarrier(Register object,
+                             Register value,
+                             CanBeSmi can_value_be_smi,
+                             Register scratch) {
+  // x.slot = x. Barrier should have be removed at the IL level.
+  ASSERT(object != value);
+  ASSERT(object != scratch);
+  ASSERT(value != scratch);
+  ASSERT(object != RA);
+  ASSERT(value != RA);
+  ASSERT(scratch != RA);
+  ASSERT(scratch != kNoRegister);
+
+  Label done;
+  if (can_value_be_smi == kValueCanBeSmi) {
+    BranchIfSmi(value, &done, kNearJump);
+  } else {
+#if defined(DEBUG)
+    Label passed_check;
+    BranchIfNotSmi(value, &passed_check, kNearJump);
+    Breakpoint();
+    Bind(&passed_check);
+#endif
+  }
+  Push(RA);
+  lbu(scratch, FieldAddress(object, target::Object::tags_offset()));
+  lbu(RA, FieldAddress(value, target::Object::tags_offset()));
+  srl(scratch, scratch, target::UntaggedObject::kBarrierOverlapShift);
+  and_(scratch, scratch, RA);
+  lw(RA, Address(THR, target::Thread::write_barrier_mask_offset()));
+  and_(RA, RA, scratch);
+
+  Label restore_and_done;
+
+  BranchEqual(RA, ZR, &restore_and_done);
+
+  Register objectForCall = object;
+  if (value != kWriteBarrierValueReg) {
+    if (object != kWriteBarrierValueReg) {
+      Push(kWriteBarrierValueReg);
+    } else {
+      COMPILE_ASSERT(S1 != kWriteBarrierValueReg);
+      COMPILE_ASSERT(S2 != kWriteBarrierValueReg);
+      objectForCall = (value == S1) ? S2 : S1;
+      Push(kWriteBarrierValueReg);
+      Push(objectForCall);
+      mov(objectForCall, object);
+    }
+    mov(kWriteBarrierValueReg, value);
+  }
+
+  generate_invoke_write_barrier_wrapper_(objectForCall);
+
+  if (value != kWriteBarrierValueReg) {
+    if (object != kWriteBarrierValueReg) {
+      Pop(kWriteBarrierValueReg);
+    } else {
+      Pop(objectForCall);
+      Pop(kWriteBarrierValueReg);
+    }
+  }
+
+  Bind(&restore_and_done);
+  Pop(RA);
+  Bind(&done);
+}
+
+void Assembler::ArrayStoreBarrier(Register object,
+                                  Register slot,
+                                  Register value,
+                                  CanBeSmi can_value_be_smi,
+                                  Register scratch) {
+  ASSERT(object != slot);
+  ASSERT(object != value);
+  ASSERT(object != scratch);
+  ASSERT(slot != value);
+  ASSERT(slot != scratch);
+  ASSERT(value != scratch);
+  ASSERT(object != RA);
+  ASSERT(slot != RA);
+  ASSERT(value != RA);
+  ASSERT(scratch != RA);
+  ASSERT(scratch != kNoRegister);
+
+  // In parallel, test whether
+  //  - object is old and not remembered and value is new, or
+  //  - object is old and value is old and not marked and concurrent marking is
+  //    in progress
+  // If so, call the WriteBarrier stub, which will either add object to the
+  // store buffer (case 1) or add value to the marking stack (case 2).
+  // Compare UntaggedObject::StorePointer.
+  Label done;
+  if (can_value_be_smi == kValueCanBeSmi) {
+    BranchIfSmi(value, &done, kNearJump);
+  } else {
+#if defined(DEBUG)
+    Label passed_check;
+    BranchIfNotSmi(value, &passed_check, kNearJump);
+    Breakpoint();
+    Bind(&passed_check);
+#endif
+  }
+  Push(RA);
+  lbu(scratch, FieldAddress(object, target::Object::tags_offset()));
+  lbu(RA, FieldAddress(value, target::Object::tags_offset()));
+  srl(scratch, scratch, target::UntaggedObject::kBarrierOverlapShift);
+  and_(scratch, scratch, RA);
+  lw(RA, Address(THR, target::Thread::write_barrier_mask_offset()));
+  and_(RA, RA, scratch);
+
+  Label restore_and_done;
+
+  BranchEqual(RA, ZR, &restore_and_done);
+
+  if ((object != kWriteBarrierObjectReg) || (value != kWriteBarrierValueReg) ||
+      (slot != kWriteBarrierSlotReg)) {
+    // Spill and shuffle unimplemented. Currently StoreIntoArray is only used
+    // from StoreIndexInstr, which gets these exact registers from the register
+    // allocator.
+    UNIMPLEMENTED();
+  }
+  generate_invoke_array_write_barrier_();
+
+  Bind(&restore_and_done);
+  Pop(RA);
+  Bind(&done);
+}
+
+void Assembler::VerifyStoreNeedsNoWriteBarrier(Register object,
+                                               Register value) {
+  if (value == ZR) return;
+  // We can't assert the incremental barrier is not needed here, only the
+  // generational barrier. We sometimes omit the write barrier when 'value' is
+  // a constant, but we don't eagerly mark 'value' and instead assume it is also
+  // reachable via a constant pool, so it doesn't matter if it is not traced via
+  // 'object'.
+  Label done;
+  BranchIfSmi(value, &done, kNearJump);
+  lbu(CMPRES2, FieldAddress(value, target::Object::tags_offset()));
+  andi(CMPRES2, CMPRES2, Immediate(1 << target::UntaggedObject::kNewOrEvacuationCandidateBit));
+  BranchEqual(CMPRES2, ZR, &done);
+  lbu(CMPRES2, FieldAddress(object, target::Object::tags_offset()));
+  andi(CMPRES2, CMPRES2, Immediate(1 << target::UntaggedObject::kOldAndNotRememberedBit));
+  BranchEqual(CMPRES2, ZR, &done);
+  Stop("Write barrier is required");
+  Bind(&done);
+}
+
 void Assembler::EnterFrame(intptr_t frame_size) {
   ASSERT(!in_delay_slot_);
   addiu(SP, SP, Immediate(-2 * target::kWordSize));
