@@ -270,6 +270,22 @@ struct InstantiationABI {
   static constexpr Register kScratchReg = T4;
 };
 
+// Registers in addition to those listed in InstantiationABI used inside the
+// implementation of the InstantiateTypeArguments stubs.
+struct InstantiateTAVInternalRegs {
+  // The set of registers that must be pushed/popped when probing a hash-based
+  // cache due to overlap with the registers in InstantiationABI.
+  static constexpr intptr_t kSavedRegisters =
+                          (1 << InstantiationABI::kUninstantiatedTypeArgumentsReg);
+
+  // Additional registers used to probe hash-based caches.
+  static constexpr Register kEntryStartReg = T5;
+  static constexpr Register kProbeMaskReg = T6;
+  static constexpr Register kProbeDistanceReg = T7;
+  static constexpr Register kCurrentEntryIndexReg =
+                      InstantiationABI::kUninstantiatedTypeArgumentsReg;;
+};
+
 typedef uint32_t RegList;
 const RegList kAllCpuRegistersList = 0xFFFFFFFF;
 
@@ -465,6 +481,12 @@ struct InitStaticFieldABI {
   static constexpr Register kResultReg = V0;
 };
 
+// Registers used inside the implementation of InitLateStaticFieldStub.
+struct InitLateStaticFieldInternalRegs {
+  static constexpr Register kAddressReg = T3;
+  static constexpr Register kScratchReg = T4;
+};
+
 struct AssertSubtypeABI {
   static constexpr Register kSubTypeReg = T1;
   static constexpr Register kSuperTypeReg = T2;
@@ -488,8 +510,19 @@ struct InitInstanceFieldABI {
   static constexpr Register kResultReg = V0;
 };
 
+// Registers used inside the implementation of InitLateInstanceFieldStub.
+struct InitLateInstanceFieldInternalRegs {
+  static constexpr Register kAddressReg = T3;
+  static constexpr Register kScratchReg = T4;
+};
+
 // ABI for LateInitializationError stubs.
 struct LateInitializationErrorABI {
+  static constexpr Register kFieldReg = T2;
+};
+
+// ABI for FieldAccessError stubs.
+struct FieldAccessErrorABI {
   static constexpr Register kFieldReg = T2;
 };
 
@@ -592,6 +625,33 @@ struct SuspendStubABI {
 // InitSyncStarStub).
 struct InitSuspendableFunctionStubABI {
   static constexpr Register kTypeArgsReg = A0;
+};
+
+// ABI for ResumeStub
+struct ResumeStubABI {
+  static constexpr Register kSuspendStateReg = T1;
+  static constexpr Register kTempReg = T0;
+  // Registers for the frame copying (the 1st part).
+  static constexpr Register kFrameSizeReg = T2;
+  static constexpr Register kSrcFrameReg = T3;
+  static constexpr Register kDstFrameReg = T4;
+  // Registers for control transfer.
+  // (the 2nd part, can reuse registers from the 1st part)
+  static constexpr Register kResumePcReg = T2;
+  // Can also reuse kSuspendStateReg but should not conflict with CODE_REG/PP.
+  static constexpr Register kExceptionReg = T3;
+  static constexpr Register kStackTraceReg = T4;
+};
+
+// ABI for ReturnStub (ReturnAsyncStub, ReturnAsyncNotFutureStub,
+// ReturnAsyncStarStub).
+struct ReturnStubABI {
+  static constexpr Register kSuspendStateReg = T1;
+};
+
+// ABI for AsyncExceptionHandlerStub.
+struct AsyncExceptionHandlerStubABI {
+  static constexpr Register kSuspendStateReg = T1;
 };
 
 // ABI for CloneSuspendStateStub.
