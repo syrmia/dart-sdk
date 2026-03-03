@@ -998,6 +998,23 @@ class Assembler : public AssemblerBase {
   void CheckCodePointer();
   void GetNextPC(Register dest, Register temp = kNoRegister);
 
+  void StoreObjectIntoObjectNoBarrier(Register object,       // Object being stored into.
+                                      const Address& address,  // Offset into object.
+                                      const Object& value,     // Value being stored.
+                                      MemoryOrder memory_order = kRelaxedNonAtomic,
+                                      OperandSize size = kWordBytes) override;
+
+  void StoreBarrier(Register object,  // Object being stored into.
+                    Register value,   // Value being stored.
+                    CanBeSmi can_be_smi,
+                    Register scratch) override;
+  void ArrayStoreBarrier(Register object,  // Object being stored into.
+                         Register slot,    // Slot being stored into.
+                         Register value,   // Value being stored.
+                         CanBeSmi can_be_smi,
+                         Register scratch) override;
+  void VerifyStoreNeedsNoWriteBarrier(Register object, Register value)  override;
+
   // On some other platforms, we draw a distinction between safe and unsafe
   // smis.
   static bool IsSafe(const Object& object) { return true; }
