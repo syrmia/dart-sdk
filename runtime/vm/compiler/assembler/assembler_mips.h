@@ -109,7 +109,14 @@ class Assembler : public AssemblerBase {
         delay_slot_available_(false),
         in_delay_slot_(false),
         constant_pool_allowed_(false) {
-          UNIMPLEMENTED();
+    generate_invoke_write_barrier_wrapper_ = [&](Register reg) {
+      Call(Address(THR,
+                   target::Thread::write_barrier_wrappers_thread_offset(reg)));
+    };
+    generate_invoke_array_write_barrier_ = [&]() {
+      Call(
+          Address(THR, target::Thread::array_write_barrier_entry_point_offset()));
+    };
   }
   ~Assembler() {}
 
@@ -149,6 +156,8 @@ class Assembler : public AssemblerBase {
 
   void Ret() { jr(RA); }
 
+  void SetReturnAddress(Register value) { mov(RA, value); }
+
   void SmiTag(Register reg) override { sll(reg, reg, kSmiTagSize); }
 
   void SmiTag(Register dst, Register src) { sll(dst, src, kSmiTagSize); }
@@ -156,6 +165,21 @@ class Assembler : public AssemblerBase {
   void SmiUntag(Register reg) { sra(reg, reg, kSmiTagSize); }
 
   void SmiUntag(Register dst, Register src) { sra(dst, src, kSmiTagSize); }
+
+  void LoadInt32FromBoxOrSmi(Register result, Register value) override{
+    if (result == value) {
+      ASSERT(TMP != value);
+      MoveRegister(TMP, value);
+      value = TMP;
+    }
+    ASSERT(value != result);
+    Label done;
+    SmiUntag(result, value);
+    BranchIfSmi(value, &done, compiler::Assembler::kNearJump);
+    LoadFieldFromOffset(result, value, target::Mint::value_offset(),
+                        compiler::kFourBytes);
+    Bind(&done);
+  }
 
   static Address VMTagAddress() {
     return Address(THR, target::Thread::vm_tag_offset());
@@ -336,6 +360,8 @@ class Assembler : public AssemblerBase {
   }
 
   void break_(int32_t code) { Emit(BreakEncoding(code)); }
+
+  void Breakpoint() override { break_(0); }
 
   // FPU compare, always false.
   void cfd(DRegister ds, DRegister dt) {
@@ -893,6 +919,12 @@ class Assembler : public AssemblerBase {
                     Label* label,
                     JumpDistance distance = kFarJump);
 
+  void BranchIfBit(Register rn,
+                   intptr_t bit_number,
+                   Condition condition,
+                   Label* label,
+                   JumpDistance distance = kFarJump);
+
   void SetIf(Condition condition, Register rd);
 
   // For MIPS, the near argument is ignored.
@@ -924,6 +956,26 @@ class Assembler : public AssemblerBase {
     jr(TMP);
   }
 
+  void LoadAcquire(Register dst, const Address& address, OperandSize size = kWordBytes) override{
+    Load(dst, address, size);
+    sync(0);
+  }
+
+  void StoreRelease(Register src,
+                    const Address& address,
+                    OperandSize size = kWordBytes) override{
+    sync(0);
+    Store(src, address, size);
+  }
+
+  void CompareWithMemoryValue(Register value,
+                              Address address,
+                              OperandSize size = kWordBytes) override{
+    ASSERT_EQUAL(size, kFourBytes);
+    Load(TMP, address);
+    CompareRegisters(value, TMP);
+  }
+
   void LoadMemoryValue(Register dst, Register base, int32_t offset) {
     LoadFromOffset(dst, base, offset, kWordBytes);
   }
@@ -942,6 +994,13 @@ class Assembler : public AssemblerBase {
                         ObjectPoolBuilderEntry::SnapshotBehavior snapshot_behavior =
                           ObjectPoolBuilderEntry::kSnapshotable);
 
+  void RangeCheck(Register value,
+                  Register temp,
+                  intptr_t low,
+                  intptr_t high,
+                  RangeCheckCondition condition,
+                  Label* target) override;
+
   void LoadClassId(Register result, Register object);
   void LoadClassById(Register result, Register class_id);
   void CompareClassId(Register object,
@@ -949,13 +1008,48 @@ class Assembler : public AssemblerBase {
                     Register scratch = kNoRegister);
   void LoadClassIdMayBeSmi(Register result, Register object);
   void LoadTaggedClassIdMayBeSmi(Register result, Register object);
+  void EnsureHasClassIdInDEBUG(intptr_t cid,
+                               Register src,
+                               Register scratch,
+                               bool can_be_null = false) override;
 
   bool CanLoadFromObjectPool(const Object& object) const;
+
+  void Load(Register dest, const Address& address, OperandSize sz = kWordBytes) override;
+
+  void LoadIndexedPayload(Register dst,
+                          Register base,
+                          int32_t offset,
+                          Register index,
+                          ScaleFactor scale,
+                          OperandSize sz = kWordBytes) override{
+    AddShifted(TMP, base, index, scale);
+    LoadFromOffset(dst, TMP, offset - kHeapObjectTag, sz);
+  }
+
+  void LoadFromStack(Register dst, intptr_t depth) {
+    ASSERT(depth >= 0);
+    LoadFromOffset(dst, SPREG, depth * target::kWordSize);
+  }
+  void StoreToStack(Register src, intptr_t depth) {
+    ASSERT(depth >= 0);
+    StoreToOffset(src, SPREG, depth * target::kWordSize);
+  }
+
+  void CompareToStack(Register src, intptr_t depth){
+    CompareWithMemoryValue(src, Address(SPREG, target::kWordSize * depth));
+  }
 
   void LoadWordFromPoolIndex(Register rd, intptr_t index, Register pp = PP);
   // Note: clobbers TMP.
   void StoreWordToPoolIndex(Register rs, intptr_t index, Register pp = PP);
+
+  void LoadFieldAddressForOffset(Register reg, Register base, int32_t offset) override{
+    AddImmediate(reg, base, offset - kHeapObjectTag);
+  }
   
+  void LoadFieldAddressForRegOffset(Register address, Register instance, Register offset_in_words_as_smi) override;
+
   void LoadDFromOffset(DRegister reg, Register base, int32_t offset) {
     ASSERT(!in_delay_slot_);
     FRegister lo = static_cast<FRegister>(reg * 2);
@@ -970,6 +1064,14 @@ class Assembler : public AssemblerBase {
     FRegister hi = static_cast<FRegister>(reg * 2 + 1);
     swc1(lo, PrepareLargeOffset(base, offset));
     swc1(hi, PrepareLargeOffset(base, offset + target::kWordSize));
+  }
+
+  void Store(Register src,
+             const Address& address,
+             OperandSize sz = kWordBytes) override;
+
+  void StoreZero(const Address& address, Register temp = kNoRegister) {
+    Store(ZR, address);
   }
 
   void Call(Address target) {
@@ -998,6 +1100,23 @@ class Assembler : public AssemblerBase {
   void CheckCodePointer();
   void GetNextPC(Register dest, Register temp = kNoRegister);
 
+  void LoadIsolate(Register result);
+  void LoadIsolateGroup(Register rd);
+
+  void InitializeHeader(Register tags, Register object) {
+    sw(tags, FieldAddress(object, target::Object::tags_offset()));
+#if defined(TARGET_HAS_FAST_WRITE_WRITE_FENCE)
+    sync(0);
+#endif
+  }
+
+  void InitializeHeaderUntagged(Register tags, Register object) {
+    sw(tags, Address(object, target::Object::tags_offset()));
+#if defined(TARGET_HAS_FAST_WRITE_WRITE_FENCE)
+    sync(0);
+#endif
+  }
+
   void StoreObjectIntoObjectNoBarrier(Register object,       // Object being stored into.
                                       const Address& address,  // Offset into object.
                                       const Object& value,     // Value being stored.
@@ -1022,6 +1141,8 @@ class Assembler : public AssemblerBase {
 
   bool constant_pool_allowed() const { return constant_pool_allowed_; }
   void set_constant_pool_allowed(bool b) { constant_pool_allowed_ = b; }
+
+  void ExtendValue(Register rd, Register rm, OperandSize sz) override;
 
   bool use_far_branches() const {
     return FLAG_use_far_branches || use_far_branches_;
@@ -1061,6 +1182,12 @@ class Assembler : public AssemblerBase {
 
   void MonomorphicCheckedEntryJIT();
   void MonomorphicCheckedEntryAOT();
+
+  void CombineHashes(Register dst, Register other) override;
+
+  void FinalizeHashForSize(intptr_t bit_size,
+                           Register hash,
+                           Register scratch = TMP) override;
 
   void LoadStaticFieldAddress(Register address,
                               Register field,
@@ -1110,6 +1237,14 @@ class Assembler : public AssemblerBase {
     sw(TMP, Address(top, 0));
 #endif
   }
+
+  // Copy [size] bytes from [src] address to [dst] address.
+  // [size] should be a multiple of word size.
+  // Clobbers [src], [dst], [size] and [temp] registers.
+  void CopyMemoryWords(Register src,
+                       Register dst,
+                       Register size,
+                       Register temp);
 
   // Emit code to transition between generated mode and native mode.
   //
@@ -1250,6 +1385,9 @@ class Assembler : public AssemblerBase {
   }
 
   void JumpAndLink(intptr_t target_code_pool_index, CodeEntryKind entry_kind);
+
+  std::function<void(Register reg)> generate_invoke_write_barrier_wrapper_;
+  std::function<void()> generate_invoke_array_write_barrier_;
 };
 
 }  // namespace compiler
