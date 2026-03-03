@@ -292,6 +292,22 @@ void Assembler::BranchIfZero(Register rn, Label* label, JumpDistance distance) {
   beq(rn, ZR, label);
 }
 
+void Assembler::BranchIfBit(Register rn,
+                            intptr_t bit_number,
+                            Condition condition,
+                            Label* label,
+                            JumpDistance distance) {
+  ASSERT(rn != CMPRES1);
+  andi(CMPRES1, rn, compiler::Immediate(1 << bit_number));
+  if (condition == ZERO) {
+    beq(CMPRES1, ZR, label);
+  } else if (condition == NOT_ZERO) {
+    bne(CMPRES1, ZR, label);
+  } else {
+    UNREACHABLE();
+  }
+}
+
 void Assembler::SetIf(Condition condition, Register rd) {
   ASSERT(deferred_compare_ != kNone);
 
@@ -451,6 +467,21 @@ void Assembler::LoadUniqueObject(Register rd, const Object& object,
   LoadObjectHelper(rd, object, true, snapshot_behavior);
 }
 
+void Assembler::RangeCheck(Register value,
+                           Register temp,
+                           intptr_t low,
+                           intptr_t high,
+                           RangeCheckCondition condition,
+                           Label* target) {
+  Register to_check = temp != kNoRegister ? temp : value;
+  AddImmediate(to_check, value, -low);
+  if (condition == kIfInRange) {
+    BranchUnsignedLessEqual(to_check, Immediate(high - low), target);
+  } else {
+    BranchUnsignedGreater(to_check, Immediate(high - low), target);
+  }
+}
+
 void Assembler::LoadClassId(Register result, Register object) {
   UNIMPLEMENTED();
 }
@@ -466,11 +497,36 @@ void Assembler::CompareClassId(Register object,
 }
 
 void Assembler::LoadClassIdMayBeSmi(Register result, Register object) {
-  UNIMPLEMENTED();
+  ASSERT(result != object);
+  ASSERT(result != CMPRES1);
+  ASSERT(object != CMPRES1);
+  Label done;
+  LoadImmediate(result, kSmiCid);
+  BranchIfSmi(object, &done);
+  LoadClassId(result, object);
+  Bind(&done);
 }
 
 void Assembler::LoadTaggedClassIdMayBeSmi(Register result, Register object) {
-  UNIMPLEMENTED();
+  LoadClassIdMayBeSmi(result, object);
+  SmiTag(result);
+}
+
+void Assembler::EnsureHasClassIdInDEBUG(intptr_t cid,
+                                        Register src,
+                                        Register scratch,
+                                        bool can_be_null) {
+#if defined(DEBUG)
+  Comment("Check that object in register has cid %" Pd "", cid);
+  Label matches;
+  LoadClassIdMayBeSmi(scratch, src);
+  BranchEqual(scratch, compiler::Immediate(cid), &matches);
+  if (can_be_null) {
+    BranchEqual(scratch, compiler::Immediate(kNullCid), &matches);
+  }
+  Breakpoint();
+  Bind(&matches);
+#endif
 }
 
 bool Assembler::CanLoadFromObjectPool(const Object& object) const {
@@ -484,6 +540,26 @@ bool Assembler::CanLoadFromObjectPool(const Object& object) const {
 #endif
   ASSERT(IsInOldSpace(object));
   return true;
+}
+
+void Assembler::Load(Register dest, const Address& address, OperandSize sz) {
+  Address addr = PrepareLargeOffset(address.base(), address.offset());
+  switch (sz) {
+    case kByte:
+      return lb(dest, addr);
+    case kUnsignedByte:
+      return lbu(dest, addr);
+    case kTwoBytes:
+      return lh(dest, addr);
+    case kUnsignedTwoBytes:
+      return lhu(dest, addr);
+    case kUnsignedFourBytes:
+    case kFourBytes:
+      return lw(dest, addr);
+    default:
+      UNREACHABLE();
+      break;
+  }
 }
 
 void Assembler::LoadWordFromPoolIndex(Register rd,
@@ -534,6 +610,31 @@ void Assembler::StoreWordToPoolIndex(Register rs,
     } else {
       sw(rs, Address(pp, offset_low));
     }
+  }
+}
+
+void Assembler::LoadFieldAddressForRegOffset(Register address,
+                                             Register instance,
+                                             Register offset_in_words_as_smi) {
+  AddShifted(address, instance, offset_in_words_as_smi,
+             target::kWordSizeLog2 - kSmiTagShift);
+  AddImmediate(address, address, -kHeapObjectTag);
+}
+
+void Assembler::Store(Register reg, const Address& address, OperandSize sz) {
+  Address addr = PrepareLargeOffset(address.base(), address.offset());
+  switch (sz) {
+    case kUnsignedFourBytes:
+    case kFourBytes:
+      return sw(reg, addr);
+    case kUnsignedTwoBytes:
+    case kTwoBytes:
+      return sh(reg, addr);
+    case kUnsignedByte:
+    case kByte:
+      return sb(reg, addr);
+    default:
+      UNREACHABLE();
   }
 }
 
@@ -616,6 +717,14 @@ void Assembler::GetNextPC(Register dest, Register temp) {
   if (temp != kNoRegister) {
     mov(RA, temp);
   }
+}
+
+void Assembler::LoadIsolate(Register result) {
+  lw(result, Address(THR, target::Thread::isolate_offset()));
+}
+
+void Assembler::LoadIsolateGroup(Register rd) {
+  lw(rd, Address(THR, target::Thread::isolate_group_offset()));
 }
 
 void Assembler::StoreObjectIntoObjectNoBarrier(Register object,
@@ -791,6 +900,34 @@ void Assembler::VerifyStoreNeedsNoWriteBarrier(Register object,
   BranchEqual(CMPRES2, ZR, &done);
   Stop("Write barrier is required");
   Bind(&done);
+}
+
+void Assembler::ExtendValue(Register dst, Register src, OperandSize sz) {
+  switch (sz) {
+    case kUnsignedFourBytes:
+    case kFourBytes:
+      if (dst == src) return;
+      return mov(dst, src);
+    case kUnsignedTwoBytes:
+      return andi(dst, src, Immediate(0xFFFF));
+    case kTwoBytes:
+      if (dst != src) {
+        mov(dst, src);
+      }
+      sll(dst, dst, 16);
+      return sra(dst, dst, 16);
+    case kUnsignedByte:
+      return andi(dst, src, Immediate(0xFF));
+    case kByte:
+      if (dst != src) {
+        mov(dst, src);
+      }
+      sll(dst, dst, 24);
+      return sra(dst, dst, 24);
+    default:
+      UNIMPLEMENTED();
+      break;
+  }
 }
 
 void Assembler::EnterFrame(intptr_t frame_size) {
@@ -1020,6 +1157,42 @@ void Assembler::MonomorphicCheckedEntryAOT() {
   set_use_far_branches(saved_use_far_branches);
 }
 
+void Assembler::CombineHashes(Register dst, Register other) {
+  // hash += other_hash
+  addu(dst, dst, other);
+  // hash += hash << 10
+  sll(other, dst, 10);
+  addu(dst, dst, other);
+  // hash ^= hash >> 6
+  srl(other, dst, 6);
+  xor_(dst, dst, other);
+}
+
+void Assembler::FinalizeHashForSize(intptr_t bit_size,
+                                    Register hash,
+                                    Register scratch) {
+  ASSERT(bit_size > 0);
+  ASSERT(bit_size <= kBitsPerInt32);
+  ASSERT(scratch != kNoRegister);
+  // hash += hash << 3;
+  sll(scratch, hash, 3);
+  addu(hash, hash, scratch);
+  // hash ^= hash >> 11;  // Logical shift, unsigned hash.
+  srl(scratch, hash, 11);
+  xor_(hash, hash, scratch);
+  // hash += hash << 15;
+  sll(scratch, hash, 15);
+  addu(hash, hash, scratch);
+
+  // Size to fit.
+  if (bit_size < kBitsPerInt32) {
+    AndImmediate(hash, hash, Utils::NBitMask(bit_size));
+  }
+  // return (hash == 0) ? 1 : hash;
+  LoadImmediate(CMPRES1, 1);
+  movz(hash, CMPRES1, hash);  // If hash is 0, set to 1.
+}
+
 #ifndef PRODUCT
 void Assembler::MaybeTraceAllocation(intptr_t cid,
                                      Label* trace,
@@ -1139,6 +1312,22 @@ void Assembler::TryAllocateArray(intptr_t cid,
   } else {
     b(failure);
   }
+}
+
+void Assembler::CopyMemoryWords(Register src,
+                                Register dst,
+                                Register size,
+                                Register temp) {
+  Label loop, done;
+  beq(size, ZR, &done);
+  Bind(&loop);
+  lw(temp, Address(src));
+  AddImmediate(src, src, target::kWordSize);
+  sw(temp, Address(dst));
+  AddImmediate(dst, dst, target::kWordSize);
+  AddImmediate(size, size, -target::kWordSize);
+  bne(size, ZR, &loop);
+  Bind(&done);
 }
 
 void Assembler::TransitionGeneratedToNative(Register destination_address,
