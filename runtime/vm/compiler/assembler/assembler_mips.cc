@@ -102,6 +102,91 @@ void Assembler::TestImmediate(Register rn, int32_t imm, OperandSize sz) {
   deferred_imm_ = imm;
 }
 
+void Assembler::ArithmeticShiftRightImmediate(Register dst,
+                                              Register src,
+                                              int32_t shift,
+                                              OperandSize sz) {
+
+  ASSERT(IsSignedOperand(sz));
+  ASSERT((shift >= 0) && (shift < OperandSizeInBits(sz)));
+  if (shift == 0) {
+    return ExtendValue(dst, src, sz);
+  }
+  if (shift != 0) {
+    sra(dst, src, shift);
+  }
+}
+
+void Assembler::CompareWords(Register reg1,
+                             Register reg2,
+                             intptr_t offset,
+                             Register count,
+                             Register temp,
+                             Label* equals) {
+  ASSERT(reg1 != TMP);
+  ASSERT(reg2 != TMP);
+  ASSERT(count != TMP);
+  ASSERT(temp != TMP);
+  Label loop;
+  Bind(&loop);
+  blez(count, equals);
+  AddImmediate(count, count, -1);
+  lw(temp, FieldAddress(reg1, offset));
+  lw(TMP, FieldAddress(reg2, offset));
+  AddImmediate(reg1, reg1, target::kWordSize);
+  AddImmediate(reg2, reg2, target::kWordSize);
+  beq(temp, TMP, &loop);
+}
+
+void Assembler::AddShifted(Register dest,
+                           Register base,
+                           Register index,
+                           int32_t shift) {
+  if (shift == 0) {
+    addu(dest, index, base);
+  } else if (shift < 0) {
+    if (base != dest) {
+      sra(dest, index, -shift);
+      addu(dest, dest, base);
+    } else {
+      ASSERT(TMP != dest);
+      Push(TMP);
+      sra(TMP, index, -shift);
+      addu(dest, TMP, base);
+      Pop(TMP);
+    }
+  } else {
+    if (base != dest) {
+      sll(dest, index, shift);
+      addu(dest, dest, base);
+    } else {
+      ASSERT(TMP != dest);
+      Push(TMP);
+      sll(TMP, index, shift);
+      addu(dest, TMP, base);
+      Pop(TMP);
+    }
+  }
+}
+
+void Assembler::AddScaled(Register dest,
+                          Register base,
+                          Register index,
+                          ScaleFactor scale,
+                          int32_t disp) {
+    if (base == kNoRegister || base == ZR) {
+      if (scale == TIMES_1) {
+        AddImmediate(dest, index, disp);
+      } else {
+        sll(dest, index, scale);
+        AddImmediate(dest, disp);
+      }
+    } else {
+      AddShifted(dest, base, index, scale);
+      AddImmediate(dest, disp);
+    }
+  }
+
 // Branch to label if condition is true.
 void Assembler::BranchIf(Condition cond, Label* l, JumpDistance distance) {
   ASSERT(!in_delay_slot_);

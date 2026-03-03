@@ -736,6 +736,73 @@ class Assembler : public AssemblerBase {
     UNIMPLEMENTED();
   }
 
+  void LslImmediate(Register rd,
+                    Register rn,
+                    int32_t shift,
+                    OperandSize sz = kEightBytes) override {
+    ASSERT((shift >= 0) && (shift < OperandSizeInBits(sz)));
+    if (shift == 0) {
+      mov(rd, rn);
+    } else {
+      sll(rd, rn, shift);
+    }
+  }
+
+  void LslImmediate(Register reg,
+                    int32_t shift,
+                    OperandSize sz = kWordBytes) override{
+    LslImmediate(reg, reg, shift, sz);
+  }
+
+    void LslRegister(Register dst, Register shift) override{
+    sllv(dst, dst, shift);
+  }
+
+  void LsrImmediate(Register rd, int32_t shift) override {
+    srl(rd, rd, shift);
+  }
+
+  void ArithmeticShiftRightImmediate(Register dst,
+                                     Register src,
+                                     int32_t shift,
+                                     OperandSize sz = kWordBytes) override;
+  void ArithmeticShiftRightImmediate(Register reg,
+                                     int32_t shift,
+                                     OperandSize sz = kWordBytes) override {
+    ArithmeticShiftRightImmediate(reg, reg, shift);
+  }
+
+  void CompareWords(Register reg1,
+                    Register reg2,
+                    intptr_t offset,
+                    Register count,
+                    Register temp,
+                    Label* equals) override;
+
+  void AddShifted(Register dest, Register base, Register index, int32_t shift);
+  void AddScaled(Register dest,
+                 Register base,
+                 Register index,
+                 ScaleFactor scale,
+                 int32_t disp) override;
+
+  void SubRegisters(Register rd, Register rs) { subu(rd, rd, rs); }
+
+  void MulImmediate(Register dst,
+                    target::word imm,
+                    OperandSize sz = kWordBytes) override{
+    if (Utils::IsPowerOfTwo(imm)) {
+      const int32_t shift = Utils::ShiftForPowerOfTwo(imm);
+      ASSERT(sz == kFourBytes);
+      sll(dst, dst, shift);
+    } else {
+      LoadImmediate(TMP, imm);
+      ASSERT(sz == kFourBytes);
+      mult( dst, TMP);
+      mflo(dst);
+    }
+  }
+
   void BranchEqual(Register rd, Register rn, Label* l) { beq(rd, rn, l); }
 
   void BranchEqual(Register rd, const Immediate& imm, Label* l) {
