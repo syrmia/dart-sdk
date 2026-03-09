@@ -1115,6 +1115,8 @@ char* Dart::FeaturesString(IsolateGroup* isolate_group,
     buffer.AddString(" riscv32");
 #elif defined(TARGET_ARCH_RISCV64)
     buffer.AddString(" riscv64");
+#elif defined(TARGET_ARCH_MIPS)
+    buffer.AddString(" mips");
 #else
 #error What architecture?
 #endif
