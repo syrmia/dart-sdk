@@ -418,7 +418,7 @@ struct DartCallingConvention {
 extern const char* const cpu_reg_names[kNumberOfCpuRegisters];
 extern const char* const cpu_reg_abi_names[kNumberOfCpuRegisters];
 extern const char* const fpu_f_reg_names[kNumberOfFRegisters];
-extern const char* const fpu_reg_names[kNumberOfFRegisters];
+extern const char* const fpu_reg_names[kNumberOfFpuRegisters];
 
 // Registers in addition to those listed in TypeTestABI used inside the
 // implementation of type testing stubs that are _not_ preserved.
