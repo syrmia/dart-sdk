@@ -201,6 +201,12 @@ void StubCodeCompiler::GenerateFfiCallbackTrampolineStub() {
 
   // Exit the temporary isolate.
   {
+    const RegisterSet return_registers(
+        (1 << CallingConventions::kReturnReg) |
+            (1 << CallingConventions::kSecondReturnReg),
+        1 << CallingConventions::kReturnFpuReg);
+    __ PushRegisters(return_registers);
+
     __ EnterFrame(0);
     __ ReserveAlignedFrameSpace(4 * target::kWordSize);
 
@@ -211,6 +217,7 @@ void StubCodeCompiler::GenerateFfiCallbackTrampolineStub() {
     __ jalr(T9);
 
     __ LeaveFrame();
+    __ PopRegisters(return_registers);
   }
 
   __ Bind(&done);
