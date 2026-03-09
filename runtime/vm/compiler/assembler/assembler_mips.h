@@ -30,9 +30,11 @@
 //   available at:
 //   https://s3-eu-west-1.amazonaws.com/downloads-mips/documents/MD00086-2B-MIPS32BIS-AFP-6.06.pdf
 namespace dart {
-namespace compiler {
 
+// Forward declarations.
 class RegisterSet;
+
+namespace compiler {
 
 class Immediate : public ValueObject {
  public:
