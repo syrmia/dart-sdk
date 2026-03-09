@@ -18,6 +18,8 @@
 #include "vm/simulator_arm64.h"
 #elif defined(TARGET_ARCH_RISCV32) || defined(TARGET_ARCH_RISCV64)
 #include "vm/simulator_riscv.h"
+#elif defined(TARGET_ARCH_MIPS)
+#include "vm/simulator_mips.h"
 #else
 #error Unknown architecture.
 #endif  // defined(TARGET_ARCH_...)
