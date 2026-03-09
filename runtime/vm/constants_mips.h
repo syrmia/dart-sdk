@@ -418,7 +418,7 @@ struct DartCallingConvention {
 extern const char* const cpu_reg_names[kNumberOfCpuRegisters];
 extern const char* const cpu_reg_abi_names[kNumberOfCpuRegisters];
 extern const char* const fpu_f_reg_names[kNumberOfFRegisters];
-extern const char* const fpu_reg_names[kNumberOfFRegisters];
+extern const char* const fpu_reg_names[kNumberOfFpuRegisters];
 
 // Registers in addition to those listed in TypeTestABI used inside the
 // implementation of type testing stubs that are _not_ preserved.
@@ -449,7 +449,7 @@ struct STCInternalRegs {
 
 // Calling convention when calling TypeTestingStub and SubtypeTestCacheStub.
 struct TypeTestABI {
-  static constexpr Register kInstanceReg = A0;
+  static constexpr Register kInstanceReg = V0;
   static constexpr Register kDstTypeReg = A3;
   static constexpr Register kInstantiatorTypeArgumentsReg = A1;
   static constexpr Register kFunctionTypeArgumentsReg = A2;
@@ -457,7 +457,7 @@ struct TypeTestABI {
   static constexpr Register kScratchReg = T2;
 
   // For calls to InstanceOfStub.
-  static constexpr Register kInstanceOfResultReg = V0;
+  static constexpr Register kInstanceOfResultReg = kInstanceReg;
   // For calls to SubtypeNTestCacheStub. Must not be the same as any non-scratch
   // register above.
   static constexpr Register kSubtypeTestCacheResultReg = kScratchReg;
@@ -1060,6 +1060,8 @@ class Instr {
   DISALLOW_ALLOCATION();
   DISALLOW_IMPLICIT_CONSTRUCTORS(Instr);
 };
+
+constexpr uword kBreakInstructionFiller = 0x0000000D;
 
 }  // namespace dart
 

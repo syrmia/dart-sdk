@@ -5,7 +5,7 @@
 import 'common.dart';
 
 /// The hardware architectures the Dart VM runs on.
-enum _Architecture { arm, arm64, ia32, x64, riscv32, riscv64 }
+enum _Architecture { arm, arm64, ia32, x64, riscv32, riscv64, mips }
 
 extension on _Architecture {
   /// The size of integer registers and memory addresses in bytes.
@@ -14,6 +14,7 @@ extension on _Architecture {
       case _Architecture.arm:
       case _Architecture.ia32:
       case _Architecture.riscv32:
+      case _Architecture.mips:
         return 4;
       case _Architecture.arm64:
       case _Architecture.x64:
@@ -91,6 +92,9 @@ class Abi {
   /// The application binary interface for linux on 64-bit RISC-V.
   static const linuxRiscv64 = _linuxRiscv64;
 
+  /// The application binary interface for linux on the MIPS architecture.
+  static const linuxMIPS = _linuxMIPS;
+
   /// The application binary interface for MacOS on the Arm64 architecture.
   static const macosArm64 = _macosArm64;
 
@@ -132,6 +136,7 @@ class Abi {
     linuxX64,
     linuxRiscv32,
     linuxRiscv64,
+    linuxMIPS,
     macosArm64,
     macosX64,
     windowsArm64,
@@ -176,6 +181,7 @@ class Abi {
   static const _linuxX64 = Abi._(_Architecture.x64, _OS.linux);
   static const _linuxRiscv32 = Abi._(_Architecture.riscv32, _OS.linux);
   static const _linuxRiscv64 = Abi._(_Architecture.riscv64, _OS.linux);
+  static const _linuxMIPS = Abi._(_Architecture.mips, _OS.linux);
   static const _macosArm64 = Abi._(_Architecture.arm64, _OS.macos);
   static const _macosX64 = Abi._(_Architecture.x64, _OS.macos);
   static const _windowsArm64 = Abi._(_Architecture.arm64, _OS.windows);
@@ -202,6 +208,7 @@ const Map<Abi, String> abiNames = {
   Abi.linuxX64: 'linuxX64',
   Abi.linuxRiscv32: 'linuxRiscv32',
   Abi.linuxRiscv64: 'linuxRiscv64',
+  Abi.linuxMIPS: 'linuxMIPS',
   Abi.macosArm64: 'macosArm64',
   Abi.macosX64: 'macosX64',
   Abi.windowsArm64: 'windowsArm64',
@@ -254,6 +261,7 @@ const Map<Abi, Map<NativeType, int>> nonSizeAlignment = {
   Abi.androidArm: _wordSize32Align64,
   Abi.linuxArm: _wordSize32Align64,
   Abi.linuxRiscv32: _wordSize32Align64,
+  Abi.linuxMIPS: _wordSize32Align64,
   Abi.windowsIA32: _wordSize32Align64,
 };
 

@@ -503,7 +503,7 @@ intptr_t OS::ActivationFrameAlignment() {
     defined(TARGET_ARCH_ARM64) || defined(TARGET_ARCH_RISCV32) ||              \
     defined(TARGET_ARCH_RISCV64)
   const int kMinimumAlignment = 16;
-#elif defined(TARGET_ARCH_ARM)
+#elif defined(TARGET_ARCH_ARM) || defined(TARGET_ARCH_MIPS)
   const int kMinimumAlignment = 8;
 #else
 #error Unsupported architecture.
