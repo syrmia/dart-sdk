@@ -189,7 +189,8 @@ class ProfilerStackWalker : public ValueObject {
 
 // The layout of C stack frames.
 #if defined(HOST_ARCH_IA32) || defined(HOST_ARCH_X64) ||                       \
-    defined(HOST_ARCH_ARM) || defined(HOST_ARCH_ARM64)
+    defined(HOST_ARCH_ARM) || defined(HOST_ARCH_ARM64) ||                      \
+    defined(HOST_ARCH_MIPS)
 // +-------------+
 // | saved IP/LR |
 // +-------------+
@@ -980,7 +981,8 @@ bool ReturnAddressLocator::LocateReturnAddress(uword* return_address) {
   return false;
 }
 #elif defined(TARGET_ARCH_ARM) || defined(TARGET_ARCH_ARM64) ||                \
-    defined(TARGET_ARCH_RISCV32) || defined(TARGET_ARCH_RISCV64)
+    defined(TARGET_ARCH_RISCV32) || defined(TARGET_ARCH_RISCV64) ||            \
+    defined(TARGET_ARCH_MIPS)
 bool ReturnAddressLocator::LocateReturnAddress(uword* return_address) {
   ASSERT(return_address != nullptr);
   return false;
