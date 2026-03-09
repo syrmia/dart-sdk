@@ -244,6 +244,15 @@ DEFINE_NATIVE_ENTRY(Float32x4_clamp, 0, 3) {
   _y = fmaxf(_y, lo.y());
   _z = fmaxf(_z, lo.z());
   _w = fmaxf(_w, lo.w());
+#elif defined(TARGET_ARCH_MIPS)
+  _x = fminf(self.x(), hi.x());
+  _y = fminf(self.y(), hi.y());
+  _z = fminf(self.z(), hi.z());
+  _w = fminf(self.w(), hi.w());
+  _x = fmaxf(_x, lo.x());
+  _y = fmaxf(_y, lo.y());
+  _z = fmaxf(_z, lo.z());
+  _w = fmaxf(_w, lo.w());
 #else
 #error Unknown architecture.
 #endif
@@ -803,6 +812,11 @@ DEFINE_NATIVE_ENTRY(Float64x2_clamp, 0, 3) {
   _x = vmaxd(_x, lo.x());
   _y = vmaxd(_y, lo.y());
 #elif defined(TARGET_ARCH_RISCV32) || defined(TARGET_ARCH_RISCV64)
+  _x = fmin(self.x(), hi.x());
+  _y = fmin(self.y(), hi.y());
+  _x = fmax(_x, lo.x());
+  _y = fmax(_y, lo.y());
+#elif defined(TARGET_ARCH_MIPS)
   _x = fmin(self.x(), hi.x());
   _y = fmin(self.y(), hi.y());
   _x = fmax(_x, lo.x());
