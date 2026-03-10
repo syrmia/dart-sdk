@@ -87,7 +87,7 @@ def HostCpuForArch(arch):
         candidates = ['riscv32', 'arm', 'x86', 'riscv64', 'arm64', 'x64']
     elif arch in ['riscv64', 'simriscv64']:
         candidates = ['riscv64', 'arm64', 'x64']
-    elif arch in ['mips']:
+    elif arch in ['mips', 'simmips']:
         candidates = ['mips', 'x86']
     else:
         raise Exception("Unknown Dart architecture: %s" % arch)
@@ -131,6 +131,8 @@ def TargetCpuForArch(arch):
         candidates = ['arm', 'riscv32', 'x86']
     elif arch in ['simx64', 'simx64c', 'simarm64', 'simarm64c', 'simriscv64']:
         candidates = ['arm64', 'riscv64', 'x64']
+    elif arch in ['simmips']:
+        candidates = ['mips', 'x86']
     else:
         raise Exception("Unknown Dart architecture: %s" % arch)
 
