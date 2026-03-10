@@ -1063,6 +1063,12 @@ class Instr {
 
 constexpr uword kBreakInstructionFiller = 0x0000000D;
 
+inline Register ConcreteRegister(Register r) {
+  return r;
+}
+
+#define LINK_REGISTER RA
+
 }  // namespace dart
 
 #endif  // RUNTIME_VM_CONSTANTS_MIPS_H_
