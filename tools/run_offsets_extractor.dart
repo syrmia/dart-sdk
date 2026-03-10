@@ -254,6 +254,7 @@ Future<List<T>> forAllConfigurationsMode<T>(
     'simarm64c',
     'simriscv32',
     'simriscv64',
+    'simmips',
   ];
   final futures = <Future<T>>[];
   for (final mode in ['release', 'product']) {
