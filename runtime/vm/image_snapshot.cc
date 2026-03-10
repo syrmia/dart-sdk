@@ -1032,9 +1032,9 @@ intptr_t ImageWriter::AlignWithBreakInstructions(intptr_t alignment,
     bytes_written += WriteTargetWord(kBreakInstructionFiller);
   }
   // clang-format off
-#if defined(TARGET_ARCH_ARM)
-  // All instructions are 4 bytes long on ARM architectures, so on 32-bit ARM
-  // there won't be any padding.
+#if defined(TARGET_ARCH_ARM) || defined(TARGET_ARCH_MIPS)
+  // All instructions are 4 bytes long on ARM and MIPS architectures, so on
+  // 32-bit ARM or MIPS there won't be any padding.
   ASSERT_EQUAL(remaining, 0);
 #elif defined(TARGET_ARCH_ARM64)
   // All instructions are 4 bytes long on ARM architectures, so on 64-bit ARM
@@ -1828,6 +1828,21 @@ void AssemblyImageWriter::FrameUnwindPrologue() {
   assembly_stream_->WriteString(".cfi_def_cfa fp, 0\n");
   assembly_stream_->WriteString(".cfi_offset ra, -8\n");
   assembly_stream_->WriteString(".cfi_offset fp, -16\n");
+#elif defined(TARGET_ARCH_MIPS)
+  COMPILE_ASSERT(FP == R30);
+  COMPILE_ASSERT(RA == R31);
+  assembly_stream_->WriteString(".cfi_def_cfa $fp, 0\n");  // CFA is fp+0
+  assembly_stream_->WriteString(".cfi_offset $fp, 0\n");   // saved fp is *(CFA+0)
+  assembly_stream_->WriteString(".cfi_offset $ra, 4\n");   // saved pc is *(CFA+4)
+  // saved sp is CFA+16
+  // Should be ".cfi_value_offset sp, 8", but requires gcc newer than late
+  // 2016.
+  // DW_CFA_expression          0x10
+  // uleb128 register (sp)        29
+  // uleb128 size of operation     2
+  // DW_OP_plus_uconst          0x23
+  // uleb128 addend                8
+  assembly_stream_->WriteString(".cfi_escape 0x10, 29, 2, 0x23, 8\n");
 #else
 #error Unexpected architecture.
 #endif
