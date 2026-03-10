@@ -44,6 +44,7 @@ vm_sources = [
   "code_patcher_arm.cc",
   "code_patcher_arm64.cc",
   "code_patcher_ia32.cc",
+  "code_patcher_mips.cc",
   "code_patcher_riscv.cc",
   "code_patcher_x64.cc",
   "constants_arm.cc",
