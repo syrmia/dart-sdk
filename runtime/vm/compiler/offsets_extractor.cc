@@ -35,6 +35,8 @@
 #define ARCH_DEF_CPU "defined(TARGET_ARCH_RISCV32)"
 #elif defined(TARGET_ARCH_RISCV64)
 #define ARCH_DEF_CPU "defined(TARGET_ARCH_RISCV64)"
+#elif defined(TARGET_ARCH_MIPS)
+#define ARCH_DEF_CPU "defined(TARGET_ARCH_MIPS)"
 #else
 #error Unknown architecture
 #endif
