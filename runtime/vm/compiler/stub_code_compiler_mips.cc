@@ -401,6 +401,68 @@ void StubCodeCompiler::GenerateInvokeDartCodeStub() {
   __ LeaveFrameAndReturn();
 }
 
+// S5: Contains an ICData.
+void StubCodeCompiler::GenerateICCallBreakpointStub() {
+#if defined(PRODUCT)
+  __ Stop("No debugging in PRODUCT mode");
+#else
+  __ Comment("ICCallBreakpoint stub");
+  __ EnterStubFrame();
+  __ addiu(SP, SP, Immediate(-3 *target::kWordSize));
+  __ sw(A0, Address(SP, 2 *target::kWordSize));
+  __ sw(S5, Address(SP, 1 *target::kWordSize));
+  __ sw(ZR, Address(SP, 0 *target::kWordSize));
+
+  __ CallRuntime(kBreakpointRuntimeHandlerRuntimeEntry, 0);
+
+  __ lw(A0, Address(SP, 2 *target::kWordSize));
+  __ lw(S5, Address(SP, 1 *target::kWordSize));
+  __ lw(CODE_REG, Address(SP, 0 *target::kWordSize));
+  __ addiu(SP, SP, Immediate(3 *target::kWordSize));
+  __ LeaveStubFrame();
+  __ lw(TMP, FieldAddress(CODE_REG, Code::entry_point_offset()));
+  __ jr(TMP);
+#endif  // defined(PRODUCT)
+}
+
+// S5: ICData
+void StubCodeCompiler::GenerateUnoptStaticCallBreakpointStub() {
+#if defined(PRODUCT)
+  __ Stop("No debugging in PRODUCT mode");
+#else
+  __ EnterStubFrame();
+  __ AddImmediate(SP, SP, -2 * target::kWordSize);
+  __ sw(S5, Address(SP, 1 * target::kWordSize));  // Preserve IC data.
+  __ sw(ZR, Address(SP, 0 * target::kWordSize));  // Space for result.
+  __ CallRuntime(kBreakpointRuntimeHandlerRuntimeEntry, 0);
+  __ lw(CODE_REG, Address(SP, 0 * target::kWordSize));  // Original stub.
+  __ lw(S5, Address(SP, 1 * target::kWordSize));        // Restore IC data.
+  __ AddImmediate(SP, SP, 2 * target::kWordSize);
+  __ LeaveStubFrame();
+  __ LoadFieldFromOffset(TMP, CODE_REG, target::Code::entry_point_offset());
+  __ jr(TMP);
+#endif  // defined(PRODUCT)
+}
+
+void StubCodeCompiler::GenerateRuntimeCallBreakpointStub() {
+#if defined(PRODUCT)
+  __ Stop("No debugging in PRODUCT mode");
+#else
+  __ Comment("RuntimeCallBreakpoint stub");
+  __ EnterStubFrame();
+  __ addiu(SP, SP, Immediate(-1 *target::kWordSize));
+  __ sw(ZR, Address(SP, 0 *target::kWordSize));
+
+  __ CallRuntime(kBreakpointRuntimeHandlerRuntimeEntry, 0);
+
+  __ lw(CODE_REG, Address(SP, 0 *target::kWordSize));
+  __ addiu(SP, SP, Immediate(1 *target::kWordSize));
+  __ LeaveStubFrame();
+  __ lw(TMP, FieldAddress(CODE_REG, Code::entry_point_offset()));
+  __ jr(TMP);
+#endif  // defined(PRODUCT)
+}
+
 }  // namespace compiler
 }  // namespace dart
 
