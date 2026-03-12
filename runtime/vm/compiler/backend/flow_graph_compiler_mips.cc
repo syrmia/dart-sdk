@@ -11,6 +11,17 @@
 
 namespace dart {
 
+void FlowGraphCompiler::EnterIntrinsicMode() {
+  ASSERT(!intrinsic_mode());
+  intrinsic_mode_ = true;
+  ASSERT(!assembler()->constant_pool_allowed());
+}
+
+void FlowGraphCompiler::ExitIntrinsicMode() {
+  ASSERT(intrinsic_mode());
+  intrinsic_mode_ = false;
+}
+
 #define __ assembler()->
 
 void FlowGraphCompiler::EmitCallToStub(
