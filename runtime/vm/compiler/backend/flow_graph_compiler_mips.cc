@@ -11,6 +11,22 @@
 
 namespace dart {
 
+FlowGraphCompiler::~FlowGraphCompiler() {
+  // BlockInfos are zone-allocated, so their destructors are not called.
+  // Verify the labels explicitly here.
+  for (int i = 0; i < block_info_.length(); ++i) {
+    ASSERT(!block_info_[i]->jump_label()->IsLinked());
+  }
+}
+
+bool FlowGraphCompiler::SupportsUnboxedSimd128() {
+  return false;
+}
+
+bool FlowGraphCompiler::CanConvertInt64ToDouble() {
+  return false;
+}
+
 void FlowGraphCompiler::EnterIntrinsicMode() {
   ASSERT(!intrinsic_mode());
   intrinsic_mode_ = true;
