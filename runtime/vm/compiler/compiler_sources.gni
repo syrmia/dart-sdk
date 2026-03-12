@@ -59,6 +59,7 @@ compiler_sources = [
   "backend/flow_graph_compiler_arm.cc",
   "backend/flow_graph_compiler_arm64.cc",
   "backend/flow_graph_compiler_ia32.cc",
+  "backend/flow_graph_compiler_mips.cc",
   "backend/flow_graph_compiler_riscv.cc",
   "backend/flow_graph_compiler_x64.cc",
   "backend/il.cc",
