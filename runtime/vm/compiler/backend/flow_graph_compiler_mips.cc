@@ -163,6 +163,67 @@ void FlowGraphCompiler::EmitTailCallToStub(const Code& stub) {
   }
 }
 
+void FlowGraphCompiler::EmitInstanceCallJIT(const Code& stub,
+                                            const ICData& ic_data,
+                                            intptr_t deopt_id,
+                                            const InstructionSource& source,
+                                            LocationSummary* locs,
+                                            Code::EntryKind entry_kind) {
+  ASSERT(CanCallDart());
+  ASSERT(entry_kind == Code::EntryKind::kNormal ||
+         entry_kind == Code::EntryKind::kUnchecked);
+  ASSERT(Array::Handle(zone(), ic_data.arguments_descriptor()).Length() > 0);
+  __ LoadFromOffset(A0, SP, (ic_data.SizeWithoutTypeArgs() - 1) * kWordSize);
+  __ LoadUniqueObject(S5, ic_data);
+  __ LoadUniqueObject(CODE_REG, stub);
+  const intptr_t entry_point_offset =
+      entry_kind == Code::EntryKind::kNormal
+          ? Code::entry_point_offset(Code::EntryKind::kMonomorphic)
+          : Code::entry_point_offset(Code::EntryKind::kMonomorphicUnchecked);
+  __ lw(T9, compiler::FieldAddress(CODE_REG, entry_point_offset));
+  __ jalr(T9);
+  EmitCallsiteMetadata(source, deopt_id, UntaggedPcDescriptors::kIcCall, locs,
+                       pending_deoptimization_env_);
+  EmitDropArguments(ic_data.SizeWithTypeArgs());
+}
+
+void FlowGraphCompiler::EmitInstanceCallAOT(const ICData& ic_data,
+                                            intptr_t deopt_id,
+                                            const InstructionSource& source,
+                                            LocationSummary* locs,
+                                            Code::EntryKind entry_kind,
+                                            bool receiver_can_be_smi) {
+  ASSERT(CanCallDart());
+  ASSERT(entry_kind == Code::EntryKind::kNormal ||
+         entry_kind == Code::EntryKind::kUnchecked);
+  ASSERT(ic_data.NumArgsTested() == 1);
+  const Code& initial_stub = StubCode::SwitchableCallMiss();
+  const char* switchable_call_mode = "smiable";
+  if (!receiver_can_be_smi) {
+    switchable_call_mode = "non-smi";
+    ic_data.set_receiver_cannot_be_smi(true);
+  }
+  const UnlinkedCall& data =
+      UnlinkedCall::ZoneHandle(zone(), ic_data.AsUnlinkedCall());
+
+  __ Comment("InstanceCallAOT (%s)", switchable_call_mode);
+  __ LoadImmediate(ARGS_DESC_REG, 0);
+  __ lw(A0,
+        compiler::Address(SP, (ic_data.SizeWithoutTypeArgs() - 1) * compiler::target::kWordSize));
+  // The AOT runtime will replace the slot in the object pool with the
+  // entrypoint address - see app_snapshot.cc.
+  const auto snapshot_behavior =
+      compiler::ObjectPoolBuilderEntry::kResetToSwitchableCallMissEntryPoint;
+
+  __ LoadUniqueObject(T9, initial_stub, snapshot_behavior);
+  __ LoadUniqueObject(ICREG, data);
+  __ jalr(T9);
+
+  EmitCallsiteMetadata(source, deopt_id, UntaggedPcDescriptors::kOther, locs,
+                       pending_deoptimization_env_);
+  EmitDropArguments(ic_data.SizeWithTypeArgs());
+}
+
 // This function must be in sync with FlowGraphCompiler::RecordSafepoint and
 // FlowGraphCompiler::SlowPathEnvironmentFor.
 void FlowGraphCompiler::SaveLiveRegisters(LocationSummary* locs) {
