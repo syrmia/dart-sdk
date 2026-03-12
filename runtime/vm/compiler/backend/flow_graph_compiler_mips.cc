@@ -77,6 +77,20 @@ void FlowGraphCompiler::EmitTailCallToStub(const Code& stub) {
   }
 }
 
+// This function must be in sync with FlowGraphCompiler::RecordSafepoint and
+// FlowGraphCompiler::SlowPathEnvironmentFor.
+void FlowGraphCompiler::SaveLiveRegisters(LocationSummary* locs) {
+#if defined(DEBUG)
+  locs->CheckWritableInputs();
+  ClobberDeadTempRegisters(locs);
+#endif
+  __ PushRegisters(*locs->live_registers());
+}
+
+void FlowGraphCompiler::RestoreLiveRegisters(LocationSummary* locs) {
+  __ PopRegisters(*locs->live_registers());
+}
+
 #undef __
 
 }  // namespace dart
