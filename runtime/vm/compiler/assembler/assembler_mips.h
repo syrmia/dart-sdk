@@ -365,6 +365,8 @@ class Assembler : public AssemblerBase {
 
   void Breakpoint() override { break_(0); }
 
+  void StoreStoreFence() override { sync(0); }
+
   // FPU compare, always false.
   void cfd(DRegister ds, DRegister dt) {
     FRegister fs = static_cast<FRegister>(ds * 2);
@@ -1102,6 +1104,14 @@ class Assembler : public AssemblerBase {
   void CallRuntime(const RuntimeEntry& entry,
                    intptr_t argument_count,
                    bool tsan_enter_exit = true);
+
+  void CallCFunction(Address target) { Call(target); }
+  void CallCFunction(Register target) {
+    if (target != T9) {
+      mov(T9, target);
+    }
+    Call(T9);
+  }
   
   void LoadPoolPointer(Register reg = PP);
   void CheckCodePointer();
