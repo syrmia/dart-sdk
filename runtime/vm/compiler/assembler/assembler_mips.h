@@ -948,6 +948,27 @@ class Assembler : public AssemblerBase {
     bne(CMPRES1, ZR, label);
   }
 
+  void BranchLink(const Code& code,
+                  ObjectPoolBuilderEntry::Patchability patchable =
+                      ObjectPoolBuilderEntry::kNotPatchable,
+                  CodeEntryKind entry_kind = CodeEntryKind::kNormal,
+                  ObjectPoolBuilderEntry::SnapshotBehavior snapshot_behavior =
+                      ObjectPoolBuilderEntry::kSnapshotable);
+
+  // Branch and link to an entry address. Call sequence can be patched.
+  void BranchLinkPatchable(
+      const Code& code,
+      CodeEntryKind entry_kind = CodeEntryKind::kNormal,
+      ObjectPoolBuilderEntry::SnapshotBehavior snapshot_behavior =
+          ObjectPoolBuilderEntry::kSnapshotable);
+
+  // Emit a call that shares its object pool entries with other calls
+  // that have the same equivalence marker.
+  void BranchLinkWithEquivalence(
+      const Code& code,
+      const Object& equivalence,
+      CodeEntryKind entry_kind = CodeEntryKind::kNormal);
+
   void Bind(Label* label) override;
 
   // Unconditional jump to a given label. [distance] is ignored on MIPS.

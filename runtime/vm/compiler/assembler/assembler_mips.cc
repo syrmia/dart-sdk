@@ -409,6 +409,54 @@ void Assembler::SetIf(Condition condition, Register rd) {
   deferred_compare_ = kNone;
 }
 
+void Assembler::BranchLink(
+    const Code& target,
+    ObjectPoolBuilderEntry::Patchability patchable,
+    CodeEntryKind entry_kind,
+    ObjectPoolBuilderEntry::SnapshotBehavior snapshot_behavior) {
+  ASSERT(!in_delay_slot_);
+  const intptr_t index = object_pool_builder().FindObject(
+      ToObject(target), patchable, snapshot_behavior);
+  // Avoid clobbering CODE_REG when invoking code in precompiled mode.
+  // We don't actually use CODE_REG in the callee and caller might
+  // be using CODE_REG for a live value (e.g. a value that is alive
+  // across invocation of a shared stub like the one we use for
+  // allocating Mint boxes).
+  const Register code_reg = FLAG_precompiled_mode ? TMP : CODE_REG;
+  LoadWordFromPoolIndex(code_reg, index);
+  lw(T9, FieldAddress(code_reg, target::Code::entry_point_offset(entry_kind)));
+  jalr(T9);
+  if (patchable == ObjectPoolBuilderEntry::kPatchable) {
+    delay_slot_available_ = false;  // CodePatcher expects a nop.
+  }
+}
+
+void Assembler::BranchLinkPatchable(
+    const Code& code,
+    CodeEntryKind entry_kind,
+    ObjectPoolBuilderEntry::SnapshotBehavior snapshot_behavior) {
+  BranchLink(code, ObjectPoolBuilderEntry::kPatchable, entry_kind,
+             snapshot_behavior);
+}
+
+void Assembler::BranchLinkWithEquivalence(const Code& target,
+                                          const Object& equivalence,
+                                          CodeEntryKind entry_kind) {
+  ASSERT(!in_delay_slot_);
+  const intptr_t index =
+      object_pool_builder().FindObject(ToObject(target), equivalence);
+  // Avoid clobbering CODE_REG when invoking code in precompiled mode.
+  // We don't actually use CODE_REG in the callee and caller might
+  // be using CODE_REG for a live value (e.g. a value that is alive
+  // across invocation of a shared stub like the one we use for
+  // allocating Mint boxes).
+  const Register code_reg = FLAG_precompiled_mode ? TMP : CODE_REG;
+  LoadWordFromPoolIndex(code_reg, index);
+  lw(T9, FieldAddress(code_reg, target::Code::entry_point_offset(entry_kind)));
+  jalr(T9);
+  delay_slot_available_ = false;  // CodePatcher expects a nop.
+}
+
 void Assembler::Bind(Label* label) {
   UNIMPLEMENTED();
 }
