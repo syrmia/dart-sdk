@@ -142,6 +142,8 @@ vm_sources = [
   "instructions_arm64.h",
   "instructions_ia32.cc",
   "instructions_ia32.h",
+  "instructions_mips.cc",
+  "instructions_mips.h",
   "instructions_riscv.cc",
   "instructions_riscv.h",
   "instructions_x64.cc",
