@@ -604,6 +604,23 @@ struct DoubleToIntegerStubABI {
   static constexpr Register kResultReg = V0;
 };
 
+// The registers kFieldReg and kValueReg are used to pass arguments
+// from CheckedStoreIntoSharedSlowPath::EmitNativeCode to
+// CheckedStoreIntoSharedStub, and the result of the CheckedStoreIntoSharedStub
+// stub is stored in kResultReg.
+struct CheckedStoreIntoSharedStubABI {
+  static constexpr Register kFieldReg = T1;
+  static constexpr Register kValueReg = T2;
+  static constexpr Register kResultReg = V0;
+};
+
+// The register kValueReg is used to pass an argument to
+// EnsureDeeplyImmutableStub.
+struct EnsureDeeplyImmutableStubABI {
+  static constexpr Register kValueReg = A0;
+  static constexpr Register kTempReg = T1;
+};
+
 // ABI for SuspendStub (AwaitStub, AwaitWithTypeCheckStub, YieldAsyncStarStub,
 // SuspendSyncStarAtStartStub, SuspendSyncStarAtYieldStub).
 struct SuspendStubABI {
