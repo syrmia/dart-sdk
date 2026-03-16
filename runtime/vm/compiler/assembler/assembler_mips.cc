@@ -666,7 +666,8 @@ void Assembler::JumpAndLink(
 //   S5 : address of the runtime function to call.
 //   S4 : number of arguments to the call.
 void Assembler::CallRuntime(const RuntimeEntry& entry,
-                            intptr_t argument_count) {
+                            intptr_t argument_count,
+                            bool tsan_enter_exit) {
   ASSERT(!entry.is_leaf());
   // Argument count is not checked here, but in the runtime entry for a more
   // informative error message.
