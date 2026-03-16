@@ -986,6 +986,9 @@ class Assembler : public AssemblerBase {
     StoreToOffset(src, base, offset);
   }
 
+  void TsanFuncEntry(bool preserve_registers = true) { UNREACHABLE(); }
+  void TsanFuncExit(bool preserve_registers = true) { UNREACHABLE(); }
+
   Address PrepareLargeOffset(Register base, int32_t offset);
 
   void LoadObjectHelper(Register rd, const Object& object, bool is_unique,
@@ -1096,7 +1099,9 @@ class Assembler : public AssemblerBase {
                    ObjectPoolBuilderEntry::SnapshotBehavior snapshot_behavior =
                        ObjectPoolBuilderEntry::kSnapshotable);
 
-  void CallRuntime(const RuntimeEntry& entry, intptr_t argument_count);
+  void CallRuntime(const RuntimeEntry& entry,
+                   intptr_t argument_count,
+                   bool tsan_enter_exit = true);
   
   void LoadPoolPointer(Register reg = PP);
   void CheckCodePointer();
