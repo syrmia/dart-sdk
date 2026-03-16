@@ -492,7 +492,7 @@ if (is_fuchsia) {
   }
 }
 
-if (is_linux && current_cpu != "riscv32 && current_cpu != "mipsel") {
+if (is_linux && current_cpu != "riscv32" && current_cpu != "mipsel") {
   #TODO: Handle MIPS.
   group("debian_package") {
     public_deps = [ "tools/debian_package" ]
