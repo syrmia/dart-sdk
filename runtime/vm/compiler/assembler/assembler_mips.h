@@ -365,6 +365,8 @@ class Assembler : public AssemblerBase {
 
   void Breakpoint() override { break_(0); }
 
+  void StoreStoreFence() override { sync(0); }
+
   // FPU compare, always false.
   void cfd(DRegister ds, DRegister dt) {
     FRegister fs = static_cast<FRegister>(ds * 2);
@@ -946,6 +948,27 @@ class Assembler : public AssemblerBase {
     bne(CMPRES1, ZR, label);
   }
 
+  void BranchLink(const Code& code,
+                  ObjectPoolBuilderEntry::Patchability patchable =
+                      ObjectPoolBuilderEntry::kNotPatchable,
+                  CodeEntryKind entry_kind = CodeEntryKind::kNormal,
+                  ObjectPoolBuilderEntry::SnapshotBehavior snapshot_behavior =
+                      ObjectPoolBuilderEntry::kSnapshotable);
+
+  // Branch and link to an entry address. Call sequence can be patched.
+  void BranchLinkPatchable(
+      const Code& code,
+      CodeEntryKind entry_kind = CodeEntryKind::kNormal,
+      ObjectPoolBuilderEntry::SnapshotBehavior snapshot_behavior =
+          ObjectPoolBuilderEntry::kSnapshotable);
+
+  // Emit a call that shares its object pool entries with other calls
+  // that have the same equivalence marker.
+  void BranchLinkWithEquivalence(
+      const Code& code,
+      const Object& equivalence,
+      CodeEntryKind entry_kind = CodeEntryKind::kNormal);
+
   void Bind(Label* label) override;
 
   // Unconditional jump to a given label. [distance] is ignored on MIPS.
@@ -985,6 +1008,9 @@ class Assembler : public AssemblerBase {
   void StoreMemoryValue(Register src, Register base, int32_t offset) {
     StoreToOffset(src, base, offset);
   }
+
+  void TsanFuncEntry(bool preserve_registers = true) { UNREACHABLE(); }
+  void TsanFuncExit(bool preserve_registers = true) { UNREACHABLE(); }
 
   Address PrepareLargeOffset(Register base, int32_t offset);
 
@@ -1096,7 +1122,17 @@ class Assembler : public AssemblerBase {
                    ObjectPoolBuilderEntry::SnapshotBehavior snapshot_behavior =
                        ObjectPoolBuilderEntry::kSnapshotable);
 
-  void CallRuntime(const RuntimeEntry& entry, intptr_t argument_count);
+  void CallRuntime(const RuntimeEntry& entry,
+                   intptr_t argument_count,
+                   bool tsan_enter_exit = true);
+
+  void CallCFunction(Address target) { Call(target); }
+  void CallCFunction(Register target) {
+    if (target != T9) {
+      mov(T9, target);
+    }
+    Call(T9);
+  }
   
   void LoadPoolPointer(Register reg = PP);
   void CheckCodePointer();
