@@ -63,6 +63,16 @@ class Simulator {
   int64_t get_dregister_bits(DRegister reg) const;
   double get_dregister(DRegister reg) const;
 
+  int32_t get_sp() const { return get_register(SPREG); }
+  int32_t get_lr() const { return get_register(RA); }
+
+  // High address.
+  uword stack_base() const { return stack_base_; }
+  // Limit for StackOverflowError.
+  uword overflow_stack_limit() const { return overflow_stack_limit_; }
+  // Low address.
+  uword stack_limit() const { return stack_limit_; }
+
   // Call on program start.
   static void Init();
 
@@ -114,7 +124,7 @@ class Simulator {
   int32_t registers_[kNumberOfCpuRegisters];
   int32_t fregisters_[kNumberOfFRegisters];
   int32_t fcsr_;
-  int32_t pc_;
+  uword pc_;
 
   // Simulator support.
   char* stack_;
@@ -163,11 +173,15 @@ class Simulator {
   // Instruction execution.
   void DoBreak(Instr* instr);
   void DoBranch(Instr* instr, bool taken, bool likely);
+
   void DecodeSpecial(Instr* instr);
   void DecodeSpecial2(Instr* instr);
   void DecodeRegImm(Instr* instr);
   void DecodeCop1(Instr* instr);
+
+  void Execute();
   void ExecuteDelaySlot();
+
   void InstructionDecode(Instr* instr);
 
   // Illegal memory access support.
@@ -190,12 +204,11 @@ class Simulator {
   inline int16_t ReadH(uword addr, Instr* instr);
   inline uint16_t ReadHU(uword addr, Instr* instr);
   inline intptr_t ReadW(uword addr, Instr* instr);
+  inline double ReadD(uword addr, Instr* instr);
 
   inline void WriteB(uword addr, uint8_t value);
   inline void WriteH(uword addr, uint16_t value, Instr* instr);
   inline void WriteW(uword addr, intptr_t value, Instr* instr);
-
-  inline double ReadD(uword addr, Instr* instr);
   inline void WriteD(uword addr, double value, Instr* instr);
 
   // Synchronization primitives support.
