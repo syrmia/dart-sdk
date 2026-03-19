@@ -166,6 +166,7 @@ class Simulator {
   void DecodeSpecial(Instr* instr);
   void DecodeSpecial2(Instr* instr);
   void DecodeRegImm(Instr* instr);
+  void DecodeCop1(Instr* instr);
   void ExecuteDelaySlot();
   void InstructionDecode(Instr* instr);
 
