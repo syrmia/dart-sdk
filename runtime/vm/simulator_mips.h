@@ -120,6 +120,39 @@ class Simulator {
   uword exclusive_access_addr_;
   uword exclusive_access_value_;
 
+  // Illegal memory access support.
+  static bool IsIllegalAddress(uword addr) { return addr < 64 * 1024; }
+  void HandleIllegalAccess(uword addr, Instr* instr);
+
+  // Read and write memory.
+  void UnalignedAccess(const char* msg, uword addr, Instr* instr);
+
+  // Handles a legal instruction that the simulator does not implement.
+  void UnimplementedInstruction(Instr* instr);
+
+  // Returns true if tracing of executed instructions is enabled.
+  bool IsTracingExecution() const;
+
+  void Format(Instr* instr, const char* format);
+
+  inline int8_t ReadB(uword addr);
+  inline uint8_t ReadBU(uword addr);
+  inline int16_t ReadH(uword addr, Instr* instr);
+  inline uint16_t ReadHU(uword addr, Instr* instr);
+  inline intptr_t ReadW(uword addr, Instr* instr);
+
+  inline void WriteB(uword addr, uint8_t value);
+  inline void WriteH(uword addr, uint16_t value, Instr* instr);
+  inline void WriteW(uword addr, intptr_t value, Instr* instr);
+
+  inline double ReadD(uword addr, Instr* instr);
+  inline void WriteD(uword addr, double value, Instr* instr);
+
+  // Synchronization primitives support.
+  void ClearExclusive();
+  intptr_t ReadExclusiveW(uword addr, Instr* instr);
+  intptr_t WriteExclusiveW(uword addr, intptr_t value, Instr* instr);
+
   // Longjmp support for exceptions.
   SimulatorSetjmpBuffer* last_setjmp_buffer() { return last_setjmp_buffer_; }
   void set_last_setjmp_buffer(SimulatorSetjmpBuffer* buffer) {
