@@ -130,6 +130,7 @@ class Simulator {
   uword exclusive_access_value_;
 
   // Instruction execution.
+  void DoBreak(Instr* instr);
   void InstructionDecode(Instr* instr);
 
   // Illegal memory access support.
