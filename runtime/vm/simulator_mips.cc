@@ -15,6 +15,7 @@
 
 #include "vm/constants.h"
 #include "vm/isolate.h"
+#include "vm/lockers.h"
 #include "vm/os.h"
 #include "vm/os_thread.h"
 #include "vm/stack_frame.h"
@@ -59,6 +60,103 @@ class SimulatorSetjmpBuffer {
 
   friend class Simulator;
 };
+
+// When the generated code calls an external reference we need to catch that in
+// the simulator. The external reference will be a function compiled for the
+// host architecture. We need to call that function instead of trying to
+// execute it with the simulator. We do that by redirecting the external
+// reference to a break instruction with a special code (kSimulatorRedirectCode)
+// that is handled by the simulator. We write the original destination of the
+// jump just at a known offset from the break instruction so the simulator
+// knows what to call.
+class Redirection {
+ public:
+  uword address_of_svc_instruction() {
+    return reinterpret_cast<uword>(&svc_instruction_);
+  }
+
+  uword external_function() const { return external_function_; }
+
+  Simulator::CallKind call_kind() const { return call_kind_; }
+
+  int argument_count() const { return argument_count_; }
+
+  static Redirection* Get(uword external_function,
+                          Simulator::CallKind call_kind,
+                          int argument_count) {
+    MutexLocker ml(mutex_);
+
+    for (Redirection* current = list_; current != NULL; current = current->next_) {
+      if (current->external_function_ == external_function) return current;
+    }
+
+    Redirection* old_head = list_.load(std::memory_order_relaxed);
+    Redirection* redirection =
+        new Redirection(external_function, call_kind, argument_count);
+    redirection->next_ = old_head;
+
+    // Use a memory fence to ensure all pending writes are written at the time
+    // of updating the list head, so the profiling thread always has a valid
+    // list to look at.
+    list_.store(redirection, std::memory_order_release);
+
+    return redirection;
+  }
+
+  static Redirection* FromSvcInstruction(Instr* svc_instruction) {
+    char* addr_of_svc = reinterpret_cast<char*>(svc_instruction);
+    char* addr_of_redirection =
+        addr_of_svc - OFFSET_OF(Redirection, svc_instruction_);
+    return reinterpret_cast<Redirection*>(addr_of_redirection);
+  }
+
+  // Please note that this function is called by the signal handler of the
+  // profiling thread. It can therefore run at any point in time and is not
+  // allowed to hold any locks - which is precisely the reason why the list is
+  // prepend-only and a memory fence is used when writing the list head [list_]!
+  static uword FunctionForRedirect(uword address_of_svc) {
+    for (Redirection* current = list_.load(std::memory_order_acquire);
+         current != nullptr; current = current->next_) {
+      if (current->address_of_svc_instruction() == address_of_svc) {
+        return current->external_function_;
+      }
+    }
+    return 0;
+  }
+
+ private:
+  Redirection(uword external_function,
+              Simulator::CallKind call_kind,
+              int argument_count)
+      : external_function_(external_function),
+        call_kind_(call_kind),
+        argument_count_(argument_count),
+        svc_instruction_(Instr::kSimulatorRedirectInstruction),
+        next_(nullptr) {}
+
+  uword external_function_;
+  Simulator::CallKind call_kind_;
+  int argument_count_;
+  uint32_t svc_instruction_;
+  Redirection* next_;
+  static std::atomic<Redirection*> list_;
+  static Mutex* mutex_;
+};
+
+std::atomic<Redirection*> Redirection::list_ = {nullptr};
+Mutex* Redirection::mutex_ = new Mutex();
+
+uword Simulator::RedirectExternalReference(uword function,
+                                           CallKind call_kind,
+                                           int argument_count) {
+  Redirection* redirection =
+      Redirection::Get(function, call_kind, argument_count);
+  return redirection->address_of_svc_instruction();
+}
+
+uword Simulator::FunctionForRedirect(uword redirect) {
+  return Redirection::FunctionForRedirect(redirect);
+}
 
 void Simulator::Init() {}
 
