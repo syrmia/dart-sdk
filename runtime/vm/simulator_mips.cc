@@ -1490,7 +1490,6 @@ void Simulator::DecodeSpecial(Instr* instr) {
   }
 }
 
-
 void Simulator::DecodeSpecial2(Instr* instr) {
   ASSERT(instr->OpcodeField() == SPECIAL2);
   switch (instr->FunctionField()) {
@@ -1627,6 +1626,214 @@ void Simulator::DecodeRegImm(Instr* instr) {
       OS::PrintErr("DecodeRegImm: 0x%x\n", instr->InstructionBits());
       UnimplementedInstruction(instr);
       break;
+    }
+  }
+}
+
+void Simulator::DecodeCop1(Instr* instr) {
+  ASSERT(instr->OpcodeField() == COP1);
+  if (instr->HasFormat()) {
+    // If the rs field is a valid format, then the function field identifies the
+    // instruction.
+    double fs_val = get_fregister_double(instr->FsField());
+    double ft_val = get_fregister_double(instr->FtField());
+    uint32_t cc, fcsr_cc;
+    cc = instr->FpuCCField();
+    fcsr_cc = get_fcsr_condition_bit(cc);
+    switch (instr->Cop1FunctionField()) {
+      case COP1_ADD: {
+        // Format(instr, "add.'fmt 'fd, 'fs, 'ft");
+        ASSERT(instr->FormatField() == FMT_D);  // Only D supported.
+        set_fregister_double(instr->FdField(), fs_val + ft_val);
+        break;
+      }
+      case COP1_SUB: {
+        // Format(instr, "sub.'fmt 'fd, 'fs, 'ft");
+        ASSERT(instr->FormatField() == FMT_D);  // Only D supported.
+        set_fregister_double(instr->FdField(), fs_val - ft_val);
+        break;
+      }
+      case COP1_MUL: {
+        // Format(instr, "mul.'fmt 'fd, 'fs, 'ft");
+        ASSERT(instr->FormatField() == FMT_D);  // Only D supported.
+        set_fregister_double(instr->FdField(), fs_val * ft_val);
+        break;
+      }
+      case COP1_DIV: {
+        // Format(instr, "div.'fmt 'fd, 'fs, 'ft");
+        ASSERT(instr->FormatField() == FMT_D);  // Only D supported.
+        set_fregister_double(instr->FdField(), fs_val / ft_val);
+        break;
+      }
+      case COP1_SQRT: {
+        // Format(instr, "sqrt.'fmt 'fd, 'fs");
+        ASSERT(instr->FormatField() == FMT_D);  // Only D supported.
+        set_fregister_double(instr->FdField(), sqrt(fs_val));
+        break;
+      }
+      case COP1_MOV: {
+        // Format(instr, "mov.'fmt 'fd, 'fs");
+        ASSERT(instr->FormatField() == FMT_D);  // Only D supported.
+        set_fregister_double(instr->FdField(), fs_val);
+        break;
+      }
+      case COP1_NEG: {
+        // Format(instr, "neg.'fmt 'fd, 'fs");
+        ASSERT(instr->FormatField() == FMT_D);
+        set_fregister_double(instr->FdField(), -fs_val);
+        break;
+      }
+      case COP1_C_F: {
+        ASSERT(instr->FormatField() == FMT_D);  // Only D supported.
+        ASSERT(instr->FdField() == F0);
+        set_fcsr_bit(fcsr_cc, false);
+        break;
+      }
+      case COP1_C_UN: {
+        ASSERT(instr->FormatField() == FMT_D);  // Only D supported.
+        ASSERT(instr->FdField() == F0);
+        set_fcsr_bit(fcsr_cc, isnan(fs_val) || isnan(ft_val));
+        break;
+      }
+      case COP1_C_EQ: {
+        ASSERT(instr->FormatField() == FMT_D);  // Only D supported.
+        ASSERT(instr->FdField() == F0);
+        set_fcsr_bit(fcsr_cc, (fs_val == ft_val));
+        break;
+      }
+      case COP1_C_UEQ: {
+        ASSERT(instr->FormatField() == FMT_D);  // Only D supported.
+        ASSERT(instr->FdField() == F0);
+        set_fcsr_bit(fcsr_cc,
+                     (fs_val == ft_val) || isnan(fs_val) || isnan(ft_val));
+        break;
+      }
+      case COP1_C_OLT: {
+        ASSERT(instr->FormatField() == FMT_D);  // Only D supported.
+        ASSERT(instr->FdField() == F0);
+        set_fcsr_bit(fcsr_cc, (fs_val < ft_val));
+        break;
+      }
+      case COP1_C_ULT: {
+        ASSERT(instr->FormatField() == FMT_D);  // Only D supported.
+        ASSERT(instr->FdField() == F0);
+        set_fcsr_bit(fcsr_cc,
+                     (fs_val < ft_val) || isnan(fs_val) || isnan(ft_val));
+        break;
+      }
+      case COP1_C_OLE: {
+        ASSERT(instr->FormatField() == FMT_D);  // Only D supported.
+        ASSERT(instr->FdField() == F0);
+        set_fcsr_bit(fcsr_cc, (fs_val <= ft_val));
+        break;
+      }
+      case COP1_C_ULE: {
+        ASSERT(instr->FormatField() == FMT_D);  // Only D supported.
+        ASSERT(instr->FdField() == F0);
+        set_fcsr_bit(fcsr_cc,
+                     (fs_val <= ft_val) || isnan(fs_val) || isnan(ft_val));
+        break;
+      }
+      case COP1_TRUNC_W: {
+        switch (instr->FormatField()) {
+          case FMT_D: {
+            double fs_dbl = get_fregister_double(instr->FsField());
+            int32_t fs_int;
+            if (isnan(fs_dbl) || isinf(fs_dbl) || (fs_dbl > kMaxInt32) ||
+                (fs_dbl < kMinInt32)) {
+              fs_int = kMaxInt32;
+            } else {
+              fs_int = static_cast<int32_t>(fs_dbl);
+            }
+            set_fregister(instr->FdField(), fs_int);
+            break;
+          }
+          default: {
+            OS::PrintErr("DecodeCop1: 0x%x\n", instr->InstructionBits());
+            UnimplementedInstruction(instr);
+            break;
+          }
+        }
+        break;
+      }
+      case COP1_CVT_D: {
+        switch (instr->FormatField()) {
+          case FMT_W: {
+            int32_t fs_int = get_fregister(instr->FsField());
+            double fs_dbl = static_cast<double>(fs_int);
+            set_fregister_double(instr->FdField(), fs_dbl);
+            break;
+          }
+          case FMT_S: {
+            float fs_flt = get_fregister_float(instr->FsField());
+            double fs_dbl = static_cast<double>(fs_flt);
+            set_fregister_double(instr->FdField(), fs_dbl);
+            break;
+          }
+          default: {
+            OS::PrintErr("DecodeCop1: 0x%x\n", instr->InstructionBits());
+            UnimplementedInstruction(instr);
+            break;
+          }
+        }
+        break;
+      }
+      case COP1_CVT_S: {
+        switch (instr->FormatField()) {
+          case FMT_D: {
+            double fs_dbl = get_fregister_double(instr->FsField());
+            float fs_flt = static_cast<float>(fs_dbl);
+            set_fregister_float(instr->FdField(), fs_flt);
+            break;
+          }
+          default: {
+            OS::PrintErr("DecodeCop1: 0x%x\n", instr->InstructionBits());
+            UnimplementedInstruction(instr);
+            break;
+          }
+        }
+        break;
+      }
+      default: {
+        OS::PrintErr("DecodeCop1: 0x%x\n", instr->InstructionBits());
+        UnimplementedInstruction(instr);
+        break;
+      }
+    }
+  } else {
+    // If the rs field isn't a valid format, then it must be a sub-op.
+    switch (instr->Cop1SubField()) {
+      case COP1_MF: {
+        // Format(instr, "mfc1 'rt, 'fs");
+        ASSERT(instr->Bits(0, 11) == 0);
+        int32_t fs_val = get_fregister(instr->FsField());
+        set_register(instr->RtField(), fs_val);
+        break;
+      }
+      case COP1_MT: {
+        // Format(instr, "mtc1 'rt, 'fs");
+        ASSERT(instr->Bits(0, 11) == 0);
+        int32_t rt_val = get_register(instr->RtField());
+        set_fregister(instr->FsField(), rt_val);
+        break;
+      }
+      case COP1_BC: {
+        ASSERT(instr->Bit(17) == 0);
+        uint32_t cc, fcsr_cc;
+        cc = instr->Bits(18, 3);
+        fcsr_cc = get_fcsr_condition_bit(cc);
+        if (instr->Bit(16) == 1) {  // Branch on true.
+          DoBranch(instr, test_fcsr_bit(fcsr_cc), false);
+        } else {  // Branch on false.
+          DoBranch(instr, !test_fcsr_bit(fcsr_cc), false);
+        }
+        break;
+      }
+      default: {
+        OS::PrintErr("DecodeCop1: 0x%x\n", instr->InstructionBits());
+        UnimplementedInstruction(instr);
+        break;
+      }
     }
   }
 }
