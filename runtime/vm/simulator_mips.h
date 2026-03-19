@@ -94,6 +94,12 @@ class Simulator {
 
   void JumpToFrame(uword pc, uword sp, uword fp, Thread* thread);
 
+  // The thread's top_exit_frame_info refers to a Dart frame in the simulator
+  // stack. The simulator's top_exit_frame_info refers to a C++ frame in the
+  // native stack.
+  uword top_exit_frame_info() const { return top_exit_frame_info_; }
+  void set_top_exit_frame_info(uword value) { top_exit_frame_info_ = value; }
+
  private:
   // A pc value used to signal the simulator to stop execution.  Generally
   // the ra is set to this value on transition from native C code to
@@ -129,8 +135,37 @@ class Simulator {
   uword exclusive_access_addr_;
   uword exclusive_access_value_;
 
+  // Accessors for hi, lo registers.
+  void set_hi_register(int32_t value) { hi_reg_ = value; }
+  void set_lo_register(int32_t value) { lo_reg_ = value; }
+  int32_t get_hi_register() const { return hi_reg_; }
+  int32_t get_lo_register() const { return lo_reg_; }
+
+  // FCSR condition bit helpers.
+  int32_t get_fcsr_condition_bit(int32_t cc) const {
+    if (cc == 0) {
+      return 23;
+    } else {
+      return 24 + cc;
+    }
+  }
+
+  void set_fcsr_bit(uint32_t cc, bool value) {
+    if (value) {
+      fcsr_ |= (1 << cc);
+    } else {
+      fcsr_ &= ~(1 << cc);
+    }
+  }
+
+  bool test_fcsr_bit(uint32_t cc) { return fcsr_ & (1 << cc); }
+
   // Instruction execution.
   void DoBreak(Instr* instr);
+  void DoBranch(Instr* instr, bool taken, bool likely);
+  void DecodeSpecial2(Instr* instr);
+  void DecodeRegImm(Instr* instr);
+  void ExecuteDelaySlot();
   void InstructionDecode(Instr* instr);
 
   // Illegal memory access support.
