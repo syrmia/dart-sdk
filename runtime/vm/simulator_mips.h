@@ -42,9 +42,52 @@ class Simulator {
 
   // Accessor for the pc.
   void set_pc(int32_t value) { pc_ = value; }
+  int32_t get_pc() const { return pc_; }
+
+  // Accessors for floating point register state.
+  void set_fregister(FRegister reg, int32_t value);
+  void set_fregister_float(FRegister reg, float value);
+  void set_fregister_double(FRegister reg, double value);
+  void set_fregister_long(FRegister reg, int64_t value);
+
+  int32_t get_fregister(FRegister reg) const;
+  float get_fregister_float(FRegister reg) const;
+  double get_fregister_double(FRegister reg) const;
+  int64_t get_fregister_long(FRegister reg) const;
+
+  void set_dregister_bits(DRegister reg, int64_t value);
+  void set_dregister(DRegister reg, double value);
+  int64_t get_dregister_bits(DRegister reg) const;
+  double get_dregister(DRegister reg) const;
 
   // Call on program start.
   static void Init();
+
+  // Dart generally calls into generated code with 4 parameters. This is a
+  // convenience function, which sets up the simulator state and grabs the
+  // result on return. When fp_return is true the return value is the D0
+  // floating point register. Otherwise, the return value is V1:V0.
+  int64_t Call(int32_t entry,
+               int32_t parameter0,
+               int32_t parameter1,
+               int32_t parameter2,
+               int32_t parameter3,
+               bool fp_return = false,
+               bool fp_args = false);
+
+  // Runtime and native call support.
+  enum CallKind {
+    kRuntimeCall,
+    kLeafRuntimeCall,
+    kLeafFloatRuntimeCall,
+    kNativeCallWrapper
+  };
+
+  static uword RedirectExternalReference(uword function,
+                                         CallKind call_kind,
+                                         int argument_count);
+
+  static uword FunctionForRedirect(uword redirect);
 
   void JumpToFrame(uword pc, uword sp, uword fp, Thread* thread);
 
@@ -67,6 +110,7 @@ class Simulator {
   bool delay_slot_;
   SimulatorSetjmpBuffer* last_setjmp_buffer_;
   Random random_;
+  uword top_exit_frame_info_;
 
   // Registered breakpoints.
   Instr* break_pc_;
