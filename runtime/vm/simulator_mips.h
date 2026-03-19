@@ -44,6 +44,9 @@ class Simulator {
   void set_pc(int32_t value) { pc_ = value; }
   int32_t get_pc() const { return pc_; }
 
+  // Accessor to the instruction counter.
+  uint64_t get_icount() const { return icount_; }
+
   // Accessors for floating point register state.
   void set_fregister(FRegister reg, int32_t value);
   void set_fregister_float(FRegister reg, float value);
@@ -92,6 +95,12 @@ class Simulator {
   void JumpToFrame(uword pc, uword sp, uword fp, Thread* thread);
 
  private:
+  // A pc value used to signal the simulator to stop execution.  Generally
+  // the ra is set to this value on transition from native C code to
+  // simulated execution, so that the simulator can "return" to the native
+  // C code.
+  static const uword kEndSimulatingPC = -1;
+
   // Special registers for the results of div, divu.
   int32_t hi_reg_;
   int32_t lo_reg_;
@@ -119,6 +128,9 @@ class Simulator {
   // Exclusive access reservation.
   uword exclusive_access_addr_;
   uword exclusive_access_value_;
+
+  // Instruction execution.
+  void InstructionDecode(Instr* instr);
 
   // Illegal memory access support.
   static bool IsIllegalAddress(uword addr) { return addr < 64 * 1024; }
@@ -159,6 +171,7 @@ class Simulator {
     last_setjmp_buffer_ = buffer;
   }
 
+  friend class SimulatorDebugger;
   friend class SimulatorSetjmpBuffer;
   DISALLOW_COPY_AND_ASSIGN(Simulator);
 };
