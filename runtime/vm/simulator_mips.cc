@@ -16,6 +16,7 @@
 #include "vm/compiler/assembler/disassembler.h"
 #include "vm/constants.h"
 #include "vm/isolate.h"
+#include "vm/native_arguments.h"
 #include "vm/lockers.h"
 #include "vm/os.h"
 #include "vm/os_thread.h"
@@ -1061,6 +1062,146 @@ intptr_t Simulator::WriteExclusiveW(uword addr, intptr_t value, Instr* instr) {
     return 1;  // Success.
   }
   return 0;  // Failure.
+}
+
+// Calls to the Dart runtime are based on this interface.
+typedef void (*SimulatorRuntimeCall)(NativeArguments arguments);
+
+// Calls to leaf Dart runtime functions are based on this interface.
+typedef int32_t (*SimulatorLeafRuntimeCall)(int32_t r0,
+                                            int32_t r1,
+                                            int32_t r2,
+                                            int32_t r3);
+
+// Calls to leaf float Dart runtime functions are based on this interface.
+typedef double (*SimulatorLeafFloatRuntimeCall)(double d0, double d1);
+
+// Calls to native Dart functions are based on this interface.
+typedef void (*SimulatorNativeCallWrapper)(Dart_NativeArguments arguments,
+                                           Dart_NativeFunction target);
+
+void Simulator::DoBreak(Instr* instr) {
+  ASSERT(instr->OpcodeField() == SPECIAL);
+  ASSERT(instr->FunctionField() == BREAK);
+  if (instr->BreakCodeField() == Instr::kStopMessageCode) {
+    SimulatorDebugger dbg(this);
+    const char* message = *reinterpret_cast<const char**>(
+        reinterpret_cast<intptr_t>(instr) - Instr::kInstrSize);
+    set_pc(get_pc() + Instr::kInstrSize);
+    dbg.Stop(instr, message);
+    // Adjust for extra pc increment.
+    set_pc(get_pc() - Instr::kInstrSize);
+  } else if (instr->BreakCodeField() == Instr::kSimulatorRedirectCode) {
+    SimulatorSetjmpBuffer buffer(this);
+
+    if (!setjmp(buffer.buffer_)) {
+      int32_t saved_ra = get_register(RA);
+      Redirection* redirection = Redirection::FromSvcInstruction(instr);
+      uword external = redirection->external_function();
+      if (IsTracingExecution()) {
+        THR_Print("Call to host function at 0x%" Pd "\n", external);
+      }
+
+      if ((redirection->call_kind() == kRuntimeCall) ||
+          (redirection->call_kind() == kNativeCallWrapper)) {
+        // Set the top_exit_frame_info of this simulator to the native stack.
+        set_top_exit_frame_info(OSThread::GetCurrentStackPointer());
+      }
+      if (redirection->call_kind() == kRuntimeCall) {
+        NativeArguments arguments;
+        ASSERT(sizeof(NativeArguments) == 4 * kWordSize);
+        arguments.thread_ = reinterpret_cast<Thread*>(get_register(A0));
+        arguments.argc_tag_ = get_register(A1);
+        arguments.argv_ = reinterpret_cast<ObjectPtr*>(get_register(A2));
+        arguments.retval_ = reinterpret_cast<ObjectPtr*>(get_register(A3));
+        SimulatorRuntimeCall target =
+            reinterpret_cast<SimulatorRuntimeCall>(external);
+        target(arguments);
+        set_register(V0, icount_);  // Zap result registers from void function.
+        set_register(V1, icount_);
+      } else if (redirection->call_kind() == kLeafRuntimeCall) {
+        int32_t a0 = get_register(A0);
+        int32_t a1 = get_register(A1);
+        int32_t a2 = get_register(A2);
+        int32_t a3 = get_register(A3);
+        SimulatorLeafRuntimeCall target =
+            reinterpret_cast<SimulatorLeafRuntimeCall>(external);
+        a0 = target(a0, a1, a2, a3);
+        set_register(V0, a0);       // Set returned result from function.
+        set_register(V1, icount_);  // Zap second result register.
+      } else if (redirection->call_kind() == kLeafFloatRuntimeCall) {
+        ASSERT((0 <= redirection->argument_count()) &&
+               (redirection->argument_count() <= 2));
+        // double values are passed and returned in floating point registers.
+        SimulatorLeafFloatRuntimeCall target =
+            reinterpret_cast<SimulatorLeafFloatRuntimeCall>(external);
+        double d0 = 0.0;
+        double d6 = get_fregister_double(F12);
+        double d7 = get_fregister_double(F14);
+        d0 = target(d6, d7);
+        set_fregister_double(F0, d0);
+      } else {
+        ASSERT(redirection->call_kind() == kNativeCallWrapper);
+        Dart_NativeArguments arguments =
+            reinterpret_cast<Dart_NativeArguments>(get_register(A0));
+        Dart_NativeFunction target =
+            reinterpret_cast<Dart_NativeFunction>(get_register(A1));
+        SimulatorNativeCallWrapper wrapper =
+            reinterpret_cast<SimulatorNativeCallWrapper>(external);
+        wrapper(arguments, target);
+        set_register(V0, icount_);  // Zap result register from void function.
+        set_register(V1, icount_);
+      }
+      set_top_exit_frame_info(0);
+
+      // Zap caller-saved registers, since the actual runtime call could have
+      // used them.
+      set_register(T0, icount_);
+      set_register(T1, icount_);
+      set_register(T2, icount_);
+      set_register(T3, icount_);
+      set_register(T4, icount_);
+      set_register(T5, icount_);
+      set_register(T6, icount_);
+      set_register(T7, icount_);
+      set_register(T8, icount_);
+      set_register(T9, icount_);
+
+      set_register(A0, icount_);
+      set_register(A1, icount_);
+      set_register(A2, icount_);
+      set_register(A3, icount_);
+      set_register(TMP, icount_);
+      set_register(RA, icount_);
+
+      // Zap floating point registers.
+      int32_t zap_dvalue = icount_;
+      for (int i = F4; i <= F18; i++) {
+        set_fregister(static_cast<FRegister>(i), zap_dvalue);
+      }
+
+      // Return. Subtract to account for pc_ increment after return.
+      set_pc(saved_ra - Instr::kInstrSize);
+    } else {
+      // Coming via long jump from a throw. Continue to exception handler.
+      set_top_exit_frame_info(0);
+      // Adjust for extra pc increment.
+      set_pc(get_pc() - Instr::kInstrSize);
+    }
+  } else if (instr->BreakCodeField() == Instr::kSimulatorBreakCode) {
+    SimulatorDebugger dbg(this);
+    dbg.Stop(instr, "breakpoint");
+    // Adjust for extra pc increment.
+    set_pc(get_pc() - Instr::kInstrSize);
+  } else {
+    SimulatorDebugger dbg(this);
+    set_pc(get_pc() + Instr::kInstrSize);
+    char buffer[32];
+    snprintf(buffer, sizeof(buffer), "break #0x%x", instr->BreakCodeField());
+    dbg.Stop(instr, buffer);
+    // Adjust for extra pc increment.
+    set_pc(get_pc() - Instr::kInstrSize);
+  }
 }
 
 void Simulator::InstructionDecode(Instr* instr) {
