@@ -23,6 +23,15 @@
 
 namespace dart {
 
+DEFINE_FLAG(uint64_t,
+            trace_sim_after,
+            ULLONG_MAX,
+            "Trace simulator execution after instruction count reached.");
+DEFINE_FLAG(uint64_t,
+            stop_sim_at,
+            ULLONG_MAX,
+            "Instruction address or instruction count to stop simulator at.");
+
 // SimulatorSetjmpBuffer are linked together, and the last created one
 // is referenced by the Simulator. When an exception is thrown, the exception
 // runtime looks at where to jump and finds the corresponding
@@ -233,13 +242,11 @@ void Simulator::set_fregister(FRegister reg, int32_t value) {
   fregisters_[reg] = value;
 }
 
-
 void Simulator::set_fregister_float(FRegister reg, float value) {
   ASSERT(reg >= 0);
   ASSERT(reg < kNumberOfFRegisters);
   fregisters_[reg] = bit_cast<int32_t, float>(value);
 }
-
 
 void Simulator::set_fregister_long(FRegister reg, int64_t value) {
   ASSERT(reg >= 0);
@@ -249,12 +256,10 @@ void Simulator::set_fregister_long(FRegister reg, int64_t value) {
   fregisters_[reg + 1] = Utils::High32Bits(value);
 }
 
-
 void Simulator::set_fregister_double(FRegister reg, double value) {
   const int64_t ival = bit_cast<int64_t, double>(value);
   set_fregister_long(reg, ival);
 }
-
 
 void Simulator::set_dregister_bits(DRegister reg, int64_t value) {
   ASSERT(reg >= 0);
@@ -264,7 +269,6 @@ void Simulator::set_dregister_bits(DRegister reg, int64_t value) {
   set_fregister(lo, Utils::Low32Bits(value));
   set_fregister(hi, Utils::High32Bits(value));
 }
-
 
 void Simulator::set_dregister(DRegister reg, double value) {
   ASSERT(reg >= 0);
@@ -302,7 +306,6 @@ int64_t Simulator::get_fregister_long(FRegister reg) const {
   return Utils::LowHighTo64Bits(low, high);
 }
 
-
 double Simulator::get_fregister_double(FRegister reg) const {
   ASSERT(reg >= 0);
   ASSERT(reg < kNumberOfFRegisters);
@@ -310,7 +313,6 @@ double Simulator::get_fregister_double(FRegister reg) const {
   const int64_t value = get_fregister_long(reg);
   return bit_cast<double, int64_t>(value);
 }
-
 
 int64_t Simulator::get_dregister_bits(DRegister reg) const {
   ASSERT(reg >= 0);
@@ -320,7 +322,6 @@ int64_t Simulator::get_dregister_bits(DRegister reg) const {
   return Utils::LowHighTo64Bits(get_fregister(lo), get_fregister(hi));
 }
 
-
 double Simulator::get_dregister(DRegister reg) const {
   ASSERT(reg >= 0);
   ASSERT(reg < kNumberOfDRegisters);
@@ -328,6 +329,147 @@ double Simulator::get_dregister(DRegister reg) const {
   return bit_cast<double, int64_t>(value);
 }
 
+void Simulator::UnimplementedInstruction(Instr* instr) {
+  char buffer[64];
+  snprintf(buffer, sizeof(buffer), "Unimplemented instruction: pc=%p\n", instr);
+  FATAL("%s", buffer);
+}
+
+void Simulator::HandleIllegalAccess(uword addr, Instr* instr) {
+  uword fault_pc = get_pc();
+  char buffer[128];
+  snprintf(buffer, sizeof(buffer),
+           "illegal memory access at 0x%" Px ", pc=0x%" Px "\n", addr,
+           fault_pc);
+  FATAL("%s", buffer);
+}
+
+void Simulator::UnalignedAccess(const char* msg, uword addr, Instr* instr) {
+  char buffer[128];
+  snprintf(buffer, sizeof(buffer), "pc=%p, unaligned %s at 0x%" Px "\n", instr,
+           msg, addr);
+  FATAL("%s", buffer);
+}
+
+bool Simulator::IsTracingExecution() const {
+  return icount_ > FLAG_trace_sim_after;
+}
+
+void Simulator::Format(Instr* instr, const char* format) {
+  OS::PrintErr("Simulator - unknown instruction: %s\n", format);
+  UNIMPLEMENTED();
+}
+
+int8_t Simulator::ReadB(uword addr) {
+  int8_t* ptr = reinterpret_cast<int8_t*>(addr);
+  return *ptr;
+}
+
+uint8_t Simulator::ReadBU(uword addr) {
+  uint8_t* ptr = reinterpret_cast<uint8_t*>(addr);
+  return *ptr;
+}
+
+int16_t Simulator::ReadH(uword addr, Instr* instr) {
+  if ((addr & 1) == 0) {
+    int16_t* ptr = reinterpret_cast<int16_t*>(addr);
+    return *ptr;
+  }
+  UnalignedAccess("signed halfword read", addr, instr);
+  return 0;
+}
+
+uint16_t Simulator::ReadHU(uword addr, Instr* instr) {
+  if ((addr & 1) == 0) {
+    uint16_t* ptr = reinterpret_cast<uint16_t*>(addr);
+    return *ptr;
+  }
+  UnalignedAccess("unsigned halfword read", addr, instr);
+  return 0;
+}
+
+intptr_t Simulator::ReadW(uword addr, Instr* instr) {
+  if ((addr & 3) == 0) {
+    intptr_t* ptr = reinterpret_cast<intptr_t*>(addr);
+    return *ptr;
+  }
+  UnalignedAccess("read", addr, instr);
+  return 0;
+}
+
+void Simulator::WriteB(uword addr, uint8_t value) {
+  uint8_t* ptr = reinterpret_cast<uint8_t*>(addr);
+  *ptr = value;
+}
+
+void Simulator::WriteH(uword addr, uint16_t value, Instr* instr) {
+  if ((addr & 1) == 0) {
+    uint16_t* ptr = reinterpret_cast<uint16_t*>(addr);
+    *ptr = value;
+    return;
+  }
+  UnalignedAccess("halfword write", addr, instr);
+}
+
+void Simulator::WriteW(uword addr, intptr_t value, Instr* instr) {
+  if ((addr & 3) == 0) {
+    intptr_t* ptr = reinterpret_cast<intptr_t*>(addr);
+    *ptr = value;
+    return;
+  }
+  UnalignedAccess("write", addr, instr);
+}
+
+double Simulator::ReadD(uword addr, Instr* instr) {
+  if ((addr & 7) == 0) {
+    double* ptr = reinterpret_cast<double*>(addr);
+    return *ptr;
+  }
+  UnalignedAccess("double-precision floating point read", addr, instr);
+  return 0.0;
+}
+
+void Simulator::WriteD(uword addr, double value, Instr* instr) {
+  if ((addr & 7) == 0) {
+    double* ptr = reinterpret_cast<double*>(addr);
+    *ptr = value;
+    return;
+  }
+  UnalignedAccess("double-precision floating point write", addr, instr);
+}
+
+void Simulator::ClearExclusive() {
+  exclusive_access_addr_ = 0;
+  exclusive_access_value_ = 0;
+}
+
+intptr_t Simulator::ReadExclusiveW(uword addr, Instr* instr) {
+  exclusive_access_addr_ = addr;
+  exclusive_access_value_ = ReadW(addr, instr);
+  return exclusive_access_value_;
+}
+
+intptr_t Simulator::WriteExclusiveW(uword addr, intptr_t value, Instr* instr) {
+  // In a well-formed code store-exclusive instruction should always follow
+  // a corresponding load-exclusive instruction with the same address.
+  ASSERT((exclusive_access_addr_ == 0) || (exclusive_access_addr_ == addr));
+  if (exclusive_access_addr_ != addr) {
+    return 0;  // Failure.
+  }
+
+  int32_t old_value = static_cast<uint32_t>(exclusive_access_value_);
+  ClearExclusive();
+
+  if ((random_.NextUInt32() % 16) == 0) {
+    return 0;  // Spurious failure.
+  }
+
+  auto atomic_addr = reinterpret_cast<RelaxedAtomic<int32_t>*>(addr);
+  if (atomic_addr->compare_exchange_weak(old_value, value)) {
+    return 1;  // Success.
+  }
+  return 0;  // Failure.
+}
 
 void Simulator::Execute() {
   UNIMPLEMENTED();
