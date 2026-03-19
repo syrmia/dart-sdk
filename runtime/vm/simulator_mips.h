@@ -163,6 +163,7 @@ class Simulator {
   // Instruction execution.
   void DoBreak(Instr* instr);
   void DoBranch(Instr* instr, bool taken, bool likely);
+  void DecodeSpecial(Instr* instr);
   void DecodeSpecial2(Instr* instr);
   void DecodeRegImm(Instr* instr);
   void ExecuteDelaySlot();
