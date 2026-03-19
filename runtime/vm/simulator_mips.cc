@@ -1204,6 +1204,150 @@ void Simulator::DoBreak(Instr* instr) {
   }
 }
 
+void Simulator::DecodeSpecial2(Instr* instr) {
+  ASSERT(instr->OpcodeField() == SPECIAL2);
+  switch (instr->FunctionField()) {
+    case MADD: {
+      ASSERT(instr->RdField() == 0);
+      ASSERT(instr->SaField() == 0);
+      // Format(instr, "madd 'rs, 'rt");
+      uint32_t lo = get_lo_register();
+      int32_t hi = get_hi_register();
+      int64_t accum = Utils::LowHighTo64Bits(lo, hi);
+      int64_t rs = get_register(instr->RsField());
+      int64_t rt = get_register(instr->RtField());
+      int64_t res = accum + rs * rt;
+      set_hi_register(Utils::High32Bits(res));
+      set_lo_register(Utils::Low32Bits(res));
+      break;
+    }
+    case MADDU: {
+      ASSERT(instr->RdField() == 0);
+      ASSERT(instr->SaField() == 0);
+      // Format(instr, "maddu 'rs, 'rt");
+      uint32_t lo = get_lo_register();
+      uint32_t hi = get_hi_register();
+      uint64_t accum = Utils::LowHighTo64Bits(lo, hi);
+      uint64_t rs = static_cast<uint32_t>(get_register(instr->RsField()));
+      uint64_t rt = static_cast<uint32_t>(get_register(instr->RtField()));
+      uint64_t res = accum + rs * rt;
+      set_hi_register(Utils::High32Bits(res));
+      set_lo_register(Utils::Low32Bits(res));
+      break;
+    }
+    case CLO: {
+      ASSERT(instr->SaField() == 0);
+      ASSERT(instr->RtField() == instr->RdField());
+      // Format(instr, "clo 'rd, 'rs");
+      int32_t rs_val = get_register(instr->RsField());
+      int32_t bitcount = 0;
+      while (rs_val < 0) {
+        bitcount++;
+        rs_val <<= 1;
+      }
+      set_register(instr->RdField(), bitcount);
+      break;
+    }
+    case CLZ: {
+      ASSERT(instr->SaField() == 0);
+      ASSERT(instr->RtField() == instr->RdField());
+      // Format(instr, "clz 'rd, 'rs");
+      int32_t rs_val = get_register(instr->RsField());
+      int32_t bitcount = 0;
+      if (rs_val != 0) {
+        while (rs_val > 0) {
+          bitcount++;
+          rs_val <<= 1;
+        }
+      } else {
+        bitcount = 32;
+      }
+      set_register(instr->RdField(), bitcount);
+      break;
+    }
+    default: {
+      OS::PrintErr("DecodeSpecial2: 0x%x\n", instr->InstructionBits());
+      UnimplementedInstruction(instr);
+      break;
+    }
+  }
+}
+
+void Simulator::DoBranch(Instr* instr, bool taken, bool likely) {
+  ASSERT(!delay_slot_);
+  int32_t imm_val = instr->SImmField() << 2;
+
+  uword next_pc;
+  if (taken) {
+    // imm_val is added to the address of the instruction following the branch.
+    next_pc = pc_ + imm_val + Instr::kInstrSize;
+    if (likely) {
+      ExecuteDelaySlot();
+    }
+  } else {
+    next_pc = pc_ + (2 * Instr::kInstrSize);  // Next after delay slot.
+  }
+  if (!likely) {
+    ExecuteDelaySlot();
+  }
+  pc_ = next_pc - Instr::kInstrSize;
+
+  return;
+}
+
+void Simulator::DecodeRegImm(Instr* instr) {
+  ASSERT(instr->OpcodeField() == REGIMM);
+  switch (instr->RegImmFnField()) {
+    case BGEZ: {
+      // Format(instr, "bgez 'rs, 'dest");
+      int32_t rs_val = get_register(instr->RsField());
+      DoBranch(instr, rs_val >= 0, false);
+      break;
+    }
+    case BGEZAL: {
+      int32_t rs_val = get_register(instr->RsField());
+      // Return address is one after the delay slot.
+      set_register(RA, pc_ + (2 * Instr::kInstrSize));
+      DoBranch(instr, rs_val >= 0, false);
+      break;
+    }
+    case BLTZAL: {
+      int32_t rs_val = get_register(instr->RsField());
+      // Return address is one after the delay slot.
+      set_register(RA, pc_ + (2 * Instr::kInstrSize));
+      DoBranch(instr, rs_val < 0, false);
+      break;
+    }
+    case BGEZL: {
+      // Format(instr, "bgezl 'rs, 'dest");
+      int32_t rs_val = get_register(instr->RsField());
+      DoBranch(instr, rs_val >= 0, true);
+      break;
+    }
+    case BLTZ: {
+      // Format(instr, "bltz 'rs, 'dest");
+      int32_t rs_val = get_register(instr->RsField());
+      DoBranch(instr, rs_val < 0, false);
+      break;
+    }
+    case BLTZL: {
+      // Format(instr, "bltzl 'rs, 'dest");
+      int32_t rs_val = get_register(instr->RsField());
+      DoBranch(instr, rs_val < 0, true);
+      break;
+    }
+    default: {
+      OS::PrintErr("DecodeRegImm: 0x%x\n", instr->InstructionBits());
+      UnimplementedInstruction(instr);
+      break;
+    }
+  }
+}
+
+void Simulator::ExecuteDelaySlot() {
+  UNIMPLEMENTED();
+}
+
 void Simulator::InstructionDecode(Instr* instr) {
   UNIMPLEMENTED();
 }
