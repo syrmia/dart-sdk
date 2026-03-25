@@ -57,6 +57,108 @@ void StubCodeCompiler::EnsureIsNewOrRemembered() {
   __ Bind(&done);
 }
 
+// Input parameters:
+//   RA : return address.
+//   SP : address of last argument in argument array.
+//   SP + 4*S4 - 4 : address of first argument in argument array.
+//   SP + 4*S4 : address of return value.
+//   S5 : address of the runtime function to call.
+//   S4 : number of arguments to the call.
+void StubCodeCompiler::GenerateCallToRuntimeStub() {
+  const intptr_t thread_offset = target::NativeArguments::thread_offset();
+  const intptr_t argc_tag_offset = target::NativeArguments::argc_tag_offset();
+  const intptr_t argv_offset = target::NativeArguments::argv_offset();
+  const intptr_t retval_offset = target::NativeArguments::retval_offset();
+
+  __ lw(CODE_REG, Address(THR, target::Thread::call_to_runtime_stub_offset()));
+  __ Comment("CallToRuntimeStub");
+  __ EnterStubFrame();
+
+  // Save exit frame information to enable stack walking as we are about
+  // to transition to Dart VM C++ code.
+  __ sw(FP, Address(THR, Thread::top_exit_frame_info_offset()));
+
+  // Mark that the thread exited generated code through a runtime call.
+  __ LoadImmediate(T0, target::Thread::exit_through_runtime_call());
+  __ StoreToOffset(T0, THR, target::Thread::exit_through_ffi_offset());
+
+#if defined(DEBUG)
+  {
+    Label ok;
+    // Check that we are always entering from Dart code.
+    __ LoadFromOffset(T0, THR, target::Thread::vm_tag_offset());
+    __ BranchEqual(T0, Immediate(VMTag::kDartTagId), &ok);
+    __ Stop("Not coming from Dart code.");
+    __ Bind(&ok);
+  }
+#endif
+
+  // Mark that the thread is executing VM code.
+  __ sw(S5, Assembler::VMTagAddress());
+
+  // Reserve space for arguments and align frame before entering C++ world.
+  // NativeArguments are passed in registers.
+  ASSERT(target::NativeArguments::StructSize() == 4 * target::kWordSize);
+  __ ReserveAlignedFrameSpace(target::NativeArguments::StructSize());  // Reserve space for arguments.
+
+  // Pass NativeArguments structure by value and call runtime.
+  // Registers A0, A1, A2, and A3 are used.
+
+  ASSERT(thread_offset == 0 *target::kWordSize);
+  // Set thread in NativeArgs.
+  __ mov(A0, THR);
+
+  // There are no runtime calls to closures, so we do not need to set the tag
+  // bits kClosureFunctionBit and kInstanceFunctionBit in argc_tag_.
+  ASSERT(argc_tag_offset == 1 *target::kWordSize);
+  __ mov(A1, S4);  // Set argc in NativeArguments.
+
+  ASSERT(argv_offset == 2 *target::kWordSize);
+  __ sll(A2, S4, 2);
+  __ addu(A2, FP, A2);  // Compute argv.
+  // Set argv in NativeArguments.
+  __ addiu(A2, A2,
+        Immediate(target::frame_layout.param_end_from_fp *target::kWordSize));
+
+  ASSERT(retval_offset == 3 *target::kWordSize);
+  // Retval is next to 1st argument.
+  __ addiu(A3, A2, Immediate(target::kWordSize));
+
+  // Call runtime or redirection via simulator.
+  // We defensively always jalr through T9 because it is sometimes required by
+  // the MIPS ABI.
+  __ mov(T9, S5);
+  __ jalr(T9);
+
+  __ Comment("CallToRuntimeStub return");
+
+  // Mark that the thread is executing Dart code.
+  __ LoadImmediate(A2, VMTag::kDartTagId);
+  __ sw(A2, Assembler::VMTagAddress());
+
+  // Reset exit frame information in Isolate structure.
+  __ sw(ZR, Address(THR, Thread::exit_through_ffi_offset()));
+  __ sw(ZR, Address(THR, Thread::top_exit_frame_info_offset()));
+
+  // Restore the global object pool after returning from runtime (old space is
+  // moving, so the GOP could have been relocated).
+  if (FLAG_precompiled_mode) {
+    __ lw(PP, Address(THR, target::Thread::global_object_pool_offset()));
+  }
+
+
+  __ LeaveStubFrame();
+
+  // The following return can jump to a lazy-deopt stub, which assumes V0
+  // contains a return value and will save it in a GC-visible way.  We therefore
+  // have to ensure V0 does not contain any garbage value left from the C
+  // function we called (which has return type "void").
+  // (See GenerateDeoptimizationSequence::saved_result_slot_from_fp.)
+  __ LoadImmediate(V0, 0);
+
+  __ Ret();
+}
+
 // Call a native function within a safepoint.
 //
 // On entry:
