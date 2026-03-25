@@ -534,6 +534,13 @@ void StubCodeCompiler::GenerateRuntimeCallBreakpointStub() {
 #endif  // defined(PRODUCT)
 }
 
+// Return the current stack pointer address, used to stack alignment
+// checks.
+void StubCodeCompiler::GenerateGetCStackPointerStub() {
+  __ Ret();
+  __ delay_slot()->mov(V0, SP);
+}
+
 }  // namespace compiler
 }  // namespace dart
 
