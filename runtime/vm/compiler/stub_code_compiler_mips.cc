@@ -541,6 +541,61 @@ void StubCodeCompiler::GenerateGetCStackPointerStub() {
   __ delay_slot()->mov(V0, SP);
 }
 
+// Jump to the exception or error handler.
+// RA: return address.
+// A0: program_counter.
+// A1: stack_pointer.
+// A2: frame_pointer.
+// A3: thread.
+// Does not return.
+void StubCodeCompiler::GenerateJumpToFrameStub() {
+  ASSERT(kExceptionObjectReg == V0);
+  ASSERT(kStackTraceObjectReg == V1);
+  COMPILE_ASSERT(IsAbiPreservedRegister(CALLEE_SAVED_TEMP));
+  COMPILE_ASSERT(IsAbiPreservedRegister(THR));
+  __ mov (CALLEE_SAVED_TEMP, A0);
+  __ mov(SP, A1);    // Stack pointer.
+  __ mov(FP, A2);   // Frame_pointer.
+  __ mov(THR, A3);  // Thread.
+#if defined(DART_TARGET_OS_FUCHSIA) || defined(DART_TARGET_OS_ANDROID)
+#error Unimplmented
+#elif defined(USING_SHADOW_CALL_STACK)
+#error Unimplemented
+#endif
+
+  Label exit_through_non_ffi;
+  Register tmp1 = A0, tmp2 = A1;
+  // Check if we exited generated from FFI. If so do transition - this is needed
+  // because normally runtime calls transition back to generated via destructor
+  // of TransitionGeneratedToVM/Native that is part of runtime boilerplate
+  // code (see DEFINE_RUNTIME_ENTRY_IMPL in runtime_entry.h). Ffi calls don't
+  // have this boilerplate, don't have this stack resource, have to transition
+  // explicitly.
+  __ LoadFromOffset(tmp1, THR,
+      compiler::target::Thread::exit_through_ffi_offset());
+  __ LoadImmediate(tmp2, target::Thread::exit_through_ffi());
+  __ bne(tmp1, tmp2, &exit_through_non_ffi);
+  __ TransitionNativeToGenerated(tmp1, tmp2,
+                  /*leave_safepoint=*/true,
+                  /*ignore_unwind_in_progress=*/true);
+  __ Bind(&exit_through_non_ffi);
+
+  // Set tag.
+  __ LoadImmediate(TMP, VMTag::kDartTagId);
+  __ sw(TMP, Assembler::VMTagAddress());
+  // Clear top exit frame.
+  __ sw(ZR, Address(THR, Thread::top_exit_frame_info_offset()));
+  // Restore pool pointer.
+  __ RestoreCodePointer();
+  if (FLAG_precompiled_mode) {
+    __ lw(PP, Address(THR, target::Thread::global_object_pool_offset()));
+    __ set_constant_pool_allowed(true);
+  } else {
+    __ LoadPoolPointer();
+  }
+  __ jr(CALLEE_SAVED_TEMP);                     // Jump to the program counter.
+}
+
 }  // namespace compiler
 }  // namespace dart
 
