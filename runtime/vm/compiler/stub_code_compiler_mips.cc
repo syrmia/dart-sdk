@@ -238,6 +238,172 @@ void StubCodeCompiler::GenerateFfiCallbackTrampolineStub() {
 #endif
 }
 
+// Used by eager and lazy deoptimization. Preserve result in V0 if necessary.
+// This stub translates optimized frame into unoptimized frame. The optimized
+// frame can contain values in registers and on stack, the unoptimized
+// frame contains all values on stack.
+// Deoptimization occurs in following steps:
+// - Push all registers that can contain values.
+// - Call C routine to copy the stack and saved registers into temporary buffer.
+// - Adjust caller's frame to correct unoptimized frame size.
+// - Fill the unoptimized frame.
+// - Materialize objects that require allocation (e.g. Double instances).
+// GC can occur only after frame is fully rewritten.
+// Stack after EnterFrame(...) below:
+//   +------------------+
+//   | Saved PP         | <- TOS
+//   +------------------+
+//   | Saved CODE_REG   |
+//   +------------------+
+//   | Saved FP         | <- FP of stub
+//   +------------------+
+//   | Saved LR         |  (deoptimization point)
+//   +------------------+
+//   | Saved CODE_REG   |
+//   +------------------+
+//   | ...              | <- SP of optimized frame
+//
+// Parts of the code cannot GC, part of the code can GC.
+static void GenerateDeoptimizationSequence(Assembler* assembler,
+                                           DeoptStubKind kind) {
+  const intptr_t kPushedRegistersSize =
+      kNumberOfCpuRegisters *target::kWordSize + kNumberOfFRegisters *target::kWordSize;
+
+  __ SetPrologueOffset();
+  __ Comment("GenerateDeoptimizationSequence");
+  // DeoptimizeCopyFrame expects a Dart frame.
+  __ EnterDartFrame(kPushedRegistersSize);
+
+  // The code in this frame may not cause GC. kDeoptimizeCopyFrameRuntimeEntry
+  // and kDeoptimizeFillFrameRuntimeEntry are leaf runtime calls.
+  const intptr_t saved_result_slot_from_fp =
+      kFirstLocalSlotFromFp + 1 - (kNumberOfCpuRegisters - V0);
+  const intptr_t saved_exception_slot_from_fp =
+      kFirstLocalSlotFromFp + 1 - (kNumberOfCpuRegisters - V0);
+  const intptr_t saved_stacktrace_slot_from_fp =
+      kFirstLocalSlotFromFp + 1 - (kNumberOfCpuRegisters - V1);
+  // Result in V0 is preserved as part of pushing all registers below.
+
+  // Push registers in their enumeration order: lowest register number at
+  // lowest address.
+  for (int i = 0; i < kNumberOfCpuRegisters; i++) {
+    const int slot = kNumberOfCpuRegisters - i;
+    Register reg = static_cast<Register>(i);
+    if (reg == CODE_REG) {
+      // Save the original value of CODE_REG pushed before invoking this stub
+      // instead of the value used to call this stub.
+      COMPILE_ASSERT(TMP < CODE_REG);  // Assert TMP is pushed first.
+      __ lw(TMP, Address(FP, kCallerSpSlotFromFp *target::kWordSize));
+      __ sw(TMP, Address(SP, kPushedRegistersSize - slot *target::kWordSize));
+    } else {
+      __ sw(reg, Address(SP, kPushedRegistersSize - slot *target::kWordSize));
+    }
+  }
+  for (int i = 0; i < kNumberOfFRegisters; i++) {
+    // These go below the CPU registers.
+    const int slot = static_cast<int>(kNumberOfCpuRegisters) + static_cast<int>(kNumberOfFRegisters) - i;
+    FRegister reg = static_cast<FRegister>(i);
+    __ swc1(reg, Address(SP, kPushedRegistersSize - slot *target::kWordSize));
+  }
+
+  {
+    __ mov(A0, SP);  // Pass address of saved registers block.
+    LeafRuntimeScope rt(assembler,
+                        /*frame_size=*/0,
+                        /*preserve_registers=*/false);
+    bool is_lazy =
+        (kind == kLazyDeoptFromReturn) || (kind == kLazyDeoptFromThrow);
+    __ LoadImmediate(A1, is_lazy ? 1 : 0);
+    rt.Call(kDeoptimizeCopyFrameRuntimeEntry, 2);
+    // Result (V0) is stack-size (FP - SP) in bytes.
+  }
+
+  if (kind == kLazyDeoptFromReturn) {
+    // Restore result into T1 temporarily.
+    __ lw(T1, Address(FP, saved_result_slot_from_fp *target::kWordSize));
+  } else if (kind == kLazyDeoptFromThrow) {
+    // Restore result into T1 temporarily.
+    __ lw(T1, Address(FP, saved_exception_slot_from_fp *target::kWordSize));
+    __ lw(T2, Address(FP, saved_stacktrace_slot_from_fp *target::kWordSize));
+  }
+
+  __ RestoreCodePointer();
+  __ LeaveDartFrame();
+  __ subu(SP, FP, V0);
+
+  // DeoptimizeFillFrame expects a Dart frame, i.e. EnterDartFrame(0), but there
+  // is no need to set the correct PC marker or load PP, since they get patched.
+  __ EnterStubFrame();
+
+  if (kind == kLazyDeoptFromReturn) {
+    __ Push(T1);  // Preserve result as first local.
+  } else if (kind == kLazyDeoptFromThrow) {
+    __ Push(T1);  // Preserve exception as first local.
+    __ Push(T2);  // Preserve stacktrace as second local.
+  }
+  {
+    __ mov(A0, FP);  // Get last FP address.
+    LeafRuntimeScope rt(assembler,
+                        /*frame_size=*/0,
+                        /*preserve_registers=*/false);
+    rt.Call(kDeoptimizeFillFrameRuntimeEntry, 1);
+  }
+  if (kind == kLazyDeoptFromReturn) {
+    // Restore result into T1.
+    __ lw(T1, Address(FP, kFirstLocalSlotFromFp *target::kWordSize));
+  } else if (kind == kLazyDeoptFromThrow) {
+    // Restore result into T1.
+    __ lw(T1, Address(FP, kFirstLocalSlotFromFp *target::kWordSize));
+    __ lw(T2, Address(FP, (kFirstLocalSlotFromFp - 1) *target::kWordSize));
+  }
+  // Code above cannot cause GC.
+  __ RestoreCodePointer();
+  __ LeaveStubFrame();
+
+  // Frame is fully rewritten at this point and it is safe to perform a GC.
+  // Materialize any objects that were deferred by FillFrame because they
+  // require allocation.
+  // Enter stub frame with loading PP. The caller's PP is not materialized yet.
+  __ EnterStubFrame();
+  if (kind == kLazyDeoptFromReturn) {
+    __ Push(T1);  // Preserve result, it will be GC-d here.
+  } else if (kind == kLazyDeoptFromThrow) {
+    __ PushRegister(CODE_REG);
+    __ Push(T1);  // Preserve exception, it will be GC-d here.
+    __ Push(T2);  // Preserve stacktrace, it will be GC-d here.
+  }
+  __ PushRegister(ZR);  // Space for the result.
+  __ CallRuntime(kDeoptimizeMaterializeRuntimeEntry, 0);
+  // Result tells stub how many bytes to remove from the expression stack
+  // of the bottom-most frame. They were used as materialization arguments.
+  __ Pop(T1);
+  if (kind == kLazyDeoptFromReturn) {
+    __ Pop(V0);  // Restore result.
+  } else if (kind == kLazyDeoptFromThrow) {
+    __ Pop(V1);  // Restore stacktrace.
+    __ Pop(V0);  // Restore exception.
+    __ Pop(CODE_REG);
+  }
+  __ LeaveStubFrame();
+  // Remove materialization arguments.
+  __ SmiUntag(T1);
+  __ addu(SP, SP, T1);
+  // The caller is responsible for emitting the return instruction.
+
+  if (kind == kLazyDeoptFromThrow) {
+    // Unoptimized frame is now ready to accept the exception. Rethrow it to
+    // find the right handler. Ask rethrow machinery to bypass debugger it
+    // was already notified about this exception.
+    __ EnterStubFrame();
+    __ Push(ZR);  // Space for the return value (unused).
+    __ Push(V0);               // Exception
+    __ Push(V1);               // Stacktrace
+    __ PushImmediate(target::ToRawSmi(1));  // Bypass debugger
+    __ CallRuntime(kReThrowRuntimeEntry, 3);
+    __ LeaveStubFrame();
+  }
+}
+
 // Called when invoking Dart code from C++ (VM code).
 // Input parameters:
 //   RA : points to return address.
@@ -621,6 +787,25 @@ void StubCodeCompiler::GenerateRunExceptionHandlerStub() {
 
   __ jr(A0);  // Jump to continuation point.
   __ delay_slot()->sw(A2, stacktrace_addr);
+}
+
+// Deoptimize a frame on the call stack before rewinding.
+// The arguments are stored in the Thread object.
+// No result.
+void StubCodeCompiler::GenerateDeoptForRewindStub() {
+  // Push zap value instead of CODE_REG.
+  __ LoadImmediate(TMP, kZapCodeReg);
+  __ Push(TMP);
+
+  // Load the deopt pc into RA.
+  __ lw(RA, Address(THR, Thread::resume_pc_offset()));
+  GenerateDeoptimizationSequence(assembler, kEagerDeopt);
+
+  // After we have deoptimized, jump to the correct frame.
+  __ EnterStubFrame();
+  __ CallRuntime(kRewindPostDeoptRuntimeEntry, 0);
+  __ LeaveStubFrame();
+  __ break_(0);
 }
 
 }  // namespace compiler
