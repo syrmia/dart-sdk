@@ -1966,6 +1966,34 @@ void StubCodeCompiler::GenerateRuntimeCallBreakpointStub() {
 #endif  // defined(PRODUCT)
 }
 
+// Called only from unoptimized code. All relevant registers have been saved.
+// RA: return address.
+void StubCodeCompiler::GenerateDebugStepCheckStub() {
+#if defined(PRODUCT)
+  __ Stop("No debugging in PRODUCT mode");
+#else
+  // Check single stepping.
+  Label stepping, done_stepping;
+  __ LoadIsolate(T1);
+  __ lbu(T1, Address(T1, target::Thread::single_step_offset()));
+  __ BranchNotEqual(T1, Immediate(0), &stepping);
+  __ Bind(&done_stepping);
+
+  __ Ret();
+
+  // Call single step callback in debugger.
+  __ Bind(&stepping);
+  __ EnterStubFrame();
+  __ addiu(SP, SP, Immediate(-1 *target::kWordSize));
+  __ sw(RA, Address(SP, 0 *target::kWordSize));  // Return address.
+  __ CallRuntime(kSingleStepHandlerRuntimeEntry, 0);
+  __ lw(RA, Address(SP, 0 *target::kWordSize));
+  __ addiu(SP, SP, Immediate(1 *target::kWordSize));
+  __ LeaveStubFrame();
+  __ b(&done_stepping);
+#endif
+}
+
 // Return the current stack pointer address, used to stack alignment
 // checks.
 void StubCodeCompiler::GenerateGetCStackPointerStub() {
