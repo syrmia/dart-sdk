@@ -1250,6 +1250,128 @@ void StubCodeCompiler::GenerateArrayWriteBarrierStub() {
   GenerateWriteBarrierStubHelper(assembler, true);
 }
 
+static void GenerateAllocateObjectHelper(Assembler* assembler,
+                                         bool is_cls_parameterized) {
+  const Register kTagsReg = AllocateObjectABI::kTagsReg;
+
+  {
+    Label slow_case;
+
+#if !defined(PRODUCT)
+    {
+      const Register kCidRegister = T6;
+      __ ExtractClassIdFromTags(kCidRegister, AllocateObjectABI::kTagsReg);
+      __ MaybeTraceAllocation(kCidRegister, &slow_case, TMP);
+    }
+#endif
+
+    const Register kNewTopReg = T3;
+
+    // Bump allocation.
+    {
+      const Register kInstanceSizeReg = T4;
+      const Register kEndReg = T5;
+
+      __ ExtractInstanceSizeFromTags(kInstanceSizeReg, kTagsReg);
+
+      // Load two words from Thread::top: top and end.
+      // AllocateObjectABI::kResultReg: potential next object start.
+      __ lw(AllocateObjectABI::kResultReg,
+            Address(THR, target::Thread::top_offset()));
+      __ lw(kEndReg, Address(THR, target::Thread::end_offset()));
+
+      __ addu(kNewTopReg, AllocateObjectABI::kResultReg, kInstanceSizeReg);
+      __ BranchUnsignedLessEqual(kEndReg, kNewTopReg, &slow_case);
+      __ CheckAllocationCanary(AllocateObjectABI::kResultReg);
+
+      // Successfully allocated the object, now update top to point to
+      // next object start and store the class in the class field of object.
+      __ sw(kNewTopReg, Address(THR, target::Thread::top_offset()));
+    }  //  kEndReg = T5, kInstanceSizeReg = T4
+
+    // Tags.
+    __ InitializeHeaderUntagged(kTagsReg, AllocateObjectABI::kResultReg);
+
+    // Initialize the remaining words of the object.
+    {
+      const Register kFieldReg = T4;
+      const Register kNullReg = T7;
+
+      __ LoadObject(kNullReg, NullObject());
+
+      __ AddImmediate(kFieldReg, AllocateObjectABI::kResultReg,
+                      target::Instance::first_field_offset());
+      Label loop;
+      __ Bind(&loop);
+      for (intptr_t offset = 0; offset < target::kObjectAlignment;
+            offset += target::kCompressedWordSize) {
+        __ StoreCompressedIntoObjectNoBarrier(AllocateObjectABI::kResultReg,
+                                              Address(kFieldReg, offset),
+                                              T7);
+      }
+      // Safe to only check every kObjectAlignment bytes instead of each word.
+      ASSERT(kAllocationRedZoneSize >= target::kObjectAlignment);
+      __ AddImmediate(kFieldReg, kFieldReg, target::kObjectAlignment);
+      __ BranchUnsignedLess(kFieldReg, kNewTopReg, &loop);
+      __ WriteAllocationCanary(kNewTopReg);  // Fix overshoot.
+    }  // kFieldReg = T4, kNullReg = T7
+
+    __ AddImmediate(AllocateObjectABI::kResultReg,
+                    AllocateObjectABI::kResultReg, kHeapObjectTag);
+
+    // Store parameterized type.
+    if (is_cls_parameterized) {
+      Label not_parameterized_case;
+
+      const Register kClsIdReg = T4;
+      const Register kTypeOffsetReg = T5;
+
+      __ ExtractClassIdFromTags(kClsIdReg, kTagsReg);
+
+      // Load class' type_arguments_field offset in words.
+      __ LoadClassById(kTypeOffsetReg, kClsIdReg);
+      __ lw(
+          kTypeOffsetReg,
+          FieldAddress(kTypeOffsetReg,
+                       target::Class::
+                           host_type_arguments_field_offset_in_words_offset()));
+
+      // Set the type arguments in the new object.
+      __ AddShifted(kTypeOffsetReg, AllocateObjectABI::kResultReg,
+                    kTypeOffsetReg, target::kWordSizeLog2);
+      __ StoreIntoObjectNoBarrier(AllocateObjectABI::kResultReg,
+                                  FieldAddress(kTypeOffsetReg, 0),
+                                  AllocateObjectABI::kTypeArgumentsReg);
+
+      __ Bind(&not_parameterized_case);
+    }  // kClsIdReg = T4, kTypeOffsetReg = T5
+
+    __ Ret();
+
+    __ Bind(&slow_case);
+  }  // kNewTopReg = T3
+
+  // Fall back on slow case:
+  {
+    const Register kStubReg = T9;
+
+    if (!is_cls_parameterized) {
+      __ LoadObject(AllocateObjectABI::kTypeArgumentsReg, NullObject());
+    }
+
+    // Tail call to generic allocation stub.
+    __ lw(kStubReg,
+           Address(THR,
+                   target::Thread::allocate_object_slow_entry_point_offset()));
+    __ jr(kStubReg);
+  }  // kStubReg = T9
+}
+
+// Called for inline allocation of objects (any class).
+void StubCodeCompiler::GenerateAllocateObjectStub() {
+  GenerateAllocateObjectHelper(assembler, /*is_cls_parameterized=*/false);
+}
+
 // S5: Contains an ICData.
 void StubCodeCompiler::GenerateICCallBreakpointStub() {
 #if defined(PRODUCT)

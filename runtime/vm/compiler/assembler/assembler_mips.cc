@@ -1514,6 +1514,22 @@ void Assembler::CompareObject(Register reg, const Object& object) {
   }
 }
 
+void Assembler::ExtractClassIdFromTags(Register result,
+                                       Register tags) {
+  ASSERT(target::UntaggedObject::kClassIdTagPos == 12);
+  ASSERT(target::UntaggedObject::kClassIdTagSize == 20);
+  srl(result, tags, target::UntaggedObject::kClassIdTagPos);
+}
+
+void Assembler::ExtractInstanceSizeFromTags(Register result, Register tags) {
+  ASSERT(target::UntaggedObject::kSizeTagPos == 8);
+  ASSERT(target::UntaggedObject::kSizeTagSize == 4);
+  srl(result, tags, target::UntaggedObject::kSizeTagPos -
+    target::ObjectAlignment::kObjectAlignmentLog2);
+  andi(result, result, Immediate(Utils::NBitMask(target::UntaggedObject::kSizeTagSize)
+          << target::ObjectAlignment::kObjectAlignmentLog2));
+}
+
 }  // namespace compiler
 }  // namespace dart
 
