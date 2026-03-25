@@ -596,6 +596,33 @@ void StubCodeCompiler::GenerateJumpToFrameStub() {
   __ jr(CALLEE_SAVED_TEMP);                     // Jump to the program counter.
 }
 
+// Run an exception handler.  Execution comes from JumpToFrame
+// stub or from the simulator.
+// The arguments are stored in the Thread object.
+// Does not return.
+void StubCodeCompiler::GenerateRunExceptionHandlerStub() {
+  __ lw(A0, Address(THR, Thread::resume_pc_offset()));
+
+  word offset_from_thread = 0;
+  bool ok = target::CanLoadFromThread(NullObject(), &offset_from_thread);
+  ASSERT(ok);
+  __ LoadFromOffset(A2, THR, offset_from_thread);
+
+  ASSERT(kExceptionObjectReg == V0);
+  // Load the exception from the current thread.
+  Address exception_addr(THR, Thread::active_exception_offset());
+  __ lw(V0, exception_addr);
+  __ sw(A2, exception_addr);
+
+  ASSERT(kStackTraceObjectReg == V1);
+  // Load the stacktrace from the current thread.
+  Address stacktrace_addr(THR, Thread::active_stacktrace_offset());
+  __ lw(V1, stacktrace_addr);
+
+  __ jr(A0);  // Jump to continuation point.
+  __ delay_slot()->sw(A2, stacktrace_addr);
+}
+
 }  // namespace compiler
 }  // namespace dart
 
