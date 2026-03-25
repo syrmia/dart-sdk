@@ -638,6 +638,208 @@ void StubCodeCompiler::GenerateAllocationStubForClass(
   }
 }
 
+void StubCodeCompiler::GenerateWriteBarrierWrappersStub() {
+  for (intptr_t i = 0; i < kNumberOfCpuRegisters; ++i) {
+    if ((kDartAvailableCpuRegs & (1 << i)) == 0) continue;
+
+    Register reg = static_cast<Register>(i);
+    intptr_t start = __ CodeSize();
+    __ AddImmediate(SP, SP, -2 * target::kWordSize);
+    __ sw(RA, Address(SP, 1 * target::kWordSize));
+    __ sw(kWriteBarrierObjectReg, Address(SP, 0 * target::kWordSize));
+    __ mov(kWriteBarrierObjectReg, reg);
+    __ Call(Address(THR, target::Thread::write_barrier_entry_point_offset()));
+    __ lw(kWriteBarrierObjectReg, Address(SP, 0 * target::kWordSize));
+    __ lw(RA, Address(SP, 1 * target::kWordSize));
+    __ AddImmediate(SP, SP, 2 * target::kWordSize);
+    __ Ret();  // Return.
+    intptr_t end = __ CodeSize();
+    ASSERT_EQUAL(end - start, kStoreBufferWrapperSize);
+  }
+}
+
+// Helper stub to implement Assembler::StoreIntoObject/Array.
+// Input parameters:
+//   A0: Object (old)
+//   A1: Value (old or new)
+//   S5: Slot
+// If A1 is new, add A0 to the store buffer. Otherwise A1 is old, mark A1
+// and add it to the mark list.
+COMPILE_ASSERT(kWriteBarrierObjectReg == A0);
+COMPILE_ASSERT(kWriteBarrierValueReg == A1);
+COMPILE_ASSERT(kWriteBarrierSlotReg == S5);
+static void GenerateWriteBarrierStubHelper(Assembler* assembler, bool cards) {
+  RegisterSet spill_set((1 << T2) | (1 << T3) | (1 << T4), 0);
+
+  Label skip_marking;
+  __ PushRegister(T9);
+  __ lbu(TMP, FieldAddress(A1, target::Object::tags_offset()));
+  __ lbu(T9, Address(THR, target::Thread::write_barrier_mask_offset()));
+  __ and_(TMP, TMP, T9);
+  __ PopRegister(T9);
+  __ andi(TMP, TMP,
+          compiler::Immediate(target::UntaggedObject::kIncrementalBarrierMask));
+  __ beq(TMP, ZR, &skip_marking);
+
+  {
+    // Atomically clear kNotMarkedBit.
+    Label retry, is_new, done;
+    __ PushRegisters(spill_set);
+    __ AddImmediate(T3, A1, target::Object::tags_offset() - kHeapObjectTag);
+    // T3: Untagged address of header word.
+    __ Bind(&retry);
+    __ ll(T2, Address(T3, 0));
+    __ AndImmediate(T4, T2, 1 << target::UntaggedObject::kNotMarkedBit);
+    __ BranchEqual(T4, ZR, &done);  // Marked by another thread.
+    __ AndImmediate(T2, T2, ~(1 << target::UntaggedObject::kNotMarkedBit));
+    __ sc(T2, Address(T3, 0));
+    // T2 = 1 on success, 0 on failure.
+    __ beq(T2, ZR, &retry);
+
+    __ AndImmediate(T2, A1,
+                    1 << target::ObjectAlignment::kNewObjectBitPosition);
+    __ bne(T2, ZR, &is_new);
+    auto mark_stack_push = [&](intptr_t offset, const RuntimeEntry& entry) {
+      __ lw(T4, Address(THR, offset));
+      __ lw(T2, Address(T4, target::MarkingStackBlock::top_offset()));
+      __ sll(T3, T2, target::kWordSizeLog2);
+      __ addu(T3, T4, T3);
+      __ sw(A1, Address(T3, target::MarkingStackBlock::pointers_offset()));
+      __ AddImmediate(T2, T2, 1);
+      __ sw(T2, Address(T4, target::MarkingStackBlock::top_offset()));
+      __ BranchNotEqual(
+          T2, compiler::Immediate(target::MarkingStackBlock::kSize), &done);
+
+      {
+        LeafRuntimeScope rt(assembler, /*frame_size=*/0,
+                            /*preserve_registers=*/true);
+        __ mov(A0, THR);
+        rt.Call(entry, /*argument_count=*/1);
+      }
+    };
+    mark_stack_push(target::Thread::old_marking_stack_block_offset(),
+                    kOldMarkingStackBlockProcessRuntimeEntry);
+    __ b(&done);
+
+    __ Bind(&is_new);
+    mark_stack_push(target::Thread::new_marking_stack_block_offset(),
+                    kNewMarkingStackBlockProcessRuntimeEntry);
+
+    __ Bind(&done);
+    __ PopRegisters(spill_set);
+  }
+
+  Label add_to_remembered_set, remember_card;
+  __ Bind(&skip_marking);
+  __ PushRegister(T9);
+  __ lbu(TMP, FieldAddress(A0, target::Object::tags_offset()));
+  __ lbu(T9, FieldAddress(A1, target::Object::tags_offset()));
+  __ srl(TMP, TMP, target::UntaggedObject::kBarrierOverlapShift);
+  __ and_(TMP, T9, TMP);
+  __ LoadImmediate(T9, target::UntaggedObject::kGenerationalBarrierMask);
+  __ and_(TMP, TMP, T9);
+  __ PopRegister(T9);
+  __ bne(TMP, ZR, &add_to_remembered_set);
+  __ Ret();
+
+  __ Bind(&add_to_remembered_set);
+  if (cards) {
+    __ lbu(TMP, FieldAddress(A0, target::Object::tags_offset()));
+    __ AndImmediate(TMP, TMP, 1 << target::UntaggedObject::kCardRememberedBit);
+    __ bne(TMP, ZR, &remember_card);
+  } else {
+#if defined(DEBUG)
+    Label ok;
+    __ lbu(TMP, FieldAddress(A0, target::Object::tags_offset()));
+    __ AndImmediate(TMP, TMP, 1 << target::UntaggedObject::kCardRememberedBit);
+    __ beq(TMP, ZR, &ok);
+    __ Stop("Wrong barrier!");
+    __ Bind(&ok);
+#endif
+  }
+  {
+    // Atomically clear kOldAndNotRememberedBit.
+    Label retry, done;
+    __ PushRegisters(spill_set);
+    __ AddImmediate(T3, A0, target::Object::tags_offset() - kHeapObjectTag);
+    // T3: Untagged address of header word.
+    __ Bind(&retry);
+    __ ll(T2, Address(T3, 0));
+    __ AndImmediate(T4, T2,
+                    1 << target::UntaggedObject::kOldAndNotRememberedBit);
+    __ BranchEqual(T4, ZR, &done);  // Marked by another thread.
+    __ AndImmediate(T2, T2,
+                    ~(1 << target::UntaggedObject::kOldAndNotRememberedBit));
+    __ sc(T2, Address(T3, 0));
+    // T2 = 1 on success, 0 on failure.
+    __ beq(T2, ZR, &retry);
+
+    // Load the StoreBuffer block out of the thread. Then load top_ out of the
+    // StoreBufferBlock and add the address to the pointers_.
+    __ lw(T4, Address(THR, target::Thread::store_buffer_block_offset()));
+    __ lw(T2, Address(T4, target::StoreBufferBlock::top_offset()));
+    __ sll(T3, T2, target::kWordSizeLog2);
+    __ addu(T3, T4, T3);
+    __ sw(A0, Address(T3, target::StoreBufferBlock::pointers_offset()));
+
+    // Increment top_ and check for overflow.
+    // T2: top_.
+    // T4: StoreBufferBlock.
+    __ AddImmediate(T2, T2, 1);
+    __ sw(T2, Address(T4, target::StoreBufferBlock::top_offset()));
+    __ BranchNotEqual(T2, compiler::Immediate(target::StoreBufferBlock::kSize),
+                      &done);
+
+    {
+      LeafRuntimeScope rt(assembler, /*frame_size=*/0,
+                          /*preserve_registers=*/true);
+      __ mov(A0, THR);
+      rt.Call(kStoreBufferBlockProcessRuntimeEntry, /*argument_count=*/1);
+    }
+
+    __ Bind(&done);
+    __ PopRegisters(spill_set);
+    __ Ret();
+  }
+  if (cards) {
+    RegisterSet spill_set2((1 << A0) | (1 << A1) | (1 << A2), 0);
+    Label retry;
+
+    // Get card table.
+    __ Bind(&remember_card);
+    __ AndImmediate(TMP, A0, target::Page::kPageMask);                 // Page.
+    __ lw(TMP, Address(TMP, target::Page::card_table_offset()));  // Card table.
+
+    // Atomically dirty the card.     // Page.
+    __ PushRegisters(spill_set2);
+    __ AndImmediate(TMP, A0, target::Page::kPageMask);  // Page.
+    __ subu(S5, S5, TMP);                              // Offset in page.
+    __ srl(S5, S5, target::Page::kBytesPerCardLog2);  // Card index.
+    __ andi(A0, S5, Immediate(target::kBitsPerWord - 1));
+    __ LoadImmediate(A1, 1);
+    __ sllv(A1, A1, A0);
+    __ lw(TMP, Address(TMP, target::Page::card_table_offset()));  // Card table.
+    __ srl(S5, S5, target::kBitsPerWordLog2);  // Word index.
+    __ sll(A2, S5, target::kWordSizeLog2);
+    __ addu(TMP, TMP, A2);  // Word address.
+    __ Bind(&retry);
+    __ ll(A0, Address(TMP, 0));
+    __ or_(A0, A0, A1);
+    __ sc(A0, Address(TMP, 0));
+    __ beq(A0, ZR, &retry);
+    __ PopRegisters(spill_set2);
+    __ Ret();
+  }
+}
+
+void StubCodeCompiler::GenerateWriteBarrierStub() {
+  GenerateWriteBarrierStubHelper(assembler, false);
+}
+
+void StubCodeCompiler::GenerateArrayWriteBarrierStub() {
+  GenerateWriteBarrierStubHelper(assembler, true);
+}
+
 // S5: Contains an ICData.
 void StubCodeCompiler::GenerateICCallBreakpointStub() {
 #if defined(PRODUCT)
