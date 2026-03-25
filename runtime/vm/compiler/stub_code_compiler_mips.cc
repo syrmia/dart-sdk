@@ -404,6 +404,158 @@ static void GenerateDeoptimizationSequence(Assembler* assembler,
   }
 }
 
+// Called for inline allocation of arrays.
+// Input parameters:
+//   RA: return address.
+//   AllocateArrayABI::kLengthReg: Array length as Smi (must be preserved).
+//   AllocateArrayABI::kTypeArgumentsReg: array element type (either NULL or an instantiated type).
+// NOTE: AllocateArrayABI::kLengthReg cannot be clobbered here as the caller relies on it being saved.
+// The newly allocated object is returned in AllocateArrayABI::kResultReg.
+void StubCodeCompiler::GenerateAllocateArrayStub() {
+  if (!FLAG_use_slow_path && FLAG_inline_alloc) {
+    __ Comment("AllocateArrayStub");
+    Label slow_case;
+    // Compute the size to be allocated, it is based on the array length
+    // and is computed as:
+    // RoundedAllocationSize((array_length *target::kWordSize) + sizeof(RawArray)).
+    __ mov(T3, AllocateArrayABI::kLengthReg);  // Array length.
+
+    // Check that length is a positive Smi.
+    __ BranchIfNotSmi(T3, &slow_case);
+
+    // Check for maximum allowed length.
+    const intptr_t max_len =
+        target::ToRawSmi(target::Array::kMaxNewSpaceElements);
+    __ BranchUnsignedGreater(T3, Immediate(max_len), &slow_case);
+
+    const intptr_t cid = kArrayCid;
+    NOT_IN_PRODUCT(__ MaybeTraceAllocation(cid, &slow_case, T4));
+
+    const intptr_t fixed_size_plus_alignment_padding =
+        target::Array::header_size() +
+        target::ObjectAlignment::kObjectAlignment - 1;
+    __ LoadImmediate(T2, fixed_size_plus_alignment_padding);
+    __ sll(T3, T3, 1);  // T3 is  a Smi.
+    __ addu(T2, T2, T3);
+    ASSERT(kSmiTagShift == 1);
+    __ AndImmediate(T2, T2, ~(target::ObjectAlignment::kObjectAlignment - 1));
+
+    // T2: Allocation size.
+
+    // Potential new object start.
+    __ lw(AllocateArrayABI::kResultReg, Address(THR, target::Thread::top_offset()));
+
+    __ addu(T1, AllocateArrayABI::kResultReg, T2);                        // Potential next object start.
+    __ BranchUnsignedLess(T1, AllocateArrayABI::kResultReg, &slow_case);  // Branch on unsigned overflow.
+
+    // Check if the allocation fits into the remaining space.
+    // AllocateArrayABI::kResultReg: potential new object start.
+    // T1: potential next object start.
+    // T2: allocation size.
+    __ lw(T4, Address(THR, target::Thread::end_offset()));
+    __ BranchUnsignedGreaterEqual(T1, T4, &slow_case);
+    __ CheckAllocationCanary(AllocateArrayABI::kResultReg);
+
+    // Successfully allocated the object(s), now update top to point to
+    // next object start and initialize the object.
+    __ sw(T1, Address(THR, target::Thread::top_offset()));
+    __ addiu(AllocateArrayABI::kResultReg, AllocateArrayABI::kResultReg, Immediate(kHeapObjectTag));
+
+    // Initialize the tags.
+    // AllocateArrayABI::kResultReg: new object start as a tagged pointer.
+    // T1: new object end address.
+    // T2: allocation size.
+    {
+      compiler::Label skip_shift;
+      __ BranchSignedLessEqual(
+        T2, Immediate(target::UntaggedObject::kSizeTagMaxSizeTag),
+        &skip_shift);
+      __ LoadImmediate(T5, 0);  // overflow: tag == 0
+      compiler::Label done;
+      __ b(&done);
+
+      __ Bind(&skip_shift);
+      __ sll(T5, T2, target::UntaggedObject::kSizeTagPos -
+                              target::ObjectAlignment::kObjectAlignmentLog2);
+      __ Bind(&done);
+
+      ASSERT(cid != kIllegalCid);
+
+      // Get the class index and insert it into the tags.
+      // T2: size and bit tags.
+      const uword tags =
+            target::MakeTagWordForNewSpaceObject(cid, /*instance_size=*/0);
+      __ LoadImmediate(TMP, tags);
+      __ or_(T5, T5, TMP);
+      __ InitializeHeader(T5, AllocateArrayABI::kResultReg);
+    }
+
+    // AllocateArrayABI::kResultReg: new object start as a tagged pointer.
+    // T1: new object end address.
+    // Store the type argument field.
+    __ StoreIntoObjectNoBarrier(
+      AllocateArrayABI::kResultReg, FieldAddress(AllocateArrayABI::kResultReg, Array::type_arguments_offset()), AllocateArrayABI::kTypeArgumentsReg);
+
+    // Set the length field.
+    __ StoreIntoObjectNoBarrier(AllocateArrayABI::kResultReg, FieldAddress(AllocateArrayABI::kResultReg, Array::length_offset()), AllocateArrayABI::kLengthReg);
+
+    __ LoadObject(T7, Object::null_object());
+    // Initialize all array elements to raw_null.
+    // AllocateArrayABI::kResultReg: new object start as a tagged pointer.
+    // T1: new object end address.
+    // T2: iterator which initially points to the start of the variable
+    // data area to be initialized.
+    // T7: null.
+    __ AddImmediate(T2, AllocateArrayABI::kResultReg, target::Array::header_size() - kHeapObjectTag);
+
+    Label done;
+    Label init_loop;
+    __ Bind(&init_loop);
+    __ BranchUnsignedGreaterEqual(T2, T1, &done);
+    __ sw(T7, Address(T2, 0));
+    __ addiu(T2, T2, Immediate(target::kWordSize));
+    __ b(&init_loop);
+    __ Bind(&done);
+
+    // Safe to only check every kObjectAlignment bytes instead of each word.
+    ASSERT(kAllocationRedZoneSize >= target::kObjectAlignment);
+    __ AddImmediate(T2, T2, target::kObjectAlignment);
+    __ BranchSignedLess(T2, T1, &init_loop);
+    __ WriteAllocationCanary(T1);  // Fix overshoot.
+
+    __ Ret();
+
+    // Unable to allocate the array using the fast inline code, just call
+    // into the runtime.
+    __ Bind(&slow_case);
+  }
+  // Create a stub frame as we are pushing some objects on the stack before
+  // calling into the runtime.
+  __ EnterStubFrame();
+  // Setup space on stack for return value.
+  // Push array length as Smi and element type.
+  __ AddImmediate(SP, SP, -3 *target::kWordSize);
+  __ sw(ZR, Address(SP, 2 *target::kWordSize));
+  __ sw(AllocateArrayABI::kLengthReg, Address(SP, 1 *target::kWordSize));
+  __ sw(AllocateArrayABI::kTypeArgumentsReg, Address(SP, 0 *target::kWordSize));
+  __ CallRuntime(kAllocateArrayRuntimeEntry, 2);
+
+  // Write-barrier elimination might be enabled for this array (depending on the
+  // array length). To be sure we will check if the allocated object is in old
+  // space and if so call a leaf runtime to add it to the remembered set.
+  __ lw(AllocateArrayABI::kResultReg, Address(SP, 2 * target::kWordSize));
+  EnsureIsNewOrRemembered();
+
+  __ Comment("AllocateArrayStub return");
+  ASSERT(AllocateArrayABI::kResultReg == V0);
+  __ lw(AllocateArrayABI::kResultReg, Address(SP, 2 *target::kWordSize));
+  __ lw(AllocateArrayABI::kLengthReg, Address(SP, 1 *target::kWordSize));
+  __ lw(AllocateArrayABI::kTypeArgumentsReg, Address(SP, 0 *target::kWordSize));
+  __ addiu(SP, SP, Immediate(3 *target::kWordSize));
+
+  __ LeaveStubFrameAndReturn();
+}
+
 // Called when invoking Dart code from C++ (VM code).
 // Input parameters:
 //   RA : points to return address.
