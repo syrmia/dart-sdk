@@ -78,7 +78,7 @@ void StubCodeCompiler::GenerateLoadFfiCallbackMetadataRuntimeFunction(
   compiler::Label label_for_getting_pc;
   __ bal(&label_for_getting_pc);
   __ Bind(&label_for_getting_pc);
-  //push = 2 instr, bal = 2 instr 
+  //push = 2 instr, bal = 2 instr
   __ AddImmediate(dst, RA, -4 * compiler::target::kWordSize - code_size);
   __ Pop(RA);
 
@@ -91,7 +91,7 @@ void StubCodeCompiler::GenerateLoadFfiCallbackMetadataRuntimeFunction(
 }
 
 void StubCodeCompiler::GenerateFfiCallbackTrampolineStub() {
-#if defined(USING_SIMULATOR) && !defined(DART_PRECOMPILER)
+#if defined(DART_INCLUDE_SIMULATOR) && !defined(DART_PRECOMPILER)
   // TODO(37299): FFI is not supported in SIMMIPS.
   __ Breakpoint();
 #else
@@ -107,7 +107,7 @@ void StubCodeCompiler::GenerateFfiCallbackTrampolineStub() {
     compiler::Label label_for_getting_pc;
     __ bal(&label_for_getting_pc);
     __ Bind(&label_for_getting_pc);
-    //push = 2 instr, bal = 2 instr 
+    //push = 2 instr, bal = 2 instr
     __ AddImmediate(T1, RA, -4 * compiler::target::kWordSize);
     __ Pop(RA);
     __ b(&body);
@@ -123,7 +123,7 @@ void StubCodeCompiler::GenerateFfiCallbackTrampolineStub() {
 
   // Save THR (callee-saved), and RA.
   COMPILE_ASSERT(FfiCallbackMetadata::kNativeCallbackTrampolineStackDelta == 2);
-  
+
   __ PushRegisters(RegisterSet((1 << RA) | (1 << THR), 0));
 
   COMPILE_ASSERT(!IsArgumentRegister(THR));
@@ -137,7 +137,7 @@ void StubCodeCompiler::GenerateFfiCallbackTrampolineStub() {
   // We exit the safepoint inside DLRT_GetFfiCallbackMetadata in order to save
   // code size on this shared stub.
   {
-    __ EnterFrame(0);    
+    __ EnterFrame(0);
     __ ReserveAlignedFrameSpace(4 * target::kWordSize);
 
     __ mov(A0, T1);                          // trampoline
@@ -212,7 +212,7 @@ void StubCodeCompiler::GenerateFfiCallbackTrampolineStub() {
 
     GenerateLoadFfiCallbackMetadataRuntimeFunction(
         FfiCallbackMetadata::kExitTemporaryIsolate, T1);
-        
+
     __ mov(T9, T1);
     __ jalr(T9);
 
@@ -298,7 +298,7 @@ void StubCodeCompiler::GenerateInvokeDartCodeStub() {
   __ lw(T0, Address(THR, target::Thread::top_exit_frame_info_offset()));
   __ sw(ZR, Address(THR, target::Thread::top_exit_frame_info_offset()));
   __ sw(T0, Address(SP, 0 *target::kWordSize));
-  
+
   // target::frame_layout.exit_link_slot_from_entry_fp must be kept in sync
   // with the code below.
   ASSERT(target::frame_layout.exit_link_slot_from_entry_fp == -25);
@@ -399,6 +399,77 @@ void StubCodeCompiler::GenerateInvokeDartCodeStub() {
 
   // Restore the frame pointer and return.
   __ LeaveFrameAndReturn();
+}
+
+// Called for inline allocation of objects.
+// Input parameters:
+//   RA : return address.
+//   SP + 0 : type arguments object (only if class is parameterized).
+void StubCodeCompiler::GenerateAllocationStubForClass(
+    UnresolvedPcRelativeCalls* unresolved_calls,
+    const Class& cls,
+    const Code& allocate_object,
+    const Code& allocat_object_parametrized) {
+  __ Comment("AllocationStubForClass");
+
+  classid_t cls_id = target::Class::GetId(cls);
+  ASSERT(cls_id != kIllegalCid);
+
+  // The generated code is different if the class is parameterized.
+  const bool is_cls_parameterized = target::Class::NumTypeArguments(cls) > 0;
+  ASSERT(!is_cls_parameterized ||
+         (target::Class::TypeArgumentsFieldOffset(cls) !=
+          target::Class::kNoTypeArguments));
+  const intptr_t instance_size = target::Class::GetInstanceSize(cls);
+  ASSERT(instance_size > 0);
+
+  const uword tags =
+      target::MakeTagWordForNewSpaceObject(cls_id, instance_size);
+
+  const Register kTagsReg = AllocateObjectABI::kTagsReg;
+
+  __ LoadImmediate(kTagsReg, tags);
+
+  if (!FLAG_use_slow_path && FLAG_inline_alloc &&
+      !target::Class::TraceAllocation(cls) &&
+      target::SizeFitsInSizeTag(instance_size)) {
+    RELEASE_ASSERT(AllocateObjectInstr::WillAllocateNewOrRemembered(cls));
+    RELEASE_ASSERT(target::Heap::IsAllocatableInNewSpace(instance_size));
+
+    if (is_cls_parameterized) {
+      if (!IsSameObject(NullObject(),
+                        CastHandle<Object>(allocat_object_parametrized))) {
+        __ GenerateUnRelocatedPcRelativeTailCall();
+        unresolved_calls->Add(new UnresolvedPcRelativeCall(
+            __ CodeSize(), allocat_object_parametrized, /*is_tail_call=*/true));
+      } else {
+        __ lw(T9,
+              Address(THR,
+                      target::Thread::
+                          allocate_object_parameterized_entry_point_offset()));
+        __ jr(T9);
+      }
+    } else {
+      if (!IsSameObject(NullObject(), CastHandle<Object>(allocate_object))) {
+        __ GenerateUnRelocatedPcRelativeTailCall();
+        unresolved_calls->Add(new UnresolvedPcRelativeCall(
+            __ CodeSize(), allocate_object, /*is_tail_call=*/true));
+      } else {
+        __ lw(
+            T9,
+            Address(THR, target::Thread::allocate_object_entry_point_offset()));
+        __ jr(T9);
+      }
+    }
+  } else {
+    if (!is_cls_parameterized) {
+      __ LoadObject(AllocateObjectABI::kTypeArgumentsReg, NullObject());
+    }
+    __ lw(T9,
+          Address(THR,
+                  target::Thread::allocate_object_slow_entry_point_offset()));
+    __ jr(T9);
+  }
 }
 
 // S5: Contains an ICData.
