@@ -30,6 +30,33 @@
 namespace dart {
 namespace compiler {
 
+// Ensures that [V0] is a new object, if not it will be added to the remembered
+// set via a leaf runtime call.
+//
+// WARNING: This might clobber all registers except for [V0], [THR] and [FP].
+// The caller should simply call LeaveStubFrame() and return.
+void StubCodeCompiler::EnsureIsNewOrRemembered() {
+  // If the object is not in an active TLAB, we call a leaf-runtime to add it to
+  // the remembered set and/or deferred marking worklist. This test assumes a
+  // Page's TLAB use is always ascending.
+  Label done;
+  __ AndImmediate(TMP, V0, target::Page::kPageMask);
+  __ LoadFromOffset(TMP, TMP, target::Page::original_top_offset());
+  __ BranchUnsignedGreaterEqual(V0, TMP, &done);
+
+  {
+    LeafRuntimeScope rt(assembler, /*frame_size=*/0,
+                        /*preserve_registers=*/false);
+
+    __ mov(A0, V0);
+    __ mov(A1, THR);
+    rt.Call(kEnsureRememberedAndMarkingDeferredRuntimeEntry,
+            /*argument_count=*/2);
+  }
+
+  __ Bind(&done);
+}
+
 // Call a native function within a safepoint.
 //
 // On entry:
@@ -879,6 +906,146 @@ void StubCodeCompiler::GenerateAllocationStubForClass(
                   target::Thread::allocate_object_slow_entry_point_offset()));
     __ jr(T9);
   }
+}
+
+// Helper to generate space allocation of context stub.
+// This does not initialise the fields of the context.
+// Input:
+//   T1: number of context variables.
+// Output:
+//   V0: new allocated Context object.
+// Clobbered:
+//   T2, T3, T4
+static void GenerateAllocateContext(Assembler* assembler, Label* slow_case) {
+  // First compute the rounded instance size.
+  // T1: number of context variables.
+  const intptr_t fixed_size_plus_alignment_padding =
+      target::Context::header_size() +
+      target::ObjectAlignment::kObjectAlignment - 1;
+
+  __ sll(T2, T1, 2);
+  ASSERT(kSmiTagShift == 1);
+  __ AddImmediate(T2, fixed_size_plus_alignment_padding);
+  __ AndImmediate(T2, T2, ~(target::ObjectAlignment::kObjectAlignment - 1));
+
+  NOT_IN_PRODUCT(__ MaybeTraceAllocation(kContextCid, slow_case, T4));
+  // Now allocate the object.
+  // T1: number of context variables.
+  // T2: object size.
+  __ lw(V0, Address(THR, target::Thread::top_offset()));
+  __ addu(T3, T2, V0);
+  // Check if the allocation fits into the remaining space.
+  // V0: potential new object.
+  // T1: number of context variables.
+  // T2: object size.
+  // T3: potential next object start.
+  __ lw(T4, Address(THR, target::Thread::end_offset()));
+  __ BranchUnsignedGreaterEqual(T3, T4, slow_case);
+  __ CheckAllocationCanary(V0);
+
+  // Successfully allocated the object, now update top to point to
+  // next object start and initialize the object.
+  // V0: new object start (untagged).
+  // T1: number of context variables.
+  // T2: object size.
+  // T3: next object start.
+  __ sw(T3, Address(THR, target::Thread::top_offset()));
+  __ AddImmediate(V0, V0, kHeapObjectTag);
+
+  // Calculate the size tag.
+  // V0: new object (tagged).
+  // T1: number of context variables.
+  // T2: object size.
+  // T3: next object start.
+  const intptr_t shift = target::UntaggedObject::kSizeTagPos -
+                         target::ObjectAlignment::kObjectAlignmentLog2;
+  __ LoadImmediate(T3, 0);
+  // If no size tag overflow, shift T2 left, else set T2 to zero.
+  Label zero_tag;
+  __ BranchSignedGreater(
+      T2, compiler::Immediate(target::UntaggedObject::kSizeTagMaxSizeTag),
+      &zero_tag);
+  __ sll(T3, T2, shift);
+  __ Bind(&zero_tag);
+
+  // Get the class index and insert it into the tags.
+  // T3: size and bit tags.
+  const uword tags =
+      target::MakeTagWordForNewSpaceObject(kContextCid, /*instance_size=*/0);
+
+  __ OrImmediate(T3, T3, tags);
+  __ InitializeHeader(T3, V0);
+
+  // Setup up number of context variables field.
+  // V0: new object.
+  // T1: number of context variables as integer value (not object).
+  // T2: object size.
+  // T3: next object start.
+  __ sw(T1, FieldAddress(V0, target::Context::num_variables_offset()));
+}
+
+// Called for inline allocation of contexts.
+// Input:
+//   T1: number of context variables.
+// Output:
+//   V0: new allocated RawContext object.
+void StubCodeCompiler::GenerateAllocateContextStub() {
+  if (!FLAG_use_slow_path && FLAG_inline_alloc) {
+    Label slow_case;
+
+    GenerateAllocateContext(assembler, &slow_case);
+
+    // Setup the parent field.
+    // V0: new object.
+    // T1: number of context variables.
+    __ LoadObject(T7, NullObject());
+    __ StoreIntoObjectOffset(V0, target::Context::parent_offset(),
+                                       T7);
+
+    // Initialize the context variables.
+    // V0: new object.
+    // T1: number of context variables.
+    {
+      Label loop, done;
+      __ AddImmediate(T3, V0,
+                      target::Context::variable_offset(0) - kHeapObjectTag);
+      __ Bind(&loop);
+      __ AddImmediate(T1, T1, -1);
+      __ bltz(T1, &done);
+      __ LoadObject(TMP, NullObject());
+      __ sw(TMP, Address(T3, 0));
+      __ AddImmediate(T3, T3, target::kWordSize);
+      __ b(&loop);
+      __ Bind(&done);
+    }
+
+    // Done allocating and initializing the context.
+    // V0: new object.
+    __ Ret();
+
+    __ Bind(&slow_case);
+  }
+
+  // Create a stub frame as we are pushing some objects on the stack before
+  // calling into the runtime.
+  __ EnterStubFrame();
+  // Setup space on stack for return value.
+  __ SmiTag(T1);
+  __ PushObject(NullObject());
+  __ PushRegister(T1);
+  __ CallRuntime(kAllocateContextRuntimeEntry, 1);  // Allocate context.
+  __ Drop(1);          // Pop number of context variables argument.
+  __ PopRegister(V0);  // Pop the new context object.
+
+  // Write-barrier elimination might be enabled for this context (depending on
+  // the size). To be sure we will check if the allocated object is in old
+  // space and if so call a leaf runtime to add it to the remembered set.
+  EnsureIsNewOrRemembered();
+
+  // V0: new object
+  // Restore the frame pointer.
+  __ LeaveStubFrame();
+  __ Ret();
 }
 
 void StubCodeCompiler::GenerateWriteBarrierWrappersStub() {
