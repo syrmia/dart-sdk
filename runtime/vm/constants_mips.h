@@ -559,6 +559,17 @@ struct AllocateClosureABI {
   static constexpr Register kScratchReg = T4;
 };
 
+// ABI for AllocateMintShared*Stub.
+struct AllocateMintABI {
+  static constexpr Register kResultReg = AllocateObjectABI::kResultReg;
+  static constexpr Register kTempReg = A1;
+};
+
+// Common ABI for shared slow path stubs.
+struct SharedSlowPathStubABI {
+  static constexpr Register kResultReg = V0;
+};
+
 // ABI for Allocate{Mint,Double,Float32x4,Float64x2}Stub.
 struct AllocateBoxABI {
   static constexpr Register kResultReg = AllocateObjectABI::kResultReg;

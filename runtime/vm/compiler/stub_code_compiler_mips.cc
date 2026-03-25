@@ -238,6 +238,58 @@ void StubCodeCompiler::GenerateFfiCallbackTrampolineStub() {
 #endif
 }
 
+void StubCodeCompiler::GenerateSharedStubGeneric(
+    bool save_fpu_registers,
+    intptr_t self_code_stub_offset_from_thread,
+    bool allow_return,
+    std::function<void()> perform_runtime_call) {
+  // We want the saved registers to appear like part of the caller's frame, so
+  // we push them before calling EnterStubFrame.
+  RegisterSet all_registers;
+  all_registers.AddAllNonReservedRegisters(save_fpu_registers);
+
+  // To make the stack map calculation architecture independent we do the same
+  // as on intel.
+  __ PushRegister(RA);
+  __ PushRegisters(all_registers);
+  __ lw(CODE_REG, Address(THR, self_code_stub_offset_from_thread));
+  __ EnterStubFrame();
+  perform_runtime_call();
+  if (!allow_return) {
+    __ Breakpoint();
+    return;
+  }
+  __ LeaveStubFrame();
+  __ PopRegisters(all_registers);
+  __ Drop(1);  // We use the LR restored via LeaveStubFrame.
+  __ Ret();
+}
+
+void StubCodeCompiler::GenerateSharedStub(
+    bool save_fpu_registers,
+    const RuntimeEntry* target,
+    intptr_t self_code_stub_offset_from_thread,
+    bool allow_return,
+    bool store_runtime_result_in_result_register) {
+  ASSERT(!store_runtime_result_in_result_register || allow_return);
+  auto perform_runtime_call = [&]() {
+    if (store_runtime_result_in_result_register) {
+      __ LoadObject(T7, NullObject());
+      __ PushRegister(T7);
+    }
+    __ CallRuntime(*target, /*argument_count=*/0);
+    if (store_runtime_result_in_result_register) {
+      __ PopRegister(V0);
+      __ sw(V0, Address(FP, target::kWordSize *
+                                StubCodeCompiler::WordOffsetFromFpToCpuRegister(
+                                    SharedSlowPathStubABI::kResultReg)));
+    }
+  };
+  GenerateSharedStubGeneric(save_fpu_registers,
+                            self_code_stub_offset_from_thread, allow_return,
+                            perform_runtime_call);
+}
+
 // Used by eager and lazy deoptimization. Preserve result in V0 if necessary.
 // This stub translates optimized frame into unoptimized frame. The optimized
 // frame can contain values in registers and on stack, the unoptimized
@@ -554,6 +606,45 @@ void StubCodeCompiler::GenerateAllocateArrayStub() {
   __ addiu(SP, SP, Immediate(3 *target::kWordSize));
 
   __ LeaveStubFrameAndReturn();
+}
+
+// Called for allocation of Mint.
+void StubCodeCompiler::GenerateAllocateMintSharedWithFPURegsStub() {
+  // For test purpose call allocation stub without inline allocation attempt.
+  if (!FLAG_use_slow_path && FLAG_inline_alloc) {
+    Label slow_case;
+    __ TryAllocate(compiler::MintClass(), &slow_case, Assembler::kNearJump,
+                   AllocateMintABI::kResultReg, AllocateMintABI::kTempReg);
+    __ Ret();
+
+    __ Bind(&slow_case);
+  }
+  COMPILE_ASSERT(AllocateMintABI::kResultReg ==
+                 SharedSlowPathStubABI::kResultReg);
+  GenerateSharedStub(/*save_fpu_registers=*/true, &kAllocateMintRuntimeEntry,
+                     target::Thread::allocate_mint_with_fpu_regs_stub_offset(),
+                     /*allow_return=*/true,
+                     /*store_runtime_result_in_result_register=*/true);
+}
+
+// Called for allocation of Mint.
+void StubCodeCompiler::GenerateAllocateMintSharedWithoutFPURegsStub() {
+  // For test purpose call allocation stub without inline allocation attempt.
+  if (!FLAG_use_slow_path && FLAG_inline_alloc) {
+    Label slow_case;
+    __ TryAllocate(compiler::MintClass(), &slow_case, Assembler::kNearJump,
+                   AllocateMintABI::kResultReg, AllocateMintABI::kTempReg);
+    __ Ret();
+
+    __ Bind(&slow_case);
+  }
+  COMPILE_ASSERT(AllocateMintABI::kResultReg ==
+                 SharedSlowPathStubABI::kResultReg);
+  GenerateSharedStub(
+      /*save_fpu_registers=*/false, &kAllocateMintRuntimeEntry,
+      target::Thread::allocate_mint_without_fpu_regs_stub_offset(),
+      /*allow_return=*/true,
+      /*store_runtime_result_in_result_register=*/true);
 }
 
 // Called when invoking Dart code from C++ (VM code).
