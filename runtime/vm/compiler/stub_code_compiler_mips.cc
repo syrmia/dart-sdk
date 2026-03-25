@@ -542,6 +542,31 @@ void StubCodeCompiler::GenerateCallBootstrapNativeStub() {
             target::Thread::bootstrap_native_wrapper_entry_point_offset()));
 }
 
+// Input parameters:
+//   S4: arguments descriptor array.
+void StubCodeCompiler::GenerateCallStaticFunctionStub() {
+  __ Comment("CallStaticFunctionStub");
+  __ EnterStubFrame();
+  // Setup space on stack for return value and preserve arguments descriptor.
+
+  __ addiu(SP, SP, Immediate(-2 *target::kWordSize));
+  __ sw(S4, Address(SP, 1 *target::kWordSize));
+  __ sw(ZR, Address(SP, 0 *target::kWordSize));
+
+  __ CallRuntime(kPatchStaticCallRuntimeEntry, 0);
+  __ Comment("CallStaticFunctionStub return");
+
+  // Get Code object result and restore arguments descriptor array.
+  __ lw(CODE_REG, Address(SP, 0 *target::kWordSize));
+  __ lw(S4, Address(SP, 1 *target::kWordSize));
+  __ addiu(SP, SP, Immediate(2 *target::kWordSize));
+
+  __ lw(T0, FieldAddress(CODE_REG, Code::entry_point_offset()));
+
+  // Remove the stub frame as we are about to jump to the dart function.
+  __ LeaveStubFrameAndReturn(T0);
+}
+
 // Called from a static call only when an invalid code has been entered
 // (invalid because its function was optimized or deoptimized).
 // S4: arguments descriptor array.
