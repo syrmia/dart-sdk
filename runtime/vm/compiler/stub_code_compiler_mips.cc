@@ -2157,6 +2157,63 @@ void StubCodeCompiler::GenerateOptimizeFunctionStub() {
   __ break_(0);
 }
 
+static void CallSwitchableCallMissRuntimeEntry(Assembler* assembler,
+                                               Register receiver_reg) {
+  __ Push(receiver_reg);
+  __ Push(ZR);  // Result slot.
+  __ Push(ZR);  // Arg0: stub out.
+  __ Push(receiver_reg);  // Arg1: Receiver
+  __ CallRuntime(kSwitchableCallMissRuntimeEntry, 2);
+  __ Drop(1);
+  __ Pop(CODE_REG);  // result = stub
+  __ Pop(S5);  // result = IC
+  __ Pop(receiver_reg);
+}
+
+// Called from switchable IC calls.
+//  A0: receiver
+//  S5: SingleTargetCache
+void StubCodeCompiler::GenerateSwitchableCallMissStub() {
+  __ lw(CODE_REG,
+         Address(THR, target::Thread::switchable_call_miss_stub_offset()));
+
+  __ EnterStubFrame();
+  CallSwitchableCallMissRuntimeEntry(assembler, /*receiver_reg=*/A0);
+  __ LeaveStubFrame();
+
+  __ lw(T1, FieldAddress(CODE_REG, target::Code::entry_point_offset(
+                                        CodeEntryKind::kNormal)));
+  __ jr(T1);
+}
+
+// Called from switchable IC calls.
+//  A0: receiver
+//  S5: SingleTargetCache
+// Passed to target:
+//  CODE_REG: target Code object
+void StubCodeCompiler::GenerateSingleTargetCallStub() {
+  Label miss;
+  __ LoadClassIdMayBeSmi(T1, A0);
+  __ lhu(T2, FieldAddress(S5, target::SingleTargetCache::lower_limit_offset()));
+  __ lhu(T3, FieldAddress(S5, target::SingleTargetCache::upper_limit_offset()));
+
+  __ BranchUnsignedLess(T1, T2, &miss);
+  __ BranchUnsignedGreater(T1, T3, &miss);
+
+  __ lw(T1, FieldAddress(S5, target::SingleTargetCache::entry_point_offset()));
+  __ lw(CODE_REG, FieldAddress(S5, target::SingleTargetCache::target_offset()));
+  __ jr(T1);
+
+  __ Bind(&miss);
+  __ EnterStubFrame();
+  CallSwitchableCallMissRuntimeEntry(assembler, /*receiver_reg=*/A0);
+  __ LeaveStubFrame();
+
+  __ lw(T1, FieldAddress(CODE_REG,
+          target::Code::entry_point_offset(CodeEntryKind::kMonomorphic)));
+  __ jr(T1);
+}
+
 }  // namespace compiler
 }  // namespace dart
 
