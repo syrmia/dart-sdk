@@ -1048,6 +1048,80 @@ void StubCodeCompiler::GenerateAllocateContextStub() {
   __ Ret();
 }
 
+// Called for clone of contexts.
+// Input:
+//   T5: context variable to clone.
+// Output:
+//   V0: new allocated Context object.
+// Clobbered:
+//   Potentially any since it can go to runtime.
+void StubCodeCompiler::GenerateCloneContextStub() {
+  if (!FLAG_use_slow_path && FLAG_inline_alloc) {
+    Label slow_case;
+
+    // Load num. variable in the existing context.
+    __ lw(T1, FieldAddress(T5, target::Context::num_variables_offset()));
+
+    GenerateAllocateContext(assembler, &slow_case);
+
+    // Load parent in the existing context.
+    __ lw(T2, FieldAddress(T5, target::Context::parent_offset()));
+    // Setup the parent field.
+    // V0: new object.
+    __ StoreIntoObjectNoBarrier(
+        V0, FieldAddress(V0, target::Context::parent_offset()), T2);
+
+    // Clone the context variables.
+    // V0: new object.
+    // T1: number of context variables.
+    {
+      Label loop, done;
+      __ AddImmediate(T2, V0,
+                      target::Context::variable_offset(0) - kHeapObjectTag);
+      __ AddImmediate(T3, T5,
+                      target::Context::variable_offset(0) - kHeapObjectTag);
+
+      __ Bind(&loop);
+      __ AddImmediate(T1, T1, -1);
+      __ BranchSignedLess(T1, ZR, &done);
+
+      __ lw(T5, Address(T3, 0));
+      __ addi(T3, T3, Immediate(target::kWordSize));
+      __ sw(T5, Address(T2, 0));
+      __ addi(T2, T2, Immediate(target::kWordSize));
+      __ b(&loop);
+
+      __ Bind(&done);
+    }
+
+    // Done allocating and initializing the context.
+    // V0: new object.
+    __ Ret();
+
+    __ Bind(&slow_case);
+  }
+
+  // Create a stub frame as we are pushing some objects on the stack before
+  // calling into the runtime.
+  __ EnterStubFrame();
+  // Setup space on stack for return value.
+  __ PushRegisterPair(T5, ZR);
+  __ CallRuntime(kCloneContextRuntimeEntry, 1);  // Clone context.
+  // T5: Pop number of context variables argument.
+  // V0: Pop the new context object.
+  __ PopRegisterPair(T5, V0);
+
+  // Write-barrier elimination might be enabled for this context (depending on
+  // the size). To be sure we will check if the allocated object is in old
+  // space and if so call a leaf runtime to add it to the remembered set.
+  EnsureIsNewOrRemembered();
+
+  // V0: new object
+  // Restore the frame pointer.
+  __ LeaveStubFrame();
+  __ Ret();
+}
+
 void StubCodeCompiler::GenerateWriteBarrierWrappersStub() {
   for (intptr_t i = 0; i < kNumberOfCpuRegisters; ++i) {
     if ((kDartAvailableCpuRegs & (1 << i)) == 0) continue;
