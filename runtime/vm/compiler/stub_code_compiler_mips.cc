@@ -1372,6 +1372,46 @@ void StubCodeCompiler::GenerateAllocateObjectStub() {
   GenerateAllocateObjectHelper(assembler, /*is_cls_parameterized=*/false);
 }
 
+void StubCodeCompiler::GenerateAllocateObjectParameterizedStub() {
+  GenerateAllocateObjectHelper(assembler, /*is_cls_parameterized=*/true);
+}
+
+void StubCodeCompiler::GenerateAllocateObjectSlowStub() {
+  const Register kClsReg = A0;
+
+  if (!FLAG_precompiled_mode) {
+    __ lw(CODE_REG,
+           Address(THR, target::Thread::call_to_runtime_stub_offset()));
+  }
+
+  // Create a stub frame as we are pushing some objects on the stack before
+  // calling into the runtime.
+  __ EnterStubFrame();
+
+  __ ExtractClassIdFromTags(AllocateObjectABI::kResultReg,
+                            AllocateObjectABI::kTagsReg);
+  __ LoadClassById(kClsReg, AllocateObjectABI::kResultReg);
+
+  __ LoadObject(AllocateObjectABI::kResultReg, NullObject());
+
+  __ addiu(SP, SP, Immediate(-3 * target::kWordSize));
+  __ sw(AllocateObjectABI::kResultReg, Address(SP, 2 * target::kWordSize));       // Result slot.
+  __ sw(kClsReg, Address(SP, 1 * target::kWordSize));  // Arg0: Class object.
+  __ sw(AllocateObjectABI::kTypeArgumentsReg,
+        Address(SP, 0 * target::kWordSize));  // Arg1: Type args or null.
+  __ CallRuntime(kAllocateObjectRuntimeEntry, 2);
+
+  // Load result off the stack into result register.
+  __ lw(AllocateObjectABI::kResultReg, Address(SP, 2 * target::kWordSize));
+  __ addiu(SP, SP, Immediate(3 * target::kWordSize));
+
+  // Write-barrier elimination is enabled for [cls] and we therefore need to
+  // ensure that the object is in new-space or has remembered bit set.
+  EnsureIsNewOrRemembered();
+
+  __ LeaveDartFrameAndReturn();
+}
+
 // S5: Contains an ICData.
 void StubCodeCompiler::GenerateICCallBreakpointStub() {
 #if defined(PRODUCT)
