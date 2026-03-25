@@ -146,7 +146,6 @@ void StubCodeCompiler::GenerateCallToRuntimeStub() {
     __ lw(PP, Address(THR, target::Thread::global_object_pool_offset()));
   }
 
-
   __ LeaveStubFrame();
 
   // The following return can jump to a lazy-deopt stub, which assumes V0
@@ -1710,6 +1709,111 @@ void StubCodeCompiler::GenerateAllocateObjectSlowStub() {
   EnsureIsNewOrRemembered();
 
   __ LeaveDartFrameAndReturn();
+}
+
+// Stub for compiling a function and jumping to the compiled code.
+// S5/ICREG: IC-Data (for methods).
+// S4/ARGS_DESC_REG: Arguments descriptor.
+// T0/FUNCTION_REG: Function.
+void StubCodeCompiler::GenerateLazyCompileStub() {
+  __ EnterStubFrame();
+  __ addiu(SP, SP, Immediate(-3 *target::kWordSize));
+  __ sw(ICREG, Address(SP, 2 *target::kWordSize));  // Preserve IC data object.
+  __ sw(ARGS_DESC_REG, Address(SP, 1 *target::kWordSize));  // Preserve args descriptor array.
+  __ sw(FUNCTION_REG, Address(SP, 0 *target::kWordSize));  // Pass function.
+  __ CallRuntime(kCompileFunctionRuntimeEntry, 1);
+  __ lw(FUNCTION_REG, Address(SP, 0 *target::kWordSize));  // Restore function.
+  __ lw(ARGS_DESC_REG, Address(SP, 1 *target::kWordSize));  // Restore args descriptor array.
+  __ lw(ICREG, Address(SP, 2 *target::kWordSize));  // Restore IC data array.
+  __ addiu(SP, SP, Immediate(3 *target::kWordSize));
+  __ LeaveStubFrame();
+
+  __ lw(CODE_REG, FieldAddress(FUNCTION_REG, target::Function::code_offset()));
+  __ lw(T2, FieldAddress(FUNCTION_REG, target::Function::entry_point_offset()));
+  __ jr(T2);
+}
+
+// Stub for interpreting a function call.
+// S4/ARGS_DESC_REG: Arguments descriptor.
+// T0/FUNCTION_REG: Function.
+void StubCodeCompiler::GenerateInterpretCallStub() {
+#if defined(DART_DYNAMIC_MODULES)
+
+  __ EnterStubFrame();
+
+#if defined(DEBUG)
+  {
+    Label ok;
+    // Check that we are always entering from Dart code.
+    __ LoadFromOffset(CMPRES1, THR, target::Thread::vm_tag_offset());
+    __ BranchEqual(CMPRES1, compiler::Immediate(VMTag::kDartTagId), &ok);
+    __ Stop("Not coming from Dart code.");
+    __ Bind(&ok);
+  }
+#endif
+
+  // Adjust arguments count for type arguments vector.
+  __ LoadFieldFromOffset(A2, ARGS_DESC_REG, target::ArgumentsDescriptor::count_offset());
+  __ SmiUntag(A2);
+  __ LoadFieldFromOffset(T1, ARGS_DESC_REG, target::ArgumentsDescriptor::type_args_len_offset());
+  Label args_count_ok;
+  __ BranchEqual(T1, Immediate(0), &args_count_ok);
+  __ AddImmediate(A2, A2, 1);  // Include the type arguments.
+  __ Bind(&args_count_ok);
+
+  // Compute argv.
+  __ sll(A3, A2, 2);
+  __ addu(A3, A3, FP);
+  __ AddImmediate(A3, A3, target::frame_layout.param_end_from_fp * target::kWordSize);
+
+  // Indicate decreasing memory addresses of arguments with negative argc.
+  __ subu(A2, ZR, A2);
+
+  // Align frame before entering C++ world. Fifth argument passed on the stack.
+  __ ReserveAlignedFrameSpace(1 * target::kWordSize);
+
+  // Pass arguments in registers.
+  __ mov(A0, FUNCTION_REG);   // T0/FUNCTION_REG: Function.
+  __ mov(A1, ARGS_DESC_REG);  // Arguments descriptor.
+  // A2: Negative argc.
+  // A3: Argv.
+  __ sw(THR, Address(SP, 0));  // Fifth argument: Thread.
+
+  // Save exit frame information to enable stack walking as we are about
+  // to transition to Dart VM C++ code.
+  __ StoreToOffset(FP, THR,
+                   target::Thread::top_exit_frame_info_offset());
+
+  // Mark that the thread exited generated code through a runtime call.
+  __ LoadImmediate(T5, target::Thread::exit_through_runtime_call());
+  __ StoreToOffset(T5, THR, target::Thread::exit_through_ffi_offset());
+
+  // Mark that the thread is executing VM code.
+  __ LoadFromOffset(T5, THR,
+                    target::Thread::interpret_call_entry_point_offset());
+  __ StoreToOffset(T5, THR, target::Thread::vm_tag_offset());
+
+  __ mov(T9, T5);
+  __ Call(T9);
+
+  // Mark that the thread is executing Dart code.
+  __ LoadImmediate(T2, VMTag::kDartTagId);
+  __ StoreToOffset(T2, THR, target::Thread::vm_tag_offset());
+
+  // Mark that the thread has not exited generated Dart code.
+  __ LoadImmediate(T2, 0);
+  __ StoreToOffset(T2, THR, target::Thread::exit_through_ffi_offset());
+
+  // Reset exit frame information in Isolate's mutator thread structure.
+  __ StoreToOffset(T2, THR,
+                   target::Thread::top_exit_frame_info_offset());
+
+  __ LeaveStubFrame();
+  __ Ret();
+
+#else
+  __ Stop("Not using Dart dynamic modules");
+#endif  // defined(DART_DYNAMIC_MODULES)
 }
 
 // S5: Contains an ICData.
