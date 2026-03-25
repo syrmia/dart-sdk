@@ -1139,6 +1139,17 @@ void StubCodeCompiler::GenerateInvokeDartCodeStub() {
   __ LeaveFrameAndReturn();
 }
 
+// Called when invoking compiled Dart code from interpreted Dart code.
+// Input parameters:
+//   RA : points to return address.
+//   A0 : target code or entry point (in AOT mode).
+//   A1 : arguments descriptor array.
+//   A2 : address of first argument.
+//   A3 : current thread.
+void StubCodeCompiler::GenerateInvokeDartCodeFromBytecodeStub() {
+  __ Stop("Not implemented on MIPS.");
+}
+
 // Called for inline allocation of objects.
 // Input parameters:
 //   RA : return address.
