@@ -419,6 +419,130 @@ void StubCodeCompiler::GenerateSharedStub(
                             perform_runtime_call);
 }
 
+// Input parameters:
+//   RA : return address.
+//   SP : address of return value.
+//   T5 : address of the native function to call.
+//   A2 : address of first argument in argument array.
+//   A1 : argc_tag including number of arguments and function kind.
+static void GenerateCallNativeWithWrapperStub(Assembler* assembler,
+                                              Address wrapper) {
+  const intptr_t thread_offset = NativeArguments::thread_offset();
+  const intptr_t argc_tag_offset = NativeArguments::argc_tag_offset();
+  const intptr_t argv_offset = NativeArguments::argv_offset();
+  const intptr_t retval_offset = NativeArguments::retval_offset();
+
+  __ SetPrologueOffset();
+  __ Comment("CallNativeCFunctionStub");
+  __ EnterStubFrame();
+
+  // Save exit frame information to enable stack walking as we are about
+  // to transition to native code.
+  __ sw(FP, Address(THR, Thread::top_exit_frame_info_offset()));
+
+  // Mark that the thread exited generated code through a runtime call.
+  __ LoadImmediate(T0, target::Thread::exit_through_runtime_call());
+  __ StoreToOffset(T0, THR, target::Thread::exit_through_ffi_offset());
+
+#if defined(DEBUG)
+  {
+    Label ok;
+    // Check that we are always entering from Dart code.
+    __ LoadFromOffset(T0, THR, target::Thread::vm_tag_offset());
+    __ BranchEqual(T0, Immediate(VMTag::kDartTagId), &ok);
+    __ Stop("Not coming from Dart code.");
+    __ Bind(&ok);
+  }
+#endif
+
+  // Mark that the thread is executing native code.
+  __ sw(T5, Assembler::VMTagAddress());
+
+  // Reserve space for the native arguments structure passed on the stack (the
+  // outgoing pointer parameter to the native arguments structure is passed in
+  // A0) and align frame before entering the C++ world.
+  __ ReserveAlignedFrameSpace(target::NativeArguments::StructSize());
+
+  // Initialize target::NativeArguments structure and call native function.
+  // Registers A0, A1, A2, and A3 are used.
+
+  ASSERT(thread_offset == 0 *target::kWordSize);
+  // Set thread in NativeArgs.
+  __ mov(A0, THR);
+
+  // There are no native calls to closures, so we do not need to set the tag
+  // bits kClosureFunctionBit and kInstanceFunctionBit in argc_tag_.
+  ASSERT(argc_tag_offset == 1 *target::kWordSize);
+  // Set argc in NativeArguments: A1 already contains argc.
+
+  ASSERT(argv_offset == 2 *target::kWordSize);
+  // Set argv in NativeArguments: A2 already contains argv.
+
+  ASSERT(retval_offset == 3 *target::kWordSize);
+  // Set retval in NativeArgs.
+  __ AddImmediate(
+      A3, FP, (target::frame_layout.param_end_from_fp + 1) * target::kWordSize);
+
+  // Passing the structure by value as in runtime calls would require changing
+  // Dart API for native functions.
+  // For now, space is reserved on the stack and we pass a pointer to it.
+  __ sw(A3, Address(SP, 3 *target::kWordSize));
+  __ sw(A2, Address(SP, 2 *target::kWordSize));
+  __ sw(A1, Address(SP, 1 *target::kWordSize));
+  __ sw(A0, Address(SP, 0 *target::kWordSize));
+  __ mov(A0, SP);  // Pass the pointer to the NativeArguments.
+  __ mov(A1, T5);  // Pass the function entrypoint.
+
+  // Call native wrapper function or redirection via simulator.
+  ASSERT(IsAbiPreservedRegister(THR));
+  __ lw(T9, wrapper);
+  __ jalr(T9);
+  __ Comment("CallNativeCFunctionStub return");
+
+  // Mark that the thread is executing Dart code.
+  __ LoadImmediate(A2, VMTag::kDartTagId);
+  __ StoreToOffset(A2, THR, target::Thread::vm_tag_offset());
+
+  // Mark that the thread has not exited generated Dart code.
+  __ sw(ZR, Address(THR, Thread::exit_through_ffi_offset()));
+
+  // Reset exit frame information in Isolate structure.
+  __ sw(ZR, Address(THR, Thread::top_exit_frame_info_offset()));
+
+  if (FLAG_precompiled_mode) {
+    __ lw(PP, Address(THR, target::Thread::global_object_pool_offset()));
+  }
+
+  __ LeaveStubFrame();
+
+  __ Ret();
+}
+
+void StubCodeCompiler::GenerateCallNoScopeNativeStub() {
+  GenerateCallNativeWithWrapperStub(
+      assembler,
+      Address(THR, Thread::no_scope_native_wrapper_entry_point_offset()));
+}
+
+void StubCodeCompiler::GenerateCallAutoScopeNativeStub() {
+  GenerateCallNativeWithWrapperStub(
+      assembler,
+      Address(THR, Thread::auto_scope_native_wrapper_entry_point_offset()));
+}
+
+// Input parameters:
+//   RA : return address.
+//   SP : address of return value.
+//   T5 : address of the native function to call.
+//   A2 : address of first argument in argument array.
+//   A1 : argc_tag including number of arguments and function kind.
+void StubCodeCompiler::GenerateCallBootstrapNativeStub() {
+  GenerateCallNativeWithWrapperStub(
+    assembler,
+    Address(THR,
+            target::Thread::bootstrap_native_wrapper_entry_point_offset()));
+}
+
 // Used by eager and lazy deoptimization. Preserve result in V0 if necessary.
 // This stub translates optimized frame into unoptimized frame. The optimized
 // frame can contain values in registers and on stack, the unoptimized
