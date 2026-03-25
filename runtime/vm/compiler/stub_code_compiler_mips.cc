@@ -2074,6 +2074,30 @@ void StubCodeCompiler::GenerateDeoptForRewindStub() {
   __ break_(0);
 }
 
+// Calls to the runtime to optimize the given function.
+// T0: function to be reoptimized.
+// S4: argument descriptor (preserved).
+void StubCodeCompiler::GenerateOptimizeFunctionStub() {
+  __ Comment("OptimizeFunctionStub");
+  __ lw(CODE_REG, Address(THR, target::Thread::optimize_stub_offset()));
+  __ EnterStubFrame();
+  __ addiu(SP, SP, Immediate(-3 *target::kWordSize));
+  __ sw(S4, Address(SP, 2 *target::kWordSize));
+  // Setup space on stack for return value.
+  __ sw(ZR, Address(SP, 1 *target::kWordSize));
+  __ sw(T0, Address(SP, 0 *target::kWordSize));
+  __ CallRuntime(kOptimizeInvokedFunctionRuntimeEntry, 1);
+  __ Comment("OptimizeFunctionStub return");
+  __ lw(FUNCTION_REG, Address(SP, 1 *target::kWordSize));       // Get Function object
+  __ lw(S4, Address(SP, 2 *target::kWordSize));       // Restore argument descriptor.
+  __ addiu(SP, SP, Immediate(3 *target::kWordSize));  // Discard argument.
+
+  __ lw(CODE_REG, FieldAddress(FUNCTION_REG, Function::code_offset()));
+  __ lw(T1, FieldAddress(FUNCTION_REG, Function::entry_point_offset()));
+  __ LeaveStubFrameAndReturn(T1);
+  __ break_(0);
+}
+
 }  // namespace compiler
 }  // namespace dart
 
