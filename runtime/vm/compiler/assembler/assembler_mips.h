@@ -1222,6 +1222,7 @@ class Assembler : public AssemblerBase {
 
   void MonomorphicCheckedEntryJIT();
   void MonomorphicCheckedEntryAOT();
+  void BranchOnMonomorphicCheckedEntryJIT(Label* label);
 
   void CombineHashes(Register dst, Register other) override;
 

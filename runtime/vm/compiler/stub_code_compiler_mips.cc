@@ -542,6 +542,58 @@ void StubCodeCompiler::GenerateCallBootstrapNativeStub() {
             target::Thread::bootstrap_native_wrapper_entry_point_offset()));
 }
 
+// Called from a static call only when an invalid code has been entered
+// (invalid because its function was optimized or deoptimized).
+// S4: arguments descriptor array.
+void StubCodeCompiler::GenerateFixCallersTargetStub() {
+  Label monomorphic;
+  __ BranchOnMonomorphicCheckedEntryJIT(&monomorphic);
+
+  // Load code pointer to this stub from the thread:
+  // The one that is passed in, is not correct - it points to the code object
+  // that needs to be replaced.
+  __ lw(CODE_REG,
+         Address(THR, target::Thread::fix_callers_target_code_offset()));
+  // Create a stub frame as we are pushing some objects on the stack before
+  // calling into the runtime.
+  __ EnterStubFrame();
+  // Setup space on stack for return value and preserve arguments descriptor.
+  __ PushRegistersInOrder({ARGS_DESC_REG, ZR});
+  __ CallRuntime(kFixCallersTargetRuntimeEntry, 0);
+  // Get Code object result and restore arguments descriptor array.
+  __ PopRegister(CODE_REG);
+  __ PopRegister(ARGS_DESC_REG);
+  // Remove the stub frame.
+  __ LeaveStubFrame();
+  // Jump to the dart function.
+  __ LoadFieldFromOffset(TMP, CODE_REG, target::Code::entry_point_offset());
+  __ jr(TMP);
+
+  __ Bind(&monomorphic);
+  // Load code pointer to this stub from the thread:
+  // The one that is passed in, is not correct - it points to the code object
+  // that needs to be replaced.
+  __ lw(CODE_REG,
+         Address(THR, target::Thread::fix_callers_target_code_offset()));
+  // Create a stub frame as we are pushing some objects on the stack before
+  // calling into the runtime.
+  __ EnterStubFrame();
+  // Setup result slot, preserve receiver and
+  // push old cache value (also 2nd return value).
+  __ PushRegistersInOrder({ZR, A0, S5});
+  __ CallRuntime(kFixCallersTargetMonomorphicRuntimeEntry, 2);
+  __ PopRegister(S5);        // Get target cache object.
+  __ PopRegister(A0);        // Restore receiver.
+  __ PopRegister(CODE_REG);  // Get target Code object.
+  // Remove the stub frame.
+  __ LeaveStubFrame();
+  // Jump to the dart function.
+  __ LoadFieldFromOffset(
+      T9, CODE_REG,
+      target::Code::entry_point_offset(CodeEntryKind::kMonomorphic));
+__ jr(T9);
+}
+
 // Used by eager and lazy deoptimization. Preserve result in V0 if necessary.
 // This stub translates optimized frame into unoptimized frame. The optimized
 // frame can contain values in registers and on stack, the unoptimized
