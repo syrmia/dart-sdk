@@ -10,14 +10,14 @@
 #include "vm/compiler/backend/locations.h"
 
 namespace dart {
-  
+
 DECLARE_FLAG(bool, check_code_pointer);
 
 namespace compiler{
 
 void Assembler::EmitBranch(Opcode b, Register rs, Register rt, Label* label) {
   UNIMPLEMENTED();
-}  
+}
 
 void Assembler::EmitRegImmBranch(RtRegImm b, Register rs, Label* label) {
   UNIMPLEMENTED();
@@ -341,7 +341,7 @@ void Assembler::SetIf(Condition condition, Register rd) {
       }
       case GE:{
         slt(rd, left, right);
-        xori(rd, rd, compiler::Immediate(1)); 
+        xori(rd, rd, compiler::Immediate(1));
         break;
       }
       case LT: {
@@ -350,7 +350,7 @@ void Assembler::SetIf(Condition condition, Register rd) {
       }
       case LE:{
         slt(rd, right, left);
-        xori(rd, rd, compiler::Immediate(1)); 
+        xori(rd, rd, compiler::Immediate(1));
         break;
       }
       case GT: {
@@ -467,9 +467,9 @@ Address Assembler::PrepareLargeOffset(Register base, int32_t offset) {
     return Address(base, offset);
   } else {
     ASSERT(base != TMP);
-    LoadImmediate(TMP, offset);     
-    addu(TMP, base, TMP);            
-    return Address(TMP, 0);          
+    LoadImmediate(TMP, offset);
+    addu(TMP, base, TMP);
+    return Address(TMP, 0);
   }
 }
 
@@ -510,7 +510,7 @@ void Assembler::LoadObject(Register rd, const Object& object) {
   LoadObjectHelper(rd, object, false);
 }
 
-void Assembler::LoadUniqueObject(Register rd, const Object& object, 
+void Assembler::LoadUniqueObject(Register rd, const Object& object,
                                 ObjectPoolBuilderEntry::SnapshotBehavior snapshot_behavior) {
   LoadObjectHelper(rd, object, true, snapshot_behavior);
 }
@@ -684,6 +684,11 @@ void Assembler::Store(Register reg, const Address& address, OperandSize sz) {
     default:
       UNREACHABLE();
   }
+}
+
+void Assembler::RestoreCodePointer() {
+  lw(CODE_REG, Address(FP, target::frame_layout.code_from_fp * target::kWordSize));
+  CheckCodePointer();
 }
 
 void Assembler::JumpAndLink(intptr_t target_code_pool_index,
@@ -1507,6 +1512,22 @@ void Assembler::CompareObject(Register reg, const Object& object) {
     LoadObject(TMP, object);
     CompareObjectRegisters(reg, TMP);
   }
+}
+
+void Assembler::ExtractClassIdFromTags(Register result,
+                                       Register tags) {
+  ASSERT(target::UntaggedObject::kClassIdTagPos == 12);
+  ASSERT(target::UntaggedObject::kClassIdTagSize == 20);
+  srl(result, tags, target::UntaggedObject::kClassIdTagPos);
+}
+
+void Assembler::ExtractInstanceSizeFromTags(Register result, Register tags) {
+  ASSERT(target::UntaggedObject::kSizeTagPos == 8);
+  ASSERT(target::UntaggedObject::kSizeTagSize == 4);
+  srl(result, tags, target::UntaggedObject::kSizeTagPos -
+    target::ObjectAlignment::kObjectAlignmentLog2);
+  andi(result, result, Immediate(Utils::NBitMask(target::UntaggedObject::kSizeTagSize)
+          << target::ObjectAlignment::kObjectAlignmentLog2));
 }
 
 }  // namespace compiler

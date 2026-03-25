@@ -336,20 +336,20 @@ const FRegister kDartFirstVolatileFpuReg = F0;
 const FRegister kDartLastVolatileFpuReg = F19;
 const int kDartVolatileFRegCount = 20;
 const int kDartVolatileFpuRegCount = 10;
-constexpr RegList kAbiVolatileFpuRegs = 
+constexpr RegList kAbiVolatileFpuRegs =
     (1 << D0) | (1 << D1) | (1 << D2) | (1 << D3) | (1 << D4) |
     (1 << D5) | (1 << D6) | (1 << D7) | (1 << D8) | (1 << D9);
-constexpr RegList kAbiVolatileFRegs = 
+constexpr RegList kAbiVolatileFRegs =
     (1 << F0) | (1 << F1) | (1 << F2) | (1 << F3) | (1 << F4) |
     (1 << F5) | (1 << F6) | (1 << F7) | (1 << F8) | (1 << F9) |
     (1 << F10) | (1 << F11) | (1 << F12) | (1 << F13) | (1 << F14) |
     (1 << F15) | (1 << F16) | (1 << F17) | (1 << F18) | (1 << F19);
-constexpr RegList kAllFpuRegistersList = 
+constexpr RegList kAllFpuRegistersList =
     (1 << D0) | (1 << D1) | (1 << D2) | (1 << D3) | (1 << D4) |
     (1 << D5) | (1 << D6) | (1 << D7) | (1 << D8) | (1 << D9) |
     (1 << D10) | (1 << D11) | (1 << D12) | (1 << D13) | (1 << D14) |
     (1 << D15);
-constexpr RegList kAllFRegistersList = 
+constexpr RegList kAllFRegistersList =
     (1 << F0) | (1 << F1) | (1 << F2) | (1 << F3) | (1 << F4) |
     (1 << F5) | (1 << F6) | (1 << F7) | (1 << F8) | (1 << F9) |
     (1 << F10) | (1 << F11) | (1 << F12) | (1 << F13) | (1 << F14) |
@@ -559,6 +559,17 @@ struct AllocateClosureABI {
   static constexpr Register kScratchReg = T4;
 };
 
+// ABI for AllocateMintShared*Stub.
+struct AllocateMintABI {
+  static constexpr Register kResultReg = AllocateObjectABI::kResultReg;
+  static constexpr Register kTempReg = A1;
+};
+
+// Common ABI for shared slow path stubs.
+struct SharedSlowPathStubABI {
+  static constexpr Register kResultReg = V0;
+};
+
 // ABI for Allocate{Mint,Double,Float32x4,Float64x2}Stub.
 struct AllocateBoxABI {
   static constexpr Register kResultReg = AllocateObjectABI::kResultReg;
@@ -588,6 +599,12 @@ struct AllocateSmallRecordABI {
 struct AllocateTypedDataArrayABI {
   static constexpr Register kResultReg = AllocateObjectABI::kResultReg;
   static constexpr Register kLengthReg = A1;
+};
+
+struct AllocateArrayABI {
+  static constexpr Register kResultReg = AllocateObjectABI::kResultReg;
+  static constexpr Register kLengthReg = A1;
+  static constexpr Register kTypeArgumentsReg = A0;
 };
 
 // ABI for BoxDoubleStub.
@@ -947,7 +964,7 @@ class Instr {
 
   // Runtime call redirection instruction used by the simulator.
   static const int32_t kSimulatorRedirectInstruction =
-      kBreakPointZeroInstruction | (kSimulatorRedirectCode << kBreakCodeShift);  
+      kBreakPointZeroInstruction | (kSimulatorRedirectCode << kBreakCodeShift);
 
   // Get the raw instruction bits.
   inline int32_t InstructionBits() const {

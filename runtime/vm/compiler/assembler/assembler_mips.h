@@ -713,6 +713,8 @@ class Assembler : public AssemblerBase {
     EmitRType(SPECIAL, rs, rt, rd, 0, XOR);
   }
 
+  void RestoreCodePointer();
+
   void LoadImmediate(Register rd, int32_t value) override{
     UNIMPLEMENTED();
   }
@@ -735,15 +737,15 @@ class Assembler : public AssemblerBase {
 
   void AddRegisters(Register rd, Register rs) { addu(rd, rd, rs); }
 
-  void AndImmediate(Register rd, 
-                    Register rs, 
-                    target::word imm, 
+  void AndImmediate(Register rd,
+                    Register rs,
+                    target::word imm,
                     OperandSize sz = kWordBytes) override {
     UNIMPLEMENTED();
   }
 
   void AndImmediate(Register reg,
-                    target::word imm, 
+                    target::word imm,
                     OperandSize sz = kWordBytes) override {
     UNIMPLEMENTED();
   }
@@ -752,14 +754,14 @@ class Assembler : public AssemblerBase {
     UNIMPLEMENTED();
   }
 
-  void OrImmediate(Register rd, int32_t imm) { 
+  void OrImmediate(Register rd, int32_t imm) {
     UNIMPLEMENTED();
   }
-  
+
   void AndRegisters(Register dst,
                     Register src1,
                     Register src2 = kNoRegister) override{
-    UNIMPLEMENTED();                  
+    UNIMPLEMENTED();
   }
 
   void XorImmediate(Register rd, Register rs, int32_t imm) {
@@ -916,7 +918,7 @@ class Assembler : public AssemblerBase {
   void BranchUnsignedLessEqual(Register rd, const Immediate& imm, Label* l) {
     UNIMPLEMENTED();
   }
-    
+
   void BranchIf(Condition cond, Label* l, JumpDistance distance = kFarJump);
 
   void BranchIfZero(Register rn,
@@ -1075,7 +1077,7 @@ class Assembler : public AssemblerBase {
   void LoadFieldAddressForOffset(Register reg, Register base, int32_t offset) override{
     AddImmediate(reg, base, offset - kHeapObjectTag);
   }
-  
+
   void LoadFieldAddressForRegOffset(Register address, Register instance, Register offset_in_words_as_smi) override;
 
   void LoadDFromOffset(DRegister reg, Register base, int32_t offset) {
@@ -1133,7 +1135,7 @@ class Assembler : public AssemblerBase {
     }
     Call(T9);
   }
-  
+
   void LoadPoolPointer(Register reg = PP);
   void CheckCodePointer();
   void GetNextPC(Register dest, Register temp = kNoRegister);
@@ -1312,7 +1314,10 @@ class Assembler : public AssemblerBase {
   void PushObject(const Object& object);
 
   void CompareObject(Register reg, const Object& object);
-  
+
+  void ExtractClassIdFromTags(Register result, Register tags);
+  void ExtractInstanceSizeFromTags(Register result, Register tags);
+
   void LoadUnboxedDouble(FpuRegister dst, Register base, int32_t offset) {
     LoadDFromOffset(dst, base, offset);
   }
@@ -1355,7 +1360,7 @@ class Assembler : public AssemblerBase {
     kTestReg,
     kTestImm,
   };
-  
+
   DeferredCompareType deferred_compare_ = kNone;
   Register deferred_left_ = kNoRegister;
   Register deferred_reg_ = kNoRegister;
