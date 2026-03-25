@@ -2102,6 +2102,37 @@ void StubCodeCompiler::GenerateDeoptForRewindStub() {
   __ break_(0);
 }
 
+// Implement the monomorphic entry check for call-sites where the receiver
+// might be a Smi.
+//
+//   A0: receiver
+//   S5: MonomorphicSmiableCall object
+//
+//   T1, T2: clobbered
+void StubCodeCompiler::GenerateMonomorphicSmiableCheckStub() {
+  Label miss;
+  __ LoadClassIdMayBeSmi(T1, A0);
+
+  // entrypoint_ should come right after expected_cid_
+  ASSERT(target::MonomorphicSmiableCall::entrypoint_offset() ==
+      target::MonomorphicSmiableCall::expected_cid_offset() +
+      target::kWordSize);
+
+  // Note: this stub is only used in AOT mode, hence the direct (bare) call.
+  __ LoadField(
+      T2,
+      FieldAddress(S5, target::MonomorphicSmiableCall::expected_cid_offset()));
+  __ LoadField(
+    T9,
+      FieldAddress(S5, target::MonomorphicSmiableCall::entrypoint_offset()));
+  __ BranchNotEqual(T1, T2, &miss);
+  __ jr(T9);
+
+  __ Bind(&miss);
+  __ lw(T9, Address(THR, target::Thread::switchable_call_miss_entry_offset()));
+  __ jr(T9);
+}
+
 // Calls to the runtime to optimize the given function.
 // T0: function to be reoptimized.
 // S4: argument descriptor (preserved).
