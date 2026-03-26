@@ -1351,7 +1351,6 @@ class Assembler : public AssemblerBase {
                         Register rs2,
                         Label* overflow);
 
-
  private:
   bool use_far_branches_;
   bool delay_slot_available_;

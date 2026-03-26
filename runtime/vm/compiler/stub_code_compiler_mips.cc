@@ -104,23 +104,23 @@ void StubCodeCompiler::GenerateCallToRuntimeStub() {
   // Pass NativeArguments structure by value and call runtime.
   // Registers A0, A1, A2, and A3 are used.
 
-  ASSERT(thread_offset == 0 *target::kWordSize);
+  ASSERT(thread_offset == 0 * target::kWordSize);
   // Set thread in NativeArgs.
   __ mov(A0, THR);
 
   // There are no runtime calls to closures, so we do not need to set the tag
   // bits kClosureFunctionBit and kInstanceFunctionBit in argc_tag_.
-  ASSERT(argc_tag_offset == 1 *target::kWordSize);
+  ASSERT(argc_tag_offset == 1 * target::kWordSize);
   __ mov(A1, S4);  // Set argc in NativeArguments.
 
-  ASSERT(argv_offset == 2 *target::kWordSize);
+  ASSERT(argv_offset == 2 * target::kWordSize);
   __ sll(A2, S4, 2);
   __ addu(A2, FP, A2);  // Compute argv.
   // Set argv in NativeArguments.
   __ addiu(A2, A2,
-        Immediate(target::frame_layout.param_end_from_fp *target::kWordSize));
+        Immediate(target::frame_layout.param_end_from_fp * target::kWordSize));
 
-  ASSERT(retval_offset == 3 *target::kWordSize);
+  ASSERT(retval_offset == 3 * target::kWordSize);
   // Retval is next to 1st argument.
   __ addiu(A3, A2, Immediate(target::kWordSize));
 
@@ -165,6 +165,52 @@ void StubCodeCompiler::GenerateDispatchTableNullErrorStub() {
   __ CallRuntime(kDispatchTableNullErrorRuntimeEntry, /*argument_count=*/1);
   // The NullError runtime entry does not return.
   __ Breakpoint();
+}
+
+void StubCodeCompiler::GenerateEnterSafepointStub() {
+  RegisterSet all_registers;
+  all_registers.AddAllGeneralRegisters();
+
+  __ PushRegisters(all_registers);
+  __ EnterFrame();
+
+  __ ReserveAlignedFrameSpace(0);
+
+  __ lw(T9, Address(THR, kEnterSafepointRuntimeEntry.OffsetFromThread()));
+  __ jalr(T9);
+
+  __ LeaveFrame();
+  __ PopRegisters(all_registers);
+  __ Ret();
+}
+
+static void GenerateExitSafepointStubCommon(Assembler* assembler,
+                                            uword runtime_entry_offset) {
+  RegisterSet all_registers;
+  all_registers.AddAllGeneralRegisters();
+
+  __ PushRegisters(all_registers);
+  __ EnterFrame();
+
+  __ ReserveAlignedFrameSpace(0);
+
+  // Set the execution state to VM while waiting for the safepoint to end.
+  // This isn't strictly necessary but enables tests to check that we're not
+  // in native code anymore. See tests/ffi/function_gc_test.dart for example.
+  __ LoadImmediate(TMP, target::Thread::vm_execution_state());
+  __ sw(TMP, Address(THR, target::Thread::execution_state_offset()));
+
+  __ lw(T9, Address(THR, runtime_entry_offset));
+  __ jalr(T9);
+
+  __ LeaveFrame();
+  __ PopRegisters(all_registers);
+  __ Ret();
+}
+
+void StubCodeCompiler::GenerateExitSafepointStub() {
+  GenerateExitSafepointStubCommon(
+      assembler, kExitSafepointRuntimeEntry.OffsetFromThread());
 }
 
 // Call a native function within a safepoint.
@@ -474,19 +520,19 @@ static void GenerateCallNativeWithWrapperStub(Assembler* assembler,
   // Initialize target::NativeArguments structure and call native function.
   // Registers A0, A1, A2, and A3 are used.
 
-  ASSERT(thread_offset == 0 *target::kWordSize);
+  ASSERT(thread_offset == 0 * target::kWordSize);
   // Set thread in NativeArgs.
   __ mov(A0, THR);
 
   // There are no native calls to closures, so we do not need to set the tag
   // bits kClosureFunctionBit and kInstanceFunctionBit in argc_tag_.
-  ASSERT(argc_tag_offset == 1 *target::kWordSize);
+  ASSERT(argc_tag_offset == 1 * target::kWordSize);
   // Set argc in NativeArguments: A1 already contains argc.
 
-  ASSERT(argv_offset == 2 *target::kWordSize);
+  ASSERT(argv_offset == 2 * target::kWordSize);
   // Set argv in NativeArguments: A2 already contains argv.
 
-  ASSERT(retval_offset == 3 *target::kWordSize);
+  ASSERT(retval_offset == 3 * target::kWordSize);
   // Set retval in NativeArgs.
   __ AddImmediate(
       A3, FP, (target::frame_layout.param_end_from_fp + 1) * target::kWordSize);
@@ -494,10 +540,10 @@ static void GenerateCallNativeWithWrapperStub(Assembler* assembler,
   // Passing the structure by value as in runtime calls would require changing
   // Dart API for native functions.
   // For now, space is reserved on the stack and we pass a pointer to it.
-  __ sw(A3, Address(SP, 3 *target::kWordSize));
-  __ sw(A2, Address(SP, 2 *target::kWordSize));
-  __ sw(A1, Address(SP, 1 *target::kWordSize));
-  __ sw(A0, Address(SP, 0 *target::kWordSize));
+  __ sw(A3, Address(SP, 3 * target::kWordSize));
+  __ sw(A2, Address(SP, 2 * target::kWordSize));
+  __ sw(A1, Address(SP, 1 * target::kWordSize));
+  __ sw(A0, Address(SP, 0 * target::kWordSize));
   __ mov(A0, SP);  // Pass the pointer to the NativeArguments.
   __ mov(A1, T5);  // Pass the function entrypoint.
 
@@ -558,17 +604,17 @@ void StubCodeCompiler::GenerateCallStaticFunctionStub() {
   __ EnterStubFrame();
   // Setup space on stack for return value and preserve arguments descriptor.
 
-  __ addiu(SP, SP, Immediate(-2 *target::kWordSize));
-  __ sw(S4, Address(SP, 1 *target::kWordSize));
-  __ sw(ZR, Address(SP, 0 *target::kWordSize));
+  __ addiu(SP, SP, Immediate(-2 * target::kWordSize));
+  __ sw(S4, Address(SP, 1 * target::kWordSize));
+  __ sw(ZR, Address(SP, 0 * target::kWordSize));
 
   __ CallRuntime(kPatchStaticCallRuntimeEntry, 0);
   __ Comment("CallStaticFunctionStub return");
 
   // Get Code object result and restore arguments descriptor array.
-  __ lw(CODE_REG, Address(SP, 0 *target::kWordSize));
-  __ lw(S4, Address(SP, 1 *target::kWordSize));
-  __ addiu(SP, SP, Immediate(2 *target::kWordSize));
+  __ lw(CODE_REG, Address(SP, 0 * target::kWordSize));
+  __ lw(S4, Address(SP, 1 * target::kWordSize));
+  __ addiu(SP, SP, Immediate(2 * target::kWordSize));
 
   __ lw(T0, FieldAddress(CODE_REG, Code::entry_point_offset()));
 
@@ -637,12 +683,12 @@ void StubCodeCompiler::GenerateFixAllocationStubTargetStub() {
   __ lw(CODE_REG, Address(THR, Thread::fix_allocation_stub_code_offset()));
   __ EnterStubFrame();
   // Setup space on stack for return value.
-  __ addiu(SP, SP, Immediate(-1 *target::kWordSize));
-  __ sw(ZR, Address(SP, 0 *target::kWordSize));
+  __ addiu(SP, SP, Immediate(-1 * target::kWordSize));
+  __ sw(ZR, Address(SP, 0 * target::kWordSize));
   __ CallRuntime(kFixAllocationStubTargetRuntimeEntry, 0);
   // Get Code object result.
-  __ lw(CODE_REG, Address(SP, 0 *target::kWordSize));
-  __ addiu(SP, SP, Immediate(1 *target::kWordSize));
+  __ lw(CODE_REG, Address(SP, 0 * target::kWordSize));
+  __ addiu(SP, SP, Immediate(1 * target::kWordSize));
   // Remove the stub frame.
   __ LeaveStubFrame();
   // Jump to the dart function.
@@ -742,7 +788,7 @@ static void PushArrayOfArguments(Assembler* assembler) {
 static void GenerateDeoptimizationSequence(Assembler* assembler,
                                            DeoptStubKind kind) {
   const intptr_t kPushedRegistersSize =
-      kNumberOfCpuRegisters *target::kWordSize + kNumberOfFRegisters *target::kWordSize;
+      kNumberOfCpuRegisters * target::kWordSize + kNumberOfFRegisters * target::kWordSize;
 
   __ SetPrologueOffset();
   __ Comment("GenerateDeoptimizationSequence");
@@ -768,17 +814,17 @@ static void GenerateDeoptimizationSequence(Assembler* assembler,
       // Save the original value of CODE_REG pushed before invoking this stub
       // instead of the value used to call this stub.
       COMPILE_ASSERT(TMP < CODE_REG);  // Assert TMP is pushed first.
-      __ lw(TMP, Address(FP, kCallerSpSlotFromFp *target::kWordSize));
-      __ sw(TMP, Address(SP, kPushedRegistersSize - slot *target::kWordSize));
+      __ lw(TMP, Address(FP, kCallerSpSlotFromFp * target::kWordSize));
+      __ sw(TMP, Address(SP, kPushedRegistersSize - slot * target::kWordSize));
     } else {
-      __ sw(reg, Address(SP, kPushedRegistersSize - slot *target::kWordSize));
+      __ sw(reg, Address(SP, kPushedRegistersSize - slot * target::kWordSize));
     }
   }
   for (int i = 0; i < kNumberOfFRegisters; i++) {
     // These go below the CPU registers.
     const int slot = static_cast<int>(kNumberOfCpuRegisters) + static_cast<int>(kNumberOfFRegisters) - i;
     FRegister reg = static_cast<FRegister>(i);
-    __ swc1(reg, Address(SP, kPushedRegistersSize - slot *target::kWordSize));
+    __ swc1(reg, Address(SP, kPushedRegistersSize - slot * target::kWordSize));
   }
 
   {
@@ -795,11 +841,11 @@ static void GenerateDeoptimizationSequence(Assembler* assembler,
 
   if (kind == kLazyDeoptFromReturn) {
     // Restore result into T1 temporarily.
-    __ lw(T1, Address(FP, saved_result_slot_from_fp *target::kWordSize));
+    __ lw(T1, Address(FP, saved_result_slot_from_fp * target::kWordSize));
   } else if (kind == kLazyDeoptFromThrow) {
     // Restore result into T1 temporarily.
-    __ lw(T1, Address(FP, saved_exception_slot_from_fp *target::kWordSize));
-    __ lw(T2, Address(FP, saved_stacktrace_slot_from_fp *target::kWordSize));
+    __ lw(T1, Address(FP, saved_exception_slot_from_fp * target::kWordSize));
+    __ lw(T2, Address(FP, saved_stacktrace_slot_from_fp * target::kWordSize));
   }
 
   __ RestoreCodePointer();
@@ -825,11 +871,11 @@ static void GenerateDeoptimizationSequence(Assembler* assembler,
   }
   if (kind == kLazyDeoptFromReturn) {
     // Restore result into T1.
-    __ lw(T1, Address(FP, kFirstLocalSlotFromFp *target::kWordSize));
+    __ lw(T1, Address(FP, kFirstLocalSlotFromFp * target::kWordSize));
   } else if (kind == kLazyDeoptFromThrow) {
     // Restore result into T1.
-    __ lw(T1, Address(FP, kFirstLocalSlotFromFp *target::kWordSize));
-    __ lw(T2, Address(FP, (kFirstLocalSlotFromFp - 1) *target::kWordSize));
+    __ lw(T1, Address(FP, kFirstLocalSlotFromFp * target::kWordSize));
+    __ lw(T2, Address(FP, (kFirstLocalSlotFromFp - 1) * target::kWordSize));
   }
   // Code above cannot cause GC.
   __ RestoreCodePointer();
@@ -891,7 +937,6 @@ void StubCodeCompiler::GenerateDeoptimizeLazyFromReturnStub() {
   __ Ret();
 }
 
-
 // V0: exception, must be preserved
 // V1: stacktrace, must be preserved
 void StubCodeCompiler::GenerateDeoptimizeLazyFromThrowStub() {
@@ -904,7 +949,6 @@ void StubCodeCompiler::GenerateDeoptimizeLazyFromThrowStub() {
   GenerateDeoptimizationSequence(assembler, kLazyDeoptFromThrow);
   __ Ret();
 }
-
 
 void StubCodeCompiler::GenerateDeoptimizeStub() {
   __ Push(CODE_REG);
@@ -928,11 +972,11 @@ static void GenerateNoSuchMethodDispatcherBody(Assembler* assembler) {
   // Push ICData/MegamorphicCache object.
   // Push arguments descriptor array.
   // Push original arguments array.
-  __ addiu(SP, SP, Immediate(-4 *target::kWordSize));
-  __ sw(ZR, Address(SP, 3 *target::kWordSize));
-  __ sw(A0, Address(SP, 2 *target::kWordSize));
-  __ sw(ICREG, Address(SP, 1 *target::kWordSize));
-  __ sw(ARGS_DESC_REG, Address(SP, 0 *target::kWordSize));
+  __ addiu(SP, SP, Immediate(-4 * target::kWordSize));
+  __ sw(ZR, Address(SP, 3 * target::kWordSize));
+  __ sw(A0, Address(SP, 2 * target::kWordSize));
+  __ sw(ICREG, Address(SP, 1 * target::kWordSize));
+  __ sw(ARGS_DESC_REG, Address(SP, 0 * target::kWordSize));
 
   // Adjust arguments count.
   __ lw(TMP, FieldAddress(ARGS_DESC_REG, ArgumentsDescriptor::type_args_len_offset()));
@@ -950,7 +994,6 @@ static void GenerateNoSuchMethodDispatcherBody(Assembler* assembler) {
   __ LeaveStubFrame();
   __ Ret();
 }
-
 
 static void GenerateDispatcherCode(Assembler* assembler,
                                    Label* call_target_function) {
@@ -982,7 +1025,7 @@ void StubCodeCompiler::GenerateAllocateArrayStub() {
     Label slow_case;
     // Compute the size to be allocated, it is based on the array length
     // and is computed as:
-    // RoundedAllocationSize((array_length *target::kWordSize) + sizeof(RawArray)).
+    // RoundedAllocationSize((array_length * target::kWordSize) + sizeof(RawArray)).
     __ mov(T3, AllocateArrayABI::kLengthReg);  // Array length.
 
     // Check that length is a positive Smi.
@@ -1099,10 +1142,10 @@ void StubCodeCompiler::GenerateAllocateArrayStub() {
   __ EnterStubFrame();
   // Setup space on stack for return value.
   // Push array length as Smi and element type.
-  __ AddImmediate(SP, SP, -3 *target::kWordSize);
-  __ sw(ZR, Address(SP, 2 *target::kWordSize));
-  __ sw(AllocateArrayABI::kLengthReg, Address(SP, 1 *target::kWordSize));
-  __ sw(AllocateArrayABI::kTypeArgumentsReg, Address(SP, 0 *target::kWordSize));
+  __ AddImmediate(SP, SP, -3 * target::kWordSize);
+  __ sw(ZR, Address(SP, 2 * target::kWordSize));
+  __ sw(AllocateArrayABI::kLengthReg, Address(SP, 1 * target::kWordSize));
+  __ sw(AllocateArrayABI::kTypeArgumentsReg, Address(SP, 0 * target::kWordSize));
   __ CallRuntime(kAllocateArrayRuntimeEntry, 2);
 
   // Write-barrier elimination might be enabled for this array (depending on the
@@ -1113,10 +1156,10 @@ void StubCodeCompiler::GenerateAllocateArrayStub() {
 
   __ Comment("AllocateArrayStub return");
   ASSERT(AllocateArrayABI::kResultReg == V0);
-  __ lw(AllocateArrayABI::kResultReg, Address(SP, 2 *target::kWordSize));
-  __ lw(AllocateArrayABI::kLengthReg, Address(SP, 1 *target::kWordSize));
-  __ lw(AllocateArrayABI::kTypeArgumentsReg, Address(SP, 0 *target::kWordSize));
-  __ addiu(SP, SP, Immediate(3 *target::kWordSize));
+  __ lw(AllocateArrayABI::kResultReg, Address(SP, 2 * target::kWordSize));
+  __ lw(AllocateArrayABI::kLengthReg, Address(SP, 1 * target::kWordSize));
+  __ lw(AllocateArrayABI::kTypeArgumentsReg, Address(SP, 0 * target::kWordSize));
+  __ addiu(SP, SP, Immediate(3 * target::kWordSize));
 
   __ LeaveStubFrameAndReturn();
 }
@@ -1188,7 +1231,7 @@ void StubCodeCompiler::GenerateInvokeDartCodeStub() {
   for (int i = S0; i <= S7; i++) {
     Register r = static_cast<Register>(i);
     const intptr_t slot = i - S0 + kPreservedSlots;
-    __ sw(r, Address(SP, slot *target::kWordSize));
+    __ sw(r, Address(SP, slot * target::kWordSize));
   }
 
   for (intptr_t i = kAbiFirstPreservedFReg; i <= kAbiLastPreservedFReg;
@@ -1196,7 +1239,7 @@ void StubCodeCompiler::GenerateInvokeDartCodeStub() {
     FRegister r = static_cast<FRegister>(i);
     const intptr_t slot = kAbiPreservedCpuRegCount + kPreservedSlots + i -
                           kAbiFirstPreservedFReg;
-    __ swc1(r, Address(SP, slot *target::kWordSize));
+    __ swc1(r, Address(SP, slot * target::kWordSize));
   }
 
   // Set up THR, which caches the current thread in Dart code.
@@ -1206,20 +1249,20 @@ void StubCodeCompiler::GenerateInvokeDartCodeStub() {
 
   // Save the current VMTag on the stack.
   __ lw(T1, Assembler::VMTagAddress());
-  __ sw(T1, Address(SP, 3 *target::kWordSize));
+  __ sw(T1, Address(SP, 3 * target::kWordSize));
 
 
   // Save top resource and top exit frame info. Use T0 as a temporary register.
   // StackFrameIterator reads the top exit frame info saved in this frame.
   __ lw(T0, Address(THR, target::Thread::top_resource_offset()));
   __ sw(ZR, Address(THR, target::Thread::top_resource_offset()));
-  __ sw(T0, Address(SP, 2 *target::kWordSize));
+  __ sw(T0, Address(SP, 2 * target::kWordSize));
   __ lw(T0, Address(THR, target::Thread::exit_through_ffi_offset()));
   __ sw(ZR, Address(THR, target::Thread::exit_through_ffi_offset()));
-  __ sw(T0, Address(SP, 1 *target::kWordSize));
+  __ sw(T0, Address(SP, 1 * target::kWordSize));
   __ lw(T0, Address(THR, target::Thread::top_exit_frame_info_offset()));
   __ sw(ZR, Address(THR, target::Thread::top_exit_frame_info_offset()));
-  __ sw(T0, Address(SP, 0 *target::kWordSize));
+  __ sw(T0, Address(SP, 0 * target::kWordSize));
 
   // target::frame_layout.exit_link_slot_from_entry_fp must be kept in sync
   // with the code below.
@@ -1303,7 +1346,7 @@ void StubCodeCompiler::GenerateInvokeDartCodeStub() {
   for (int i = S0; i <= S7; i++) {
     Register r = static_cast<Register>(i);
     const intptr_t slot = i - S0 + kPreservedSlots;
-    __ lw(r, Address(SP, slot *target::kWordSize));
+    __ lw(r, Address(SP, slot * target::kWordSize));
   }
 
   for (intptr_t i = kAbiFirstPreservedFReg; i <= kAbiLastPreservedFReg;
@@ -1311,7 +1354,7 @@ void StubCodeCompiler::GenerateInvokeDartCodeStub() {
     FRegister r = static_cast<FRegister>(i);
     const intptr_t slot = kAbiPreservedCpuRegCount + kPreservedSlots + i -
                           kAbiFirstPreservedFReg;
-    __ lwc1(r, Address(SP, slot *target::kWordSize));
+    __ lwc1(r, Address(SP, slot * target::kWordSize));
   }
 
   __ addiu(SP, SP, Immediate(kPreservedRegSpace));
@@ -2055,8 +2098,8 @@ static void EmitFastSmiOp(Assembler* assembler,
                           Label* not_smi_or_overflow) {
   __ Comment("Fast Smi op");
   ASSERT(num_args == 2);
-  __ lw(V0, Address(SP, 1 *target::kWordSize));  // Left.
-  __ lw(A1, Address(SP, 0 *target::kWordSize));  // Right.
+  __ lw(V0, Address(SP, 1 * target::kWordSize));  // Left.
+  __ lw(A1, Address(SP, 0 * target::kWordSize));  // Right.
   __ or_(CMPRES1, V0, A1);
   __ AndImmediate(CMPRES1, CMPRES1, kSmiTagMask);
   __ bne(CMPRES1, ZR, not_smi_or_overflow);
@@ -2107,12 +2150,11 @@ static void EmitFastSmiOp(Assembler* assembler,
 #endif
   if (FLAG_optimization_counter_threshold >= 0) {
     // Update counter, ignore overflow.
-    const intptr_t count_offset = ICData::CountIndexFor(num_args) *target::kWordSize;
+    const intptr_t count_offset = ICData::CountIndexFor(num_args) * target::kWordSize;
     __ lw(A1, Address(S2, count_offset));
     __ AddImmediate(A1, A1, target::ToRawSmi(1));
     __ sw(A1, Address(S2, count_offset));
   }
-
   __ Ret();
 }
 
@@ -2186,7 +2228,6 @@ void StubCodeCompiler::GenerateNArgsCheckInlineCacheStub(
   }
 #endif  // DEBUG
 
-
 #if !defined(PRODUCT)
   Label stepping, done_stepping;
   if (optimized == kUnoptimized) {
@@ -2244,7 +2285,7 @@ void StubCodeCompiler::GenerateNArgsCheckInlineCacheStub(
   }
 
   const intptr_t entry_size = target::ICData::TestEntryLengthFor(num_args,
-                                 exactness == kCheckExactness) *target::kCompressedWordSize;
+                                 exactness == kCheckExactness) * target::kCompressedWordSize;
   // T1: first argument's class ID (smi).
   // T2: second argument's class ID (smi).
   // S4: args descriptor
@@ -2338,8 +2379,8 @@ void StubCodeCompiler::GenerateNArgsCheckInlineCacheStub(
   __ Bind(&found);
 
   // A1: Pointer to an IC data check group.
-  const intptr_t target_offset = target::ICData::TargetIndexFor(num_args) *target::kWordSize;
-  const intptr_t count_offset = target::ICData::CountIndexFor(num_args) *target::kWordSize;
+  const intptr_t target_offset = target::ICData::TargetIndexFor(num_args) * target::kWordSize;
+  const intptr_t count_offset = target::ICData::CountIndexFor(num_args) * target::kWordSize;
   const intptr_t exactness_offset = target::ICData::ExactnessIndexFor(num_args) * target::kWordSize;
 
   Label call_target_function_through_unchecked_entry;
@@ -2561,8 +2602,8 @@ void StubCodeCompiler::GenerateZeroArgsUnoptimizedStaticCallStub() {
   // A0: ic_data_array with entries: target functions and count.
   __ AddImmediate(A0, Array::data_offset() - kHeapObjectTag);
   // A0: points directly to the first ic data array element.
-  const intptr_t target_offset = target::ICData::TargetIndexFor(0) *target::kWordSize;
-  const intptr_t count_offset = target::ICData::CountIndexFor(0) *target::kWordSize;
+  const intptr_t target_offset = target::ICData::TargetIndexFor(0) * target::kWordSize;
+  const intptr_t count_offset = target::ICData::CountIndexFor(0) * target::kWordSize;
 
   if (FLAG_optimization_counter_threshold >= 0) {
     // Increment count for this call, ignore overflow.
@@ -2584,17 +2625,17 @@ void StubCodeCompiler::GenerateZeroArgsUnoptimizedStaticCallStub() {
 #if !defined(PRODUCT)
     __ Bind(&stepping);
     __ EnterStubFrame();
-    __ addiu(SP, SP, Immediate(-3 *target::kWordSize));
-    __ sw(ICREG, Address(SP, 2 *target::kWordSize));  // Preserve IC data.
+    __ addiu(SP, SP, Immediate(-3 * target::kWordSize));
+    __ sw(ICREG, Address(SP, 2 * target::kWordSize));  // Preserve IC data.
     __ SmiTag(T6);
-    __ sw(T6, Address(SP, 1 *target::kWordSize));
-    __ sw(RA, Address(SP, 0 *target::kWordSize));  // Return address.
+    __ sw(T6, Address(SP, 1 * target::kWordSize));
+    __ sw(RA, Address(SP, 0 * target::kWordSize));  // Return address.
     __ CallRuntime(kSingleStepHandlerRuntimeEntry, 0);
-    __ lw(RA, Address(SP, 0 *target::kWordSize));
-    __ lw(T6, Address(SP, 1 *target::kWordSize));
+    __ lw(RA, Address(SP, 0 * target::kWordSize));
+    __ lw(T6, Address(SP, 1 * target::kWordSize));
     __ SmiUntag(T6);
-    __ lw(ICREG, Address(SP, 2 *target::kWordSize));
-    __ addiu(SP, SP, Immediate(3 *target::kWordSize));
+    __ lw(ICREG, Address(SP, 2 * target::kWordSize));
+    __ addiu(SP, SP, Immediate(3 * target::kWordSize));
     __ RestoreCodePointer();
     __ LeaveStubFrame();
     __ b(&done_stepping);
@@ -2621,15 +2662,15 @@ void StubCodeCompiler::GenerateTwoArgsUnoptimizedStaticCallStub() {
 // T0/FUNCTION_REG: Function.
 void StubCodeCompiler::GenerateLazyCompileStub() {
   __ EnterStubFrame();
-  __ addiu(SP, SP, Immediate(-3 *target::kWordSize));
-  __ sw(ICREG, Address(SP, 2 *target::kWordSize));  // Preserve IC data object.
-  __ sw(ARGS_DESC_REG, Address(SP, 1 *target::kWordSize));  // Preserve args descriptor array.
-  __ sw(FUNCTION_REG, Address(SP, 0 *target::kWordSize));  // Pass function.
+  __ addiu(SP, SP, Immediate(-3 * target::kWordSize));
+  __ sw(ICREG, Address(SP, 2 * target::kWordSize));  // Preserve IC data object.
+  __ sw(ARGS_DESC_REG, Address(SP, 1 * target::kWordSize));  // Preserve args descriptor array.
+  __ sw(FUNCTION_REG, Address(SP, 0 * target::kWordSize));  // Pass function.
   __ CallRuntime(kCompileFunctionRuntimeEntry, 1);
-  __ lw(FUNCTION_REG, Address(SP, 0 *target::kWordSize));  // Restore function.
-  __ lw(ARGS_DESC_REG, Address(SP, 1 *target::kWordSize));  // Restore args descriptor array.
-  __ lw(ICREG, Address(SP, 2 *target::kWordSize));  // Restore IC data array.
-  __ addiu(SP, SP, Immediate(3 *target::kWordSize));
+  __ lw(FUNCTION_REG, Address(SP, 0 * target::kWordSize));  // Restore function.
+  __ lw(ARGS_DESC_REG, Address(SP, 1 * target::kWordSize));  // Restore args descriptor array.
+  __ lw(ICREG, Address(SP, 2 * target::kWordSize));  // Restore IC data array.
+  __ addiu(SP, SP, Immediate(3 * target::kWordSize));
   __ LeaveStubFrame();
 
   __ lw(CODE_REG, FieldAddress(FUNCTION_REG, target::Function::code_offset()));
@@ -2727,17 +2768,17 @@ void StubCodeCompiler::GenerateICCallBreakpointStub() {
 #else
   __ Comment("ICCallBreakpoint stub");
   __ EnterStubFrame();
-  __ addiu(SP, SP, Immediate(-3 *target::kWordSize));
-  __ sw(A0, Address(SP, 2 *target::kWordSize));
-  __ sw(S5, Address(SP, 1 *target::kWordSize));
-  __ sw(ZR, Address(SP, 0 *target::kWordSize));
+  __ addiu(SP, SP, Immediate(-3 * target::kWordSize));
+  __ sw(A0, Address(SP, 2 * target::kWordSize));
+  __ sw(S5, Address(SP, 1 * target::kWordSize));
+  __ sw(ZR, Address(SP, 0 * target::kWordSize));
 
   __ CallRuntime(kBreakpointRuntimeHandlerRuntimeEntry, 0);
 
-  __ lw(A0, Address(SP, 2 *target::kWordSize));
-  __ lw(S5, Address(SP, 1 *target::kWordSize));
-  __ lw(CODE_REG, Address(SP, 0 *target::kWordSize));
-  __ addiu(SP, SP, Immediate(3 *target::kWordSize));
+  __ lw(A0, Address(SP, 2 * target::kWordSize));
+  __ lw(S5, Address(SP, 1 * target::kWordSize));
+  __ lw(CODE_REG, Address(SP, 0 * target::kWordSize));
+  __ addiu(SP, SP, Immediate(3 * target::kWordSize));
   __ LeaveStubFrame();
   __ lw(TMP, FieldAddress(CODE_REG, Code::entry_point_offset()));
   __ jr(TMP);
@@ -2769,13 +2810,13 @@ void StubCodeCompiler::GenerateRuntimeCallBreakpointStub() {
 #else
   __ Comment("RuntimeCallBreakpoint stub");
   __ EnterStubFrame();
-  __ addiu(SP, SP, Immediate(-1 *target::kWordSize));
-  __ sw(ZR, Address(SP, 0 *target::kWordSize));
+  __ addiu(SP, SP, Immediate(-1 * target::kWordSize));
+  __ sw(ZR, Address(SP, 0 * target::kWordSize));
 
   __ CallRuntime(kBreakpointRuntimeHandlerRuntimeEntry, 0);
 
-  __ lw(CODE_REG, Address(SP, 0 *target::kWordSize));
-  __ addiu(SP, SP, Immediate(1 *target::kWordSize));
+  __ lw(CODE_REG, Address(SP, 0 * target::kWordSize));
+  __ addiu(SP, SP, Immediate(1 * target::kWordSize));
   __ LeaveStubFrame();
   __ lw(TMP, FieldAddress(CODE_REG, Code::entry_point_offset()));
   __ jr(TMP);
@@ -2800,11 +2841,11 @@ void StubCodeCompiler::GenerateDebugStepCheckStub() {
   // Call single step callback in debugger.
   __ Bind(&stepping);
   __ EnterStubFrame();
-  __ addiu(SP, SP, Immediate(-1 *target::kWordSize));
-  __ sw(RA, Address(SP, 0 *target::kWordSize));  // Return address.
+  __ addiu(SP, SP, Immediate(-1 * target::kWordSize));
+  __ sw(RA, Address(SP, 0 * target::kWordSize));  // Return address.
   __ CallRuntime(kSingleStepHandlerRuntimeEntry, 0);
-  __ lw(RA, Address(SP, 0 *target::kWordSize));
-  __ addiu(SP, SP, Immediate(1 *target::kWordSize));
+  __ lw(RA, Address(SP, 0 * target::kWordSize));
+  __ addiu(SP, SP, Immediate(1 * target::kWordSize));
   __ LeaveStubFrame();
   __ b(&done_stepping);
 #endif
@@ -2956,16 +2997,16 @@ void StubCodeCompiler::GenerateOptimizeFunctionStub() {
   __ Comment("OptimizeFunctionStub");
   __ lw(CODE_REG, Address(THR, target::Thread::optimize_stub_offset()));
   __ EnterStubFrame();
-  __ addiu(SP, SP, Immediate(-3 *target::kWordSize));
-  __ sw(S4, Address(SP, 2 *target::kWordSize));
+  __ addiu(SP, SP, Immediate(-3 * target::kWordSize));
+  __ sw(S4, Address(SP, 2 * target::kWordSize));
   // Setup space on stack for return value.
-  __ sw(ZR, Address(SP, 1 *target::kWordSize));
-  __ sw(T0, Address(SP, 0 *target::kWordSize));
+  __ sw(ZR, Address(SP, 1 * target::kWordSize));
+  __ sw(T0, Address(SP, 0 * target::kWordSize));
   __ CallRuntime(kOptimizeInvokedFunctionRuntimeEntry, 1);
   __ Comment("OptimizeFunctionStub return");
-  __ lw(FUNCTION_REG, Address(SP, 1 *target::kWordSize));       // Get Function object
-  __ lw(S4, Address(SP, 2 *target::kWordSize));       // Restore argument descriptor.
-  __ addiu(SP, SP, Immediate(3 *target::kWordSize));  // Discard argument.
+  __ lw(FUNCTION_REG, Address(SP, 1 * target::kWordSize));       // Get Function object
+  __ lw(S4, Address(SP, 2 * target::kWordSize));       // Restore argument descriptor.
+  __ addiu(SP, SP, Immediate(3 * target::kWordSize));  // Discard argument.
 
   __ lw(CODE_REG, FieldAddress(FUNCTION_REG, Function::code_offset()));
   __ lw(T1, FieldAddress(FUNCTION_REG, Function::entry_point_offset()));
@@ -2999,12 +3040,12 @@ static void GenerateIdenticalWithNumberCheckStub(Assembler* assembler,
   __ bne(CMPRES1, ZR, &done);
 
   // Double values bitwise compare.
-  __ lw(temp1, FieldAddress(left, Double::value_offset() + 0 *target::kWordSize));
-  __ lw(temp2, FieldAddress(right, Double::value_offset() + 0 *target::kWordSize));
+  __ lw(temp1, FieldAddress(left, Double::value_offset() + 0 * target::kWordSize));
+  __ lw(temp2, FieldAddress(right, Double::value_offset() + 0 * target::kWordSize));
   __ subu(CMPRES1, temp1, temp2);
   __ bne(CMPRES1, ZR, &done);
-  __ lw(temp1, FieldAddress(left, Double::value_offset() + 1 *target::kWordSize));
-  __ lw(temp2, FieldAddress(right, Double::value_offset() + 1 *target::kWordSize));
+  __ lw(temp1, FieldAddress(left, Double::value_offset() + 1 * target::kWordSize));
+  __ lw(temp2, FieldAddress(right, Double::value_offset() + 1 * target::kWordSize));
   __ b(&done);
   __ delay_slot()->subu(CMPRES1, temp1, temp2);
 
@@ -3016,12 +3057,12 @@ static void GenerateIdenticalWithNumberCheckStub(Assembler* assembler,
   __ subu(CMPRES1, temp1, temp2);
   __ bne(CMPRES1, ZR, &done);
 
-  __ lw(temp1, FieldAddress(left, Mint::value_offset() + 0 *target::kWordSize));
-  __ lw(temp2, FieldAddress(right, Mint::value_offset() + 0 *target::kWordSize));
+  __ lw(temp1, FieldAddress(left, Mint::value_offset() + 0 * target::kWordSize));
+  __ lw(temp2, FieldAddress(right, Mint::value_offset() + 0 * target::kWordSize));
   __ subu(CMPRES1, temp1, temp2);
   __ bne(CMPRES1, ZR, &done);
-  __ lw(temp1, FieldAddress(left, Mint::value_offset() + 1 *target::kWordSize));
-  __ lw(temp2, FieldAddress(right, Mint::value_offset() + 1 *target::kWordSize));
+  __ lw(temp1, FieldAddress(left, Mint::value_offset() + 1 * target::kWordSize));
+  __ lw(temp2, FieldAddress(right, Mint::value_offset() + 1 * target::kWordSize));
   __ b(&done);
   __ delay_slot()->subu(CMPRES1, temp1, temp2);
 
@@ -3050,19 +3091,19 @@ void StubCodeCompiler::GenerateUnoptimizedIdenticalWithNumberCheckStub() {
   const Register temp2 = T3;
   const Register left = T1;
   const Register right = T0;
-  __ lw(left, Address(SP, 1 *target::kWordSize));
-  __ lw(right, Address(SP, 0 *target::kWordSize));
+  __ lw(left, Address(SP, 1 * target::kWordSize));
+  __ lw(right, Address(SP, 0 * target::kWordSize));
   GenerateIdenticalWithNumberCheckStub(assembler, left, right, temp1, temp2);
   __ Ret();
 
 #if !defined(PRODUCT)
     __ Bind(&stepping);
     __ EnterStubFrame();
-    __ addiu(SP, SP, Immediate(-1 *target::kWordSize));
-    __ sw(RA, Address(SP, 0 *target::kWordSize));  // Return address.
+    __ addiu(SP, SP, Immediate(-1 * target::kWordSize));
+    __ sw(RA, Address(SP, 0 * target::kWordSize));  // Return address.
     __ CallRuntime(kSingleStepHandlerRuntimeEntry, 0);
-    __ lw(RA, Address(SP, 0 *target::kWordSize));
-    __ addiu(SP, SP, Immediate(1 *target::kWordSize));
+    __ lw(RA, Address(SP, 0 * target::kWordSize));
+    __ addiu(SP, SP, Immediate(1 * target::kWordSize));
     __ RestoreCodePointer();
     __ LeaveStubFrame();
     __ b(&done_stepping);
@@ -3078,8 +3119,8 @@ void StubCodeCompiler::GenerateOptimizedIdenticalWithNumberCheckStub() {
   const Register temp2 = T3;
   const Register left = T1;
   const Register right = T0;
-  __ lw(left, Address(SP, 1 *target::kWordSize));
-  __ lw(right, Address(SP, 0 *target::kWordSize));
+  __ lw(left, Address(SP, 1 * target::kWordSize));
+  __ lw(right, Address(SP, 0 * target::kWordSize));
   GenerateIdenticalWithNumberCheckStub(assembler, left, right, temp1, temp2);
   __ Ret();
 }
@@ -3180,17 +3221,17 @@ void StubCodeCompiler::GenerateICCallThroughCodeStub() {
   ASSERT(Smi::RawValue(kIllegalCid) == 0);
   __ beq(T2, ZR, &miss);
 
-  const intptr_t entry_length = ICData::TestEntryLengthFor(1, /*tracking_exactness=*/false) *target::kWordSize;
+  const intptr_t entry_length = ICData::TestEntryLengthFor(1, /*tracking_exactness=*/false) * target::kWordSize;
   __ AddImmediate(T6, entry_length);  // Next entry.
   __ b(&loop);
 
   __ Bind(&found);
   if (FLAG_precompiled_mode) {
-    const intptr_t entry_offset = target::ICData::EntryPointIndexFor(1) *target::kWordSize;
+    const intptr_t entry_offset = target::ICData::EntryPointIndexFor(1) * target::kWordSize;
     __ lw(FUNCTION_REG, Address(T6, entry_offset));
     __ lw(T1, FieldAddress(FUNCTION_REG, target::Function::entry_point_offset()));
   } else {
-    const intptr_t code_offset = target::ICData::CodeIndexFor(1) *target::kWordSize;
+    const intptr_t code_offset = target::ICData::CodeIndexFor(1) * target::kWordSize;
     __ lw(CODE_REG, Address(T6, code_offset));
     __ lw(T1, FieldAddress(CODE_REG, target::Code::entry_point_offset()));
   }
