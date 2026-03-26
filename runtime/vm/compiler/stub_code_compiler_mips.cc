@@ -832,6 +832,40 @@ static void GenerateDeoptimizationSequence(Assembler* assembler,
   }
 }
 
+// V0: result, must be preserved
+void StubCodeCompiler::GenerateDeoptimizeLazyFromReturnStub() {
+  // Push zap value instead of CODE_REG for lazy deopt.
+  __ LoadImmediate(TMP, kZapCodeReg);
+  __ Push(TMP);
+  // Return address for "call" to deopt stub.
+  __ LoadImmediate(RA, kZapReturnAddress);
+  __ lw(CODE_REG, Address(THR, Thread::lazy_deopt_from_return_stub_offset()));
+  GenerateDeoptimizationSequence(assembler, kLazyDeoptFromReturn);
+  __ Ret();
+}
+
+
+// V0: exception, must be preserved
+// V1: stacktrace, must be preserved
+void StubCodeCompiler::GenerateDeoptimizeLazyFromThrowStub() {
+  // Push zap value instead of CODE_REG for lazy deopt.
+  __ LoadImmediate(TMP, kZapCodeReg);
+  __ Push(TMP);
+  // Return address for "call" to deopt stub.
+  __ LoadImmediate(RA, kZapReturnAddress);
+  __ lw(CODE_REG, Address(THR, Thread::lazy_deopt_from_throw_stub_offset()));
+  GenerateDeoptimizationSequence(assembler, kLazyDeoptFromThrow);
+  __ Ret();
+}
+
+
+void StubCodeCompiler::GenerateDeoptimizeStub() {
+  __ Push(CODE_REG);
+  __ lw(CODE_REG, Address(THR, target::Thread::deoptimize_stub_offset()));
+  GenerateDeoptimizationSequence(assembler, kEagerDeopt);
+  __ Ret();
+}
+
 // Called for inline allocation of arrays.
 // Input parameters:
 //   RA: return address.
