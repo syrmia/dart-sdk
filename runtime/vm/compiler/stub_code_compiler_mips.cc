@@ -2157,6 +2157,43 @@ void StubCodeCompiler::GenerateOptimizeFunctionStub() {
   __ break_(0);
 }
 
+void StubCodeCompiler::GenerateICCallThroughCodeStub() {
+  Label loop, found, miss;
+  __ lw(T6, FieldAddress(ICREG, target::ICData::entries_offset()));
+  __ lw(S4, FieldAddress(ICREG,
+                        target::CallSiteData::arguments_descriptor_offset()));
+  __ AddImmediate(T6, T6, target::Array::data_offset() - kHeapObjectTag);
+  // T6: first IC entry.
+  __ LoadTaggedClassIdMayBeSmi(T1, A0);
+  // T1: receiver cid as Smi
+
+  __ Bind(&loop);
+  __ lw(T2, Address(T6, 0));
+  __ beq(T1, T2, &found);
+  ASSERT(Smi::RawValue(kIllegalCid) == 0);
+  __ beq(T2, ZR, &miss);
+
+  const intptr_t entry_length = ICData::TestEntryLengthFor(1, /*tracking_exactness=*/false) *target::kWordSize;
+  __ AddImmediate(T6, entry_length);  // Next entry.
+  __ b(&loop);
+
+  __ Bind(&found);
+  if (FLAG_precompiled_mode) {
+    const intptr_t entry_offset = target::ICData::EntryPointIndexFor(1) *target::kWordSize;
+    __ lw(FUNCTION_REG, Address(T6, entry_offset));
+    __ lw(T1, FieldAddress(FUNCTION_REG, target::Function::entry_point_offset()));
+  } else {
+    const intptr_t code_offset = target::ICData::CodeIndexFor(1) *target::kWordSize;
+    __ lw(CODE_REG, Address(T6, code_offset));
+    __ lw(T1, FieldAddress(CODE_REG, target::Code::entry_point_offset()));
+  }
+  __ jr(T1);
+
+  __ Bind(&miss);
+  __ lw(T1, Address(THR, target::Thread::switchable_call_miss_entry_offset()));
+  __ jr(T1);
+}
+
 static void CallSwitchableCallMissRuntimeEntry(Assembler* assembler,
                                                Register receiver_reg) {
   __ Push(receiver_reg);
