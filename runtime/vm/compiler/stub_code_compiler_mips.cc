@@ -1974,6 +1974,478 @@ void StubCodeCompiler::GenerateAllocateObjectSlowStub() {
   __ LeaveDartFrameAndReturn();
 }
 
+// Loads function into 'temp_reg'.
+void StubCodeCompiler::GenerateUsageCounterIncrement(Register temp_reg) {
+  if (FLAG_precompiled_mode) {
+    __ Breakpoint();
+    return;
+  }
+  if (FLAG_optimization_counter_threshold >= 0) {
+    __ Comment("UsageCounterIncrement");
+    Register ic_reg = S5;
+    Register func_reg = temp_reg;
+    __ Comment("Increment function counter");
+    __ lw(func_reg, FieldAddress(ic_reg, ICData::owner_offset()));
+    __ lw(T1, FieldAddress(func_reg, Function::usage_counter_offset()));
+    __ addiu(T1, T1, Immediate(1));
+    __ sw(T1, FieldAddress(func_reg, Function::usage_counter_offset()));
+  }
+}
+
+// Note: S5 must be preserved.
+// Attempt a quick Smi operation for known operations ('kind'). The ICData
+// must have been primed with a Smi/Smi check that will be used for counting
+// the invocations.
+static void EmitFastSmiOp(Assembler* assembler,
+                          Token::Kind kind,
+                          intptr_t num_args,
+                          Label* not_smi_or_overflow) {
+  __ Comment("Fast Smi op");
+  ASSERT(num_args == 2);
+  __ lw(V0, Address(SP, 1 *target::kWordSize));  // Left.
+  __ lw(A1, Address(SP, 0 *target::kWordSize));  // Right.
+  __ or_(CMPRES1, V0, A1);
+  __ AndImmediate(CMPRES1, CMPRES1, kSmiTagMask);
+  __ bne(CMPRES1, ZR, not_smi_or_overflow);
+  switch (kind) {
+    case Token::kADD: {
+      __ AddBranchOverflow(V0, V0, A1, not_smi_or_overflow);
+       break;
+    }
+    case Token::kLT: {
+      Label true_label, done;
+      __ BranchSignedLess(V0, A1, &true_label);
+      __ LoadObject(V0, CastHandle<Object>(FalseObject()));
+      __ b(&done);
+      __ Bind(&true_label);
+      __ LoadObject(V0, CastHandle<Object>(TrueObject()));
+      __ Bind(&done);
+      break;
+    }
+    case Token::kEQ: {
+      Label true_label, done;
+      __ beq(V0, A1, &true_label);
+      __ LoadObject(V0, CastHandle<Object>(FalseObject()));
+      __ b(&done);
+      __ Bind(&true_label);
+      __ LoadObject(V0, CastHandle<Object>(TrueObject()));
+      __ Bind(&done);
+      break;
+    }
+    default:
+      UNIMPLEMENTED();
+  }
+  // S5: IC data object (preserved).
+  __ lw(S2, FieldAddress(S5, target::ICData::entries_offset()));
+  // S2: ic_data_array with check entries: classes and target functions.
+  __ AddImmediate(S2, Array::data_offset() - kHeapObjectTag);
+// S2: points directly to the first ic data array element.
+#if defined(DEBUG)
+  // Check that first entry is for Smi/Smi.
+  Label error, ok;
+  const int32_t imm_smi_cid = target::ToRawSmi(kSmiCid);
+  __ lw(TMP, Address(S2, 0));
+  __ BranchNotEqual(TMP, Immediate(imm_smi_cid), &error);
+  __ lw(TMP, Address(S2, target::kWordSize));
+  __ BranchEqual(TMP, Immediate(imm_smi_cid), &ok);
+  __ Bind(&error);
+  __ Stop("Incorrect IC data");
+  __ Bind(&ok);
+#endif
+  if (FLAG_optimization_counter_threshold >= 0) {
+    // Update counter, ignore overflow.
+    const intptr_t count_offset = ICData::CountIndexFor(num_args) *target::kWordSize;
+    __ lw(A1, Address(S2, count_offset));
+    __ AddImmediate(A1, A1, target::ToRawSmi(1));
+    __ sw(A1, Address(S2, count_offset));
+  }
+
+  __ Ret();
+}
+
+// Saves the offset of the target entry-point (from the Function) into T6.
+//
+// Must be the first code generated, since any code before will be skipped in
+// the unchecked entry-point.
+static void GenerateRecordEntryPoint(Assembler* assembler) {
+  Label done;
+  __ LoadImmediate(T6, target::Function::entry_point_offset() - kHeapObjectTag);
+  __ b(&done);
+  __ BindUncheckedEntryPoint();
+  __ LoadImmediate(
+      T6, target::Function::entry_point_offset(CodeEntryKind::kUnchecked) -
+              kHeapObjectTag);
+  __ Bind(&done);
+}
+
+// Generate inline cache check for 'num_args'.
+//  A0: receiver (if instance call)
+//  RA: return address
+//  S5/ICREG: Inline cache data object.
+// Control flow:
+// - If receiver is null -> jump to IC miss.
+// - If receiver is Smi -> load Smi class.
+// - If receiver is not-Smi -> load receiver's class.
+// - Check if 'num_args' (including receiver) match any IC data group.
+// - Match found -> jump to target.
+// - Match not found -> jump to IC miss.
+void StubCodeCompiler::GenerateNArgsCheckInlineCacheStub(
+    intptr_t num_args,
+    const RuntimeEntry& handle_ic_miss,
+    Token::Kind kind,
+    Optimized optimized,
+    CallType type,
+    Exactness exactness) {
+
+  __ Comment("NArgsCheckInlineCacheStub");
+
+  if (FLAG_precompiled_mode) {
+    __ Breakpoint();
+    return;
+  }
+
+  const bool save_entry_point = kind == Token::kILLEGAL;
+  if (save_entry_point) {
+    GenerateRecordEntryPoint(assembler);
+    // T6: untagged entry point offset
+  }
+
+  if (optimized == kOptimized) {
+    GenerateOptimizedUsageCounterIncrement();
+  } else {
+    GenerateUsageCounterIncrement(T0);
+  }
+
+  __ CheckCodePointer();
+  ASSERT(num_args == 1 || num_args == 2);
+
+#if defined(DEBUG)
+  {
+    Label ok;
+    // Check that the IC data array has NumArgsTested() == num_args.
+    // 'NumArgsTested' is stored in the least significant bits of 'state_bits'.
+    __ lw(TMP, FieldAddress(S5, target::ICData::state_bits_offset()));
+    ASSERT(target::ICData::NumArgsTestedShift() == 0);  // No shift needed.
+    __ andi(TMP, TMP, Immediate(target::ICData::NumArgsTestedMask()));
+    __ BranchEqual(TMP, Immediate(num_args), &ok);
+    __ Stop("Incorrect stub for IC data");
+    __ Bind(&ok);
+  }
+#endif  // DEBUG
+
+
+#if !defined(PRODUCT)
+  Label stepping, done_stepping;
+  if (optimized == kUnoptimized) {
+    __ Comment("Check single stepping");
+    __ LoadIsolate(TMP);
+    __ lbu(TMP, Address(TMP, target::Thread::single_step_offset()));
+    __ BranchNotEqual(TMP, Immediate(0), &stepping);
+    __ Bind(&done_stepping);
+  }
+#endif
+
+  Label not_smi_or_overflow;
+  if (kind != Token::kILLEGAL) {
+    EmitFastSmiOp(assembler, kind, num_args, &not_smi_or_overflow);
+  }
+  __ Bind(&not_smi_or_overflow);
+
+  __ Comment("Extract ICData initial values and receiver cid");
+
+  // S5: IC data object (preserved).
+  __ lw(A1, FieldAddress(S5, target::ICData::entries_offset()));
+  // A1: ic_data_array with check entries: classes and target functions.
+  __ AddImmediate(A1, target::Array::data_offset() - kHeapObjectTag);
+  // A1: points directly to the first ic data array element.
+
+  if(type == kInstanceCall){
+    __ LoadTaggedClassIdMayBeSmi(T1, A0);
+    __ LoadFieldFromOffset(ARGS_DESC_REG, ICREG,
+                            target::CallSiteData::arguments_descriptor_offset());
+    if(num_args == 2){
+      __ LoadSmiFieldFromOffset(T7, ARGS_DESC_REG,
+                                target::ArgumentsDescriptor::count_offset());
+      __ sll(T7, T7, target::kWordSizeLog2 - kSmiTagSize);
+      __ addu(T7, T7, SP);
+      __ lw(S2, Address(T7, -2 * target::kWordSize));
+      __ LoadTaggedClassIdMayBeSmi(T2, S2);
+    }
+  } else {
+        // Load arguments descriptor into ARGS_DESC_REG.
+    __ LoadFieldFromOffset(ARGS_DESC_REG, ICREG,
+                  target::CallSiteData::arguments_descriptor_offset());
+    // Get the receiver's class ID (first read number of arguments from
+    // arguments descriptor array and then access the receiver from the stack).
+    __ LoadSmiFieldFromOffset(
+            T7, ARGS_DESC_REG, target::ArgumentsDescriptor::count_offset());
+    __ sll(T7, T7, target::kWordSizeLog2 - kSmiTagSize);
+    __ addu(T7, T7, SP);
+    __ lw(S2, Address(T7, -1 * target::kWordSize));
+    __ LoadTaggedClassIdMayBeSmi(T1, S2);
+
+    if (num_args == 2) {
+      __ lw(S2, Address(T7, -2 * target::kWordSize));
+      __ LoadTaggedClassIdMayBeSmi(T2, S2);
+    }
+  }
+
+  const intptr_t entry_size = target::ICData::TestEntryLengthFor(num_args,
+                                 exactness == kCheckExactness) *target::kCompressedWordSize;
+  // T1: first argument's class ID (smi).
+  // T2: second argument's class ID (smi).
+  // S4: args descriptor
+
+  // We unroll the generic one that is generated once more than the others.
+  const bool optimize = kind == Token::kILLEGAL;
+
+  Label loop, found, miss;
+  __ Comment("ICData loop");
+  __ Bind(&loop);
+  for (int unroll = optimize ? 4 : 2; unroll >= 0; unroll--) {
+    Label update;
+
+    __ LoadSmiFromOffset(T7, A1, 0);
+    if (num_args == 1) {
+      __ beq(T7, T1, &found);  // IC hit.
+    } else {
+      ASSERT(num_args == 2);
+      __ bne(T7, T1, &update);  // Continue.
+      __ LoadSmiFromOffset(T7, A1, target::kWordSize);
+      __ beq(T7, T2, &found);  // IC hit.
+    }
+
+    __ Bind(&update);
+
+    __ AddImmediate(A1, entry_size);  // Next entry.
+
+    if (unroll == 0) {
+      __ BranchNotEqual(T7, Immediate(Smi::RawValue(kIllegalCid)),
+                        &loop);  // Done?
+    } else {
+      __ BranchEqual(T7, Immediate(Smi::RawValue(kIllegalCid)),
+                     &miss);  // Done?
+    }
+  }
+
+  __ Bind(&miss);
+  __ Comment("IC miss");
+
+  // Compute address of arguments (first read number of arguments from
+  // arguments descriptor array and then compute address on the stack).
+  // T1: argument_count (smi).
+  __ LoadSmiFieldFromOffset(T7, ARGS_DESC_REG,
+        target::ArgumentsDescriptor::count_offset());
+  __ sll(T7, T7, target::kWordSizeLog2 - kSmiTagSize);
+  __ addu(T7, T7, SP);
+  __ AddImmediate(T7, T7, -1 * target::kWordSize);
+
+  // T7: address of receiver.
+  // Create a stub frame as we are pushing some objects on the stack before
+  // calling into the runtime.
+  __ EnterStubFrame();
+  // Preserve IC data object and arguments descriptor array and
+  // setup space on stack for result (target code object).
+  __ PushRegistersInOrder({ARGS_DESC_REG, ICREG});
+  if (save_entry_point) {
+    __ SmiTag(T6);
+    __ PushRegister(T6);
+  }
+  // Setup space on stack for the result (target code object).
+  __ PushRegister(ZR);
+  // Push call arguments.
+  for (intptr_t i = 0; i < num_args; i++) {
+    __ LoadFromOffset(TMP, T7, -target::kWordSize * i);
+    __ PushRegister(TMP);
+  }
+  // Pass IC data object.
+  __ PushRegister(ICREG);
+  __ CallRuntime(handle_ic_miss, num_args + 1);
+  // Remove the call arguments pushed earlier, including the IC data object.
+  __ Drop(num_args + 1);
+  // Pop returned function object into T0.
+  // Restore arguments descriptor array and IC data array.
+  __ PopRegister(FUNCTION_REG);  // Pop returned function object into T0.
+  if (save_entry_point) {
+    __ PopRegister(T6);
+    __ SmiUntag(T6);
+  }
+  __ PopRegister(ICREG);    // Restore IC Data.
+  __ PopRegister(ARGS_DESC_REG);  // Restore arguments descriptor array.
+  __ RestoreCodePointer();
+  __ LeaveStubFrame();
+
+  Label call_target_function;
+  if (FLAG_precompiled_mode) {
+    GenerateDispatcherCode(assembler, &call_target_function);
+  } else {
+    __ b(&call_target_function);
+  }
+
+  __ Bind(&found);
+
+  // A1: Pointer to an IC data check group.
+  const intptr_t target_offset = target::ICData::TargetIndexFor(num_args) *target::kWordSize;
+  const intptr_t count_offset = target::ICData::CountIndexFor(num_args) *target::kWordSize;
+  const intptr_t exactness_offset = target::ICData::ExactnessIndexFor(num_args) * target::kWordSize;
+
+  Label call_target_function_through_unchecked_entry;
+
+  if (exactness == kCheckExactness) {
+    Label exactness_ok;
+    ASSERT(num_args == 1);
+    __ LoadSmi(T1, Address(A1, exactness_offset));
+    __ LoadImmediate(
+        TMP, target::ToRawSmi(
+                 StaticTypeExactnessState::HasExactSuperType().Encode()));
+    __ BranchSignedLess(T1, TMP, &exactness_ok);
+    __ beq(T1, TMP, &call_target_function_through_unchecked_entry);
+
+    // Check trivial exactness.
+    // Note: UntaggedICData::receivers_static_type_ is guaranteed to be not null
+    // because we only emit calls to this stub when it is not null.
+    __ lw(
+        T2, FieldAddress(S5, target::ICData::receivers_static_type_offset()));
+    __ lw(T2, FieldAddress(T2, target::Type::arguments_offset()));
+    // T1 contains an offset to type arguments in words as a smi,
+    // hence TIMES_2. A0 is guaranteed to be non-smi because it is expected
+    // to have type arguments.
+    __ LoadIndexedPayload(TMP, A0, 0, T1, TIMES_2, kObjectBytes);
+    __ beq(T2, TMP, &call_target_function_through_unchecked_entry);
+
+    // Update exactness state (not-exact anymore).
+    __ LoadImmediate(
+        TMP, target::ToRawSmi(StaticTypeExactnessState::NotExact().Encode()));
+    __ StoreToOffset(TMP, A1, exactness_offset, kObjectBytes);
+    __ Bind(&exactness_ok);
+  }
+  __ lw(FUNCTION_REG, Address(A1, target_offset));
+
+  if (FLAG_optimization_counter_threshold >= 0) {
+    // Update counter, ignore overflow.
+    __ Comment("Update caller's counter");
+    __ LoadSmiFromOffset(TMP, A1, count_offset);
+    __ AddImmediate(TMP, TMP, target::ToRawSmi(1));
+    __ sw(TMP, Address(A1, count_offset));
+  }
+
+  __ Comment("Call target");
+  __ Bind(&call_target_function);
+  // T0: target function.
+  __ LoadFieldFromOffset(CODE_REG, FUNCTION_REG,
+            target::Function::code_offset());
+  if (save_entry_point) {
+    __ addu(T7, FUNCTION_REG, T6);
+    __ lw(T7, Address(T7, 0));
+  } else {
+    __ lw(T7, FieldAddress(FUNCTION_REG, Function::entry_point_offset()));
+  }
+  __ jr(T7);
+
+  if (exactness == kCheckExactness) {
+    __ Bind(&call_target_function_through_unchecked_entry);
+    if (FLAG_optimization_counter_threshold >= 0) {
+      __ Comment("Update ICData counter");
+      __ LoadSmiFromOffset(TMP, A1, count_offset);
+      __ addi(TMP, TMP, compiler::Immediate(target::ToRawSmi(1)));  // Ignore overflow.
+      __ StoreToOffset(TMP, A1, count_offset, kObjectBytes);
+    }
+    __ Comment("Call target (via unchecked entry point)");
+    __ LoadFromOffset(FUNCTION_REG, A1, target_offset);
+    __ LoadFieldFromOffset(CODE_REG, FUNCTION_REG,
+                                     target::Function::code_offset());
+    __ LoadFieldFromOffset(
+        T9, FUNCTION_REG,
+        target::Function::entry_point_offset(CodeEntryKind::kUnchecked));
+    __ jr(T9);
+  }
+
+#if !defined(PRODUCT)
+  if (optimized == kUnoptimized) {
+    __ Bind(&stepping);
+    __ EnterStubFrame();
+    if (type == kInstanceCall) {
+      __ PushRegister(A0);  // Preserve receiver.
+    }
+    if (save_entry_point) {
+      __ SmiTag(T6);
+      __ PushRegister(T6);
+    }
+    __ PushRegister(ICREG);
+    __ CallRuntime(kSingleStepHandlerRuntimeEntry, 0);
+    __ PopRegister(ICREG);
+    if (save_entry_point) {
+      __ PopRegister(T6);
+      __ SmiUntag(T6);
+    }
+    if (type == kInstanceCall) {
+      __ PopRegister(A0);
+    }
+    __ RestoreCodePointer();
+    __ LeaveStubFrame();
+    __ b(&done_stepping);
+  }
+#endif
+}
+
+//  A0: receiver
+//  RA: Return address.
+//  S5: Inline cache data object (ICData).
+void StubCodeCompiler::GenerateOneArgCheckInlineCacheStub() {
+  GenerateNArgsCheckInlineCacheStub(
+      1, kInlineCacheMissHandlerOneArgRuntimeEntry, Token::kILLEGAL,
+      kUnoptimized, kInstanceCall, kIgnoreExactness);
+}
+
+//  A0: receiver
+//  RA: Return address.
+//  S5: Inline cache data object (ICData).
+void StubCodeCompiler::GenerateOneArgCheckInlineCacheWithExactnessCheckStub() {
+  GenerateNArgsCheckInlineCacheStub(
+      1, kInlineCacheMissHandlerOneArgRuntimeEntry, Token::kILLEGAL,
+      kUnoptimized, kInstanceCall, kCheckExactness);
+}
+
+//  A0: receiver
+//  RA: Return address.
+//  S5: Inline cache data object (ICData).
+void StubCodeCompiler::GenerateTwoArgsCheckInlineCacheStub() {
+  GenerateNArgsCheckInlineCacheStub(
+      2, kInlineCacheMissHandlerTwoArgsRuntimeEntry, Token::kILLEGAL,
+      kUnoptimized, kInstanceCall, kIgnoreExactness);
+}
+
+//  A0: receiver
+//  RA: Return address.
+//  S2: Function
+//  S5: Inline cache data object (ICData).
+void StubCodeCompiler::GenerateOneArgOptimizedCheckInlineCacheStub() {
+  GenerateNArgsCheckInlineCacheStub(
+      1, kInlineCacheMissHandlerOneArgRuntimeEntry, Token::kILLEGAL,
+      kOptimized, kInstanceCall, kIgnoreExactness);
+}
+
+//  A0: receiver
+//  RA: Return address.
+//  S2: Function
+//  S5: Inline cache data object (ICData).
+void StubCodeCompiler::
+    GenerateOneArgOptimizedCheckInlineCacheWithExactnessCheckStub() {
+  GenerateNArgsCheckInlineCacheStub(
+      1, kInlineCacheMissHandlerOneArgRuntimeEntry, Token::kILLEGAL, kOptimized,
+      kInstanceCall, kCheckExactness);
+}
+
+//  A0: receiver
+//  RA: Return address.
+//  S2: Function
+//  S5: Inline cache data object (ICData).
+void StubCodeCompiler::GenerateTwoArgsOptimizedCheckInlineCacheStub() {
+  GenerateNArgsCheckInlineCacheStub(
+      2, kInlineCacheMissHandlerTwoArgsRuntimeEntry, Token::kILLEGAL,
+      kOptimized, kInstanceCall, kIgnoreExactness);
+}
+
 // Stub for compiling a function and jumping to the compiled code.
 // S5/ICREG: IC-Data (for methods).
 // S4/ARGS_DESC_REG: Arguments descriptor.
