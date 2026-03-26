@@ -2238,6 +2238,117 @@ void StubCodeCompiler::GenerateOptimizeFunctionStub() {
   __ break_(0);
 }
 
+// Does identical check (object references are equal or not equal) with special
+// checks for boxed numbers.
+// Returns: CMPRES1 is zero if equal, non-zero otherwise.
+// Note: A Mint cannot contain a value that would fit in Smi
+static void GenerateIdenticalWithNumberCheckStub(Assembler* assembler,
+                                                 const Register left,
+                                                 const Register right,
+                                                 const Register temp1,
+                                                 const Register temp2) {
+  __ Comment("IdenticalWithNumberCheckStub");
+  Label reference_compare, done, check_mint;
+  // If any of the arguments is Smi do reference compare.
+  __ AndImmediate(temp1, left, kSmiTagMask);
+  __ beq(temp1, ZR, &reference_compare);
+  __ AndImmediate(temp1, right, kSmiTagMask);
+  __ beq(temp1, ZR, &reference_compare);
+
+  // Value compare for two doubles.
+  __ LoadImmediate(temp1, kDoubleCid);
+  __ LoadClassId(temp2, left);
+  __ bne(temp1, temp2, &check_mint);
+  __ LoadClassId(temp2, right);
+  __ subu(CMPRES1, temp1, temp2);
+  __ bne(CMPRES1, ZR, &done);
+
+  // Double values bitwise compare.
+  __ lw(temp1, FieldAddress(left, Double::value_offset() + 0 *target::kWordSize));
+  __ lw(temp2, FieldAddress(right, Double::value_offset() + 0 *target::kWordSize));
+  __ subu(CMPRES1, temp1, temp2);
+  __ bne(CMPRES1, ZR, &done);
+  __ lw(temp1, FieldAddress(left, Double::value_offset() + 1 *target::kWordSize));
+  __ lw(temp2, FieldAddress(right, Double::value_offset() + 1 *target::kWordSize));
+  __ b(&done);
+  __ delay_slot()->subu(CMPRES1, temp1, temp2);
+
+  __ Bind(&check_mint);
+  __ LoadImmediate(temp1, kMintCid);
+  __ LoadClassId(temp2, left);
+  __ bne(temp1, temp2, &reference_compare);
+  __ LoadClassId(temp2, right);
+  __ subu(CMPRES1, temp1, temp2);
+  __ bne(CMPRES1, ZR, &done);
+
+  __ lw(temp1, FieldAddress(left, Mint::value_offset() + 0 *target::kWordSize));
+  __ lw(temp2, FieldAddress(right, Mint::value_offset() + 0 *target::kWordSize));
+  __ subu(CMPRES1, temp1, temp2);
+  __ bne(CMPRES1, ZR, &done);
+  __ lw(temp1, FieldAddress(left, Mint::value_offset() + 1 *target::kWordSize));
+  __ lw(temp2, FieldAddress(right, Mint::value_offset() + 1 *target::kWordSize));
+  __ b(&done);
+  __ delay_slot()->subu(CMPRES1, temp1, temp2);
+
+  __ Bind(&reference_compare);
+  __ subu(CMPRES1, left, right);
+  __ Bind(&done);
+  // A branch or test after this comparison will check CMPRES1 == ZR.
+}
+
+// Called only from unoptimized code. All relevant registers have been saved.
+// RA: return address.
+// SP + 4: left operand.
+// SP + 0: right operand.
+// Returns: CMPRES1 is zero if equal, non-zero otherwise.
+void StubCodeCompiler::GenerateUnoptimizedIdenticalWithNumberCheckStub() {
+  #if !defined(PRODUCT)
+  // Check single stepping.
+  Label stepping, done_stepping;
+  __ LoadIsolate(T0);
+  __ lbu(T0, Address(T0, target::Thread::single_step_offset()));
+  __ BranchNotEqual(T0, Immediate(0), &stepping);
+  __ Bind(&done_stepping);
+#endif
+
+  const Register temp1 = T2;
+  const Register temp2 = T3;
+  const Register left = T1;
+  const Register right = T0;
+  __ lw(left, Address(SP, 1 *target::kWordSize));
+  __ lw(right, Address(SP, 0 *target::kWordSize));
+  GenerateIdenticalWithNumberCheckStub(assembler, left, right, temp1, temp2);
+  __ Ret();
+
+#if !defined(PRODUCT)
+    __ Bind(&stepping);
+    __ EnterStubFrame();
+    __ addiu(SP, SP, Immediate(-1 *target::kWordSize));
+    __ sw(RA, Address(SP, 0 *target::kWordSize));  // Return address.
+    __ CallRuntime(kSingleStepHandlerRuntimeEntry, 0);
+    __ lw(RA, Address(SP, 0 *target::kWordSize));
+    __ addiu(SP, SP, Immediate(1 *target::kWordSize));
+    __ RestoreCodePointer();
+    __ LeaveStubFrame();
+    __ b(&done_stepping);
+#endif
+}
+
+// Called from optimized code only.
+// SP + 4: left operand.
+// SP + 0: right operand.
+// Returns: CMPRES1 is zero if equal, non-zero otherwise.
+void StubCodeCompiler::GenerateOptimizedIdenticalWithNumberCheckStub() {
+  const Register temp1 = T2;
+  const Register temp2 = T3;
+  const Register left = T1;
+  const Register right = T0;
+  __ lw(left, Address(SP, 1 *target::kWordSize));
+  __ lw(right, Address(SP, 0 *target::kWordSize));
+  GenerateIdenticalWithNumberCheckStub(assembler, left, right, temp1, temp2);
+  __ Ret();
+}
+
 // Called from megamorphic calls.
 //  A0: receiver
 //  S5: MegamorphicCache (preserved)
