@@ -619,6 +619,53 @@ void StubCodeCompiler::GenerateFixCallersTargetStub() {
 __ jr(T9);
 }
 
+// Called from object allocate instruction when the allocation stub has been
+// disabled.
+void StubCodeCompiler::GenerateFixAllocationStubTargetStub() {
+  // Load code pointer to this stub from the thread:
+  // The one that is passed in, is not correct - it points to the code object
+  // that needs to be replaced.
+  __ lw(CODE_REG, Address(THR, Thread::fix_allocation_stub_code_offset()));
+  __ EnterStubFrame();
+  // Setup space on stack for return value.
+  __ addiu(SP, SP, Immediate(-1 *target::kWordSize));
+  __ sw(ZR, Address(SP, 0 *target::kWordSize));
+  __ CallRuntime(kFixAllocationStubTargetRuntimeEntry, 0);
+  // Get Code object result.
+  __ lw(CODE_REG, Address(SP, 0 *target::kWordSize));
+  __ addiu(SP, SP, Immediate(1 *target::kWordSize));
+  // Remove the stub frame.
+  __ LeaveStubFrame();
+  // Jump to the dart function.
+  __ LoadFieldFromOffset(T9, CODE_REG, target::Code::entry_point_offset());
+  __ jr(T9);
+}
+
+// Called from object allocate instruction when the allocation stub for a
+// generic class has been disabled.
+void StubCodeCompiler::GenerateFixParameterizedAllocationStubTargetStub() {
+  // Load code pointer to this stub from the thread:
+  // The one that is passed in, is not correct - it points to the code object
+  // that needs to be replaced.
+  __ lw(CODE_REG,
+        Address(THR, target::Thread::fix_allocation_stub_code_offset()));
+  __ EnterStubFrame();
+  // Preserve type arguments register.
+  __ PushRegister(AllocateObjectABI::kTypeArgumentsReg);
+  // Setup space on stack for return value.
+  __ PushRegister(ZR);
+  __ CallRuntime(kFixAllocationStubTargetRuntimeEntry, 0);
+  // Get Code object result.
+  __ PopRegister(CODE_REG);
+  // Restore type arguments register.
+  __ PopRegister(AllocateObjectABI::kTypeArgumentsReg);
+  // Remove the stub frame.
+  __ LeaveStubFrame();
+  // Jump to the dart function.
+  __ LoadFieldFromOffset(T0, CODE_REG, target::Code::entry_point_offset());
+  __ jr(T0);
+}
+
 // Used by eager and lazy deoptimization. Preserve result in V0 if necessary.
 // This stub translates optimized frame into unoptimized frame. The optimized
 // frame can contain values in registers and on stack, the unoptimized
