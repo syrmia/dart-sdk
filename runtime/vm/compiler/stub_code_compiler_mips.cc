@@ -1396,6 +1396,50 @@ void StubCodeCompiler::GenerateAllocationStubForClass(
   }
 }
 
+// Called for invoking "dynamic noSuchMethod(Invocation invocation)" function
+// from the entry code of a dart function after an error in passed argument
+// name or number is detected.
+// Input parameters:
+//  RA : return address.
+//  SP : address of last argument.
+//  S4: arguments descriptor array.
+void StubCodeCompiler::GenerateCallClosureNoSuchMethodStub() {
+  __ EnterStubFrame();
+
+  // Load the receiver.
+  __ lw(A1, FieldAddress(S4, target::ArgumentsDescriptor::count_offset()));
+  __ sll(TMP, A1, 1);  // A1 is a Smi.
+  __ addu(TMP, FP, TMP);
+  __ lw(T6, Address(TMP, target::frame_layout.param_end_from_fp * target::kWordSize));
+
+    // Load the function.
+  __ LoadFieldFromOffset(TMP, T6, target::Closure::function_offset());
+
+  // Push space for the return value.
+  // Push the receiver.
+  // Push arguments descriptor array.
+  const intptr_t kNumArgs = 4;
+  __ addiu(SP, SP, Immediate(-kNumArgs * target::kWordSize));
+  __ sw(ZR, Address(SP, 3 * target::kWordSize));
+  __ sw(T6, Address(SP, 2 * target::kWordSize));
+  __ sw(TMP, Address(SP, 1 * target::kWordSize));
+  __ sw(S4, Address(SP, 0 * target::kWordSize));
+
+  // Adjust arguments count.
+  __ LoadSmiFieldFromOffset(TMP, S4, ArgumentsDescriptor::type_args_len_offset());
+  Label args_count_ok;
+  __ BranchEqual(TMP, ZR, &args_count_ok);
+  __ AddImmediate(A1, A1, Smi::RawValue(1));  // Include the type arguments.
+  __ Bind(&args_count_ok);
+
+  // A1: Smi-tagged arguments array length.
+  PushArrayOfArguments(assembler);
+
+  __ CallRuntime(kNoSuchMethodFromPrologueRuntimeEntry, kNumArgs);
+  // noSuchMethod on closures always throws an error, so it will never return.
+  __ break_(0);
+}
+
 // Helper to generate space allocation of context stub.
 // This does not initialise the fields of the context.
 // Input:
