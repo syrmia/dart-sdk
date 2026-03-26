@@ -2417,6 +2417,33 @@ void StubCodeCompiler::GenerateTwoArgsCheckInlineCacheStub() {
 
 //  A0: receiver
 //  RA: Return address.
+//  S5: Inline cache data object (ICData).
+void StubCodeCompiler::GenerateSmiAddInlineCacheStub() {
+  GenerateNArgsCheckInlineCacheStub(
+      2, kInlineCacheMissHandlerTwoArgsRuntimeEntry, Token::kADD,
+      kUnoptimized, kInstanceCall, kIgnoreExactness);
+}
+
+//  A0: receiver
+//  RA: Return address.
+//  S5: Inline cache data object (ICData).
+void StubCodeCompiler::GenerateSmiLessInlineCacheStub() {
+  GenerateNArgsCheckInlineCacheStub(
+      2, kInlineCacheMissHandlerTwoArgsRuntimeEntry, Token::kLT,
+      kUnoptimized, kInstanceCall, kIgnoreExactness);
+}
+
+//  A0: receiver
+//  RA: Return address.
+//  S5: Inline cache data object (ICData).
+void StubCodeCompiler::GenerateSmiEqualInlineCacheStub() {
+  GenerateNArgsCheckInlineCacheStub(
+      2, kInlineCacheMissHandlerTwoArgsRuntimeEntry, Token::kEQ,
+      kUnoptimized, kInstanceCall, kIgnoreExactness);
+}
+
+//  A0: receiver
+//  RA: Return address.
 //  S2: Function
 //  S5: Inline cache data object (ICData).
 void StubCodeCompiler::GenerateOneArgOptimizedCheckInlineCacheStub() {
