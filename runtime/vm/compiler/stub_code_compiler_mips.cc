@@ -2446,6 +2446,95 @@ void StubCodeCompiler::GenerateTwoArgsOptimizedCheckInlineCacheStub() {
       kOptimized, kInstanceCall, kIgnoreExactness);
 }
 
+// Intermediary stub between a static call and its target. ICData contains
+// the target function and the call count.
+// S5: ICData
+void StubCodeCompiler::GenerateZeroArgsUnoptimizedStaticCallStub() {
+  GenerateRecordEntryPoint(assembler);
+  GenerateUsageCounterIncrement(T0);
+  __ Comment("UnoptimizedStaticCallStub");
+#if defined(DEBUG)
+  {
+    Label ok;
+    // Check that the IC data array has NumArgsTested() == 0.
+    // 'NumArgsTested' is stored in the least significant bits of 'state_bits'.
+    __ lw(T0, FieldAddress(S5, ICData::state_bits_offset()));
+    ASSERT(ICData::NumArgsTestedShift() == 0);  // No shift needed.
+    __ AndImmediate(T0, T0, ICData::NumArgsTestedMask());
+    __ beq(T0, ZR, &ok);
+    __ Stop("Incorrect IC data for unoptimized static call");
+    __ Bind(&ok);
+  }
+#endif  // DEBUG
+
+  // Check single stepping.
+#if !defined(PRODUCT)
+  Label stepping, done_stepping;
+  __ LoadIsolate(T0);
+  __ lbu(T0, Address(T0, target::Thread::single_step_offset()));
+  __ BranchNotEqual(T0, Immediate(0), &stepping);
+  __ Bind(&done_stepping);
+#endif
+
+  // S5: IC data object (preserved).
+  __ lw(A0, FieldAddress(ICREG, ICData::entries_offset()));
+  // A0: ic_data_array with entries: target functions and count.
+  __ AddImmediate(A0, Array::data_offset() - kHeapObjectTag);
+  // A0: points directly to the first ic data array element.
+  const intptr_t target_offset = target::ICData::TargetIndexFor(0) *target::kWordSize;
+  const intptr_t count_offset = target::ICData::CountIndexFor(0) *target::kWordSize;
+
+  if (FLAG_optimization_counter_threshold >= 0) {
+    // Increment count for this call, ignore overflow.
+    __ lw(T4, Address(A0, count_offset));
+    __ AddImmediate(T4, T4, Smi::RawValue(1));
+    __ sw(T4, Address(A0, count_offset));
+  }
+
+  // Load arguments descriptor into S4.
+  __ lw(S4, FieldAddress(S5, target::CallSiteData::arguments_descriptor_offset()));
+
+  // Get function and call it, if possible.
+  __ lw(T0, Address(A0, target_offset));
+  __ lw(CODE_REG, FieldAddress(T0, Function::code_offset()));
+  __ addu(A0, T0, T6);
+  __ lw(T4, Address(A0, 0));
+  __ jr(T4);
+
+#if !defined(PRODUCT)
+    __ Bind(&stepping);
+    __ EnterStubFrame();
+    __ addiu(SP, SP, Immediate(-3 *target::kWordSize));
+    __ sw(ICREG, Address(SP, 2 *target::kWordSize));  // Preserve IC data.
+    __ SmiTag(T6);
+    __ sw(T6, Address(SP, 1 *target::kWordSize));
+    __ sw(RA, Address(SP, 0 *target::kWordSize));  // Return address.
+    __ CallRuntime(kSingleStepHandlerRuntimeEntry, 0);
+    __ lw(RA, Address(SP, 0 *target::kWordSize));
+    __ lw(T6, Address(SP, 1 *target::kWordSize));
+    __ SmiUntag(T6);
+    __ lw(ICREG, Address(SP, 2 *target::kWordSize));
+    __ addiu(SP, SP, Immediate(3 *target::kWordSize));
+    __ RestoreCodePointer();
+    __ LeaveStubFrame();
+    __ b(&done_stepping);
+#endif
+}
+
+void StubCodeCompiler::GenerateOneArgUnoptimizedStaticCallStub() {
+  GenerateUsageCounterIncrement(T0);
+  GenerateNArgsCheckInlineCacheStub(
+      1, kStaticCallMissHandlerOneArgRuntimeEntry, Token::kILLEGAL,
+      kUnoptimized, kStaticCall, kIgnoreExactness);
+}
+
+void StubCodeCompiler::GenerateTwoArgsUnoptimizedStaticCallStub() {
+  GenerateUsageCounterIncrement(T0);
+  GenerateNArgsCheckInlineCacheStub(
+      2, kStaticCallMissHandlerTwoArgsRuntimeEntry, Token::kILLEGAL,
+      kUnoptimized, kStaticCall, kIgnoreExactness);
+}
+
 // Stub for compiling a function and jumping to the compiled code.
 // S5/ICREG: IC-Data (for methods).
 // S4/ARGS_DESC_REG: Arguments descriptor.
