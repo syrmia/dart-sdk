@@ -158,6 +158,15 @@ void StubCodeCompiler::GenerateCallToRuntimeStub() {
   __ Ret();
 }
 
+void StubCodeCompiler::GenerateDispatchTableNullErrorStub() {
+  __ EnterStubFrame();
+  __ SmiTag(DispatchTableNullErrorABI::kClassIdReg);
+  __ PushRegister(DispatchTableNullErrorABI::kClassIdReg);
+  __ CallRuntime(kDispatchTableNullErrorRuntimeEntry, /*argument_count=*/1);
+  // The NullError runtime entry does not return.
+  __ Breakpoint();
+}
+
 // Call a native function within a safepoint.
 //
 // On entry:
