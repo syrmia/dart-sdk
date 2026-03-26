@@ -666,6 +666,44 @@ void StubCodeCompiler::GenerateFixParameterizedAllocationStubTargetStub() {
   __ jr(T0);
 }
 
+// Input parameters:
+//   A1: Smi-tagged argument count, may be zero.
+//   FP[target::frame_layout.param_end_from_fp + 1]: Last argument.
+static void PushArrayOfArguments(Assembler* assembler) {
+  COMPILE_ASSERT(AllocateArrayABI::kLengthReg == A1);
+  COMPILE_ASSERT(AllocateArrayABI::kTypeArgumentsReg == A0);
+  __ Comment("PushArrayOfArguments");
+  // Allocate array to store arguments of caller.
+  __ LoadObject(A0, Object::null_object());
+  // A0: Null element type for raw Array.
+  // A1: Smi-tagged argument count, may be zero.
+  __ BranchLink(StubCodeAllocateArray());
+  __ Comment("PushArrayOfArguments return");
+  // V0: newly allocated array.
+  // A1: Smi-tagged argument count, may be zero (was preserved by the stub).
+  __ Push(V0);  // Array is in V0 and on top of stack.
+  __ SmiUntag(A1);
+  __ sll(A0, A1, target::kWordSizeLog2);
+  __ addu(A0, FP, A0);
+  __ AddImmediate(A0, target::frame_layout.param_end_from_fp * target::kWordSize);
+
+  __ AddImmediate(A2, V0, Array::data_offset() - kHeapObjectTag);
+
+  // A0: address of first argument on stack.
+  // A2: address of first argument in array.
+
+  Label loop, loop_exit;
+  __ Bind(&loop);
+  __ beq(A1, ZR, &loop_exit);
+  __ lw(T6, Address(A0, 0));
+  __ AddImmediate(A0, A0, -target::kWordSize);
+  __ StoreIntoObject(V0, Address(A2, 0), T6);
+  __ AddImmediate(A2, A2, target::kWordSize);
+  __ AddImmediate(A1, A1, -1);
+  __ b(&loop);
+  __ Bind(&loop_exit);
+}
+
 // Used by eager and lazy deoptimization. Preserve result in V0 if necessary.
 // This stub translates optimized frame into unoptimized frame. The optimized
 // frame can contain values in registers and on stack, the unoptimized
@@ -864,6 +902,62 @@ void StubCodeCompiler::GenerateDeoptimizeStub() {
   __ lw(CODE_REG, Address(THR, target::Thread::deoptimize_stub_offset()));
   GenerateDeoptimizationSequence(assembler, kEagerDeopt);
   __ Ret();
+}
+
+// S5/ICREG: ICData/MegamorphicCache
+static void GenerateNoSuchMethodDispatcherBody(Assembler* assembler) {
+  __ EnterStubFrame();
+  __ lw(ARGS_DESC_REG,
+         FieldAddress(ICREG, target::CallSiteData::arguments_descriptor_offset()));
+  // Load the receiver.
+  __ lw(A1, FieldAddress(ARGS_DESC_REG, ArgumentsDescriptor::size_offset()));
+  __ AddShifted(TMP, FP, A1, target::kWordSizeLog2 - 1);  // A1 is Smi.
+  __ lw(A0, Address(TMP, target::frame_layout.param_end_from_fp * target::kWordSize));
+
+  // Push space for the return value.
+  // Push the receiver.
+  // Push ICData/MegamorphicCache object.
+  // Push arguments descriptor array.
+  // Push original arguments array.
+  __ addiu(SP, SP, Immediate(-4 *target::kWordSize));
+  __ sw(ZR, Address(SP, 3 *target::kWordSize));
+  __ sw(A0, Address(SP, 2 *target::kWordSize));
+  __ sw(ICREG, Address(SP, 1 *target::kWordSize));
+  __ sw(ARGS_DESC_REG, Address(SP, 0 *target::kWordSize));
+
+  // Adjust arguments count.
+  __ lw(TMP, FieldAddress(ARGS_DESC_REG, ArgumentsDescriptor::type_args_len_offset()));
+  Label args_count_ok;
+  __ BranchEqual(TMP, Immediate(0), &args_count_ok);
+  __ AddImmediate(A1, A1, Smi::RawValue(1));  // Include the type arguments.
+  __ Bind(&args_count_ok);
+
+  // A1: Smi-tagged arguments array length.
+  PushArrayOfArguments(assembler);
+  const intptr_t kNumArgs = 4;
+  __ CallRuntime(kNoSuchMethodFromCallStubRuntimeEntry, kNumArgs);
+  __ Drop(4);
+  __ PopRegister(V0);  // Return value.
+  __ LeaveStubFrame();
+  __ Ret();
+}
+
+
+static void GenerateDispatcherCode(Assembler* assembler,
+                                   Label* call_target_function) {
+  __ Comment("NoSuchMethodDispatch");
+  // When lazily generated invocation dispatchers are disabled, the
+  // miss-handler may return null.
+  __ BranchNotEqual(T0, NullObject(), call_target_function);
+
+  GenerateNoSuchMethodDispatcherBody(assembler);
+}
+
+// Input:
+//   S4/ARGS_DESC_REG - arguments descriptor
+//   S5/ICREG - icdata/megamorphic_cache
+void StubCodeCompiler::GenerateNoSuchMethodDispatcherStub() {
+  GenerateNoSuchMethodDispatcherBody(assembler);
 }
 
 // Called for inline allocation of arrays.
