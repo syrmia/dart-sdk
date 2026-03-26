@@ -2157,6 +2157,86 @@ void StubCodeCompiler::GenerateOptimizeFunctionStub() {
   __ break_(0);
 }
 
+// Called from megamorphic calls.
+//  A0: receiver
+//  S5: MegamorphicCache (preserved)
+// Passed to target:
+//  CODE_REG: target Code object
+//  S4: arguments descriptor
+void StubCodeCompiler::GenerateMegamorphicCallStub() {
+  // Jump if receiver is a smi.
+  Label smi_case;
+  __ BranchIfSmi(A0, &smi_case);
+
+  // Loads the cid of the object.
+  __ LoadClassId(T5, A0);
+
+  Label cid_loaded;
+  __ Bind(&cid_loaded);
+  __ lw(T2,
+        FieldAddress(ICREG, target::MegamorphicCache::buckets_offset()));
+  __ lw(T1, FieldAddress(ICREG, target::MegamorphicCache::mask_offset()));
+  // T2: cache buckets array.
+  // T1: mask as a smi.
+
+  // Make the cid into a smi.
+  __ SmiTag(T5);
+  // T5: class ID of the receiver (smi).
+
+  // Compute the table index.
+  ASSERT(target::MegamorphicCache::kSpreadFactor == 7);
+  // Use lsl and subu to multiply with 7 == 8 - 1.
+  __ sll(T3, T5, 3);
+  __ subu(T3, T3, T5);
+  // T3: probe.
+  Label loop;
+  __ Bind(&loop);
+  __ and_(T3, T3, T1);
+
+  const intptr_t base = target::Array::data_offset();
+  // T3 is smi tagged, but table entries are 16 bytes, so LSL 3.
+  __ AddShifted(TMP, T2, T3, kCompressedWordSizeLog2);
+  __ LoadSmiFieldFromOffset(T4, TMP, base);
+  Label probe_failed;
+  __ BranchNotEqual(T4, T5, &probe_failed);
+
+  Label load_target;
+  __ Bind(&load_target);
+  // Call the target found in the cache.  For a class id match, this is a
+  // proper target for the given name and arguments descriptor.  If the
+  // illegal class id was found, the target is a cache miss handler that can
+  // be invoked as a normal Dart function.
+  __ LoadCompressed(FUNCTION_REG,
+                    FieldAddress(TMP, base + target::kCompressedWordSize));
+  __ lw(A1, FieldAddress(FUNCTION_REG, target::Function::entry_point_offset()));
+  __ lw(ARGS_DESC_REG,
+        FieldAddress(ICREG,
+                     target::CallSiteData::arguments_descriptor_offset()));
+  if (!FLAG_precompiled_mode) {
+    __ LoadCompressed(
+        CODE_REG, FieldAddress(FUNCTION_REG, target::Function::code_offset()));
+  }
+  __ jr(A1);  // T0: Function, argument to lazy compile stub.
+
+  // Probe failed, check if it is a miss.
+  __ Bind(&probe_failed);
+  ASSERT(kIllegalCid == 0);
+  Label miss;
+  __ BranchEqual(T4, ZR, &miss); // branch if miss.
+
+  // Try next extry in the table.
+  __ AddImmediate(T3, target::ToRawSmi(1));
+  __ b(&loop);
+
+  // Load cid for the Smi case.
+  __ Bind(&smi_case);
+  __ LoadImmediate(T5, kSmiCid);
+  __ b(&cid_loaded);
+
+  __ Bind(&miss);
+  GenerateSwitchableCallMissStub();
+}
+
 void StubCodeCompiler::GenerateICCallThroughCodeStub() {
   Label loop, found, miss;
   __ lw(T6, FieldAddress(ICREG, target::ICData::entries_offset()));
