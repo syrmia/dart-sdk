@@ -7,8 +7,21 @@
 
 #include "vm/compiler/backend/flow_graph_compiler.h"
 
+#include "vm/compiler/api/type_check_mode.h"
 #include "vm/compiler/backend/il_printer.h"
+#include "vm/compiler/backend/locations.h"
+#include "vm/compiler/backend/parallel_move_resolver.h"
+#include "vm/compiler/jit/compiler.h"
+#include "vm/cpu.h"
+#include "vm/dart_entry.h"
 #include "vm/deopt_instructions.h"
+#include "vm/dispatch_table.h"
+#include "vm/instructions.h"
+#include "vm/object_store.h"
+#include "vm/parser.h"
+#include "vm/stack_frame.h"
+#include "vm/stub_code.h"
+#include "vm/symbols.h"
 
 namespace dart {
 
@@ -1037,6 +1050,30 @@ void FlowGraphCompiler::EmitNativeLoad(Register dst,
     default:
       UNREACHABLE();
   }
+}
+#undef __
+#define __ compiler_->assembler()->
+
+void ParallelMoveEmitter::SpillScratch(Register reg) {
+  __ Comment("ParallelMoveEmitter::SpillScratch");
+  __ Push(reg);
+}
+
+void ParallelMoveEmitter::RestoreScratch(Register reg) {
+  __ Comment("ParallelMoveEmitter::RestoreScratch");
+  __ Pop(reg);
+}
+
+void ParallelMoveEmitter::SpillFpuScratch(FpuRegister reg) {
+  __ Comment("ParallelMoveEmitter::SpillFpuScratch");
+  __ AddImmediate(SP, -kDoubleSize);
+  __ StoreDToOffset(reg, SP, 0);
+}
+
+void ParallelMoveEmitter::RestoreFpuScratch(FpuRegister reg) {
+  __ Comment("ParallelMoveEmitter::RestoreFpuScratch");
+  __ LoadDFromOffset(reg, SP, 0);
+  __ AddImmediate(SP, kDoubleSize);
 }
 
 #undef __
