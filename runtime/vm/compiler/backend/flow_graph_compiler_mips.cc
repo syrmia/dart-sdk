@@ -268,6 +268,45 @@ void FlowGraphCompiler::EmitInstanceCallAOT(const ICData& ic_data,
   EmitDropArguments(ic_data.SizeWithTypeArgs());
 }
 
+void FlowGraphCompiler::EmitMegamorphicInstanceCall(
+    const String& name,
+    const Array& arguments_descriptor,
+    intptr_t deopt_id,
+    const InstructionSource& source,
+    LocationSummary* locs) {
+  ASSERT(CanCallDart());
+  ASSERT(!arguments_descriptor.IsNull() && (arguments_descriptor.Length() > 0));
+  ASSERT(!FLAG_precompiled_mode);
+  const ArgumentsDescriptor args_desc(arguments_descriptor);
+  const MegamorphicCache& cache = MegamorphicCache::ZoneHandle(
+      zone(),
+      MegamorphicCacheTable::Lookup(thread(), name, arguments_descriptor));
+
+  __ Comment("MegamorphicCall");
+  // Load receiver into A0,
+  __ LoadFromOffset(A0, SP,
+                    (args_desc.Count() - 1) * compiler::target::kWordSize);
+
+  // Use same code pattern as instance call so it can be parsed by code patcher.
+  __ LoadUniqueObject(S5, cache);
+  __ LoadUniqueObject(CODE_REG, StubCode::MegamorphicCall());
+  __ Call(compiler::FieldAddress(
+      CODE_REG, Code::entry_point_offset(Code::EntryKind::kMonomorphic)));
+
+  RecordSafepoint(locs);
+  AddCurrentDescriptor(UntaggedPcDescriptors::kOther, DeoptId::kNone, source);
+  const intptr_t deopt_id_after = DeoptId::ToDeoptAfter(deopt_id);
+  if (is_optimizing()) {
+    AddDeoptIndexAtCall(deopt_id_after, pending_deoptimization_env_);
+  } else {
+    // Add deoptimization continuation point after the call and before the
+    // arguments are removed.
+    AddCurrentDescriptor(UntaggedPcDescriptors::kDeopt, deopt_id_after, source);
+  }
+  RecordCatchEntryMoves(pending_deoptimization_env_);
+  EmitDropArguments(args_desc.SizeWithTypeArgs());
+}
+
 // This function must be in sync with FlowGraphCompiler::RecordSafepoint and
 // FlowGraphCompiler::SlowPathEnvironmentFor.
 void FlowGraphCompiler::SaveLiveRegisters(LocationSummary* locs) {
