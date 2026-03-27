@@ -542,6 +542,78 @@ void FlowGraphCompiler::EmitOptimizedStaticCall(
   EmitDropArguments(size_with_type_args);
 }
 
+Condition FlowGraphCompiler::EmitEqualityRegConstCompare(
+    Register reg,
+    const Object& obj,
+    bool needs_number_check,
+    const InstructionSource& source,
+    intptr_t deopt_id) {
+  __ Comment("EqualityRegConstCompare");
+  if (needs_number_check) {
+    ASSERT(!obj.IsMint() && !obj.IsDouble());
+    __ addiu(SP, SP, compiler::Immediate(-2 * kWordSize));
+    __ sw(reg, compiler::Address(SP, 1 * kWordSize));
+    __ LoadObject(TMP, obj);
+    __ sw(TMP, compiler::Address(SP, 0 * kWordSize));
+    if (is_optimizing()) {
+      // No breakpoints in optimized code.
+      __ BranchLink(StubCode::OptimizedIdenticalWithNumberCheck());
+      AddCurrentDescriptor(UntaggedPcDescriptors::kOther, deopt_id, source);
+    } else {
+      // Patchable to support breakpoints.
+      __ BranchLinkPatchable(StubCode::UnoptimizedIdenticalWithNumberCheck());
+      AddCurrentDescriptor(UntaggedPcDescriptors::kRuntimeCall, deopt_id,
+                           source);
+    }
+    __ Comment("EqualityRegConstCompare return");
+    // Stub returns result in CMPRES1 (if it is 0, then reg and obj are equal).
+    __ lw(reg, compiler::Address(SP, 1 * kWordSize));      // Restore 'reg'.
+    __ addiu(SP, SP, compiler::Immediate(2 * kWordSize));  // Discard constant.
+    __ CompareRegisters(CMPRES1, ZR);
+  } else {
+    int16_t imm = 0;
+    const Register obj_reg = __ LoadConditionOperand(CMPRES1, obj, &imm);
+    __ CompareRegisters(reg, obj_reg);
+  }
+  return EQ;
+}
+
+Condition FlowGraphCompiler::EmitEqualityRegRegCompare(
+    Register left,
+    Register right,
+    bool needs_number_check,
+    const InstructionSource& source,
+    intptr_t deopt_id) {
+  __ Comment("EqualityRegRegCompare");
+  if (needs_number_check) {
+    __ addiu(SP, SP, compiler::Immediate(-2 * kWordSize));
+    __ sw(left, compiler::Address(SP, 1 * kWordSize));
+    __ sw(right, compiler::Address(SP, 0 * kWordSize));
+    if (is_optimizing()) {
+      __ BranchLink(
+          StubCode::OptimizedIdenticalWithNumberCheck());
+    } else {
+      __ BranchLinkPatchable(
+          StubCode::UnoptimizedIdenticalWithNumberCheck());
+    }
+    if (source.token_pos.IsReal()) {
+      AddCurrentDescriptor(UntaggedPcDescriptors::kRuntimeCall, deopt_id,
+                           source);
+    }
+    __ Comment("EqualityRegRegCompare return");
+    // Stub returns result in CMPRES1 (if it is 0, then left and right are
+    // equal).
+    __ lw(right, compiler::Address(SP, 0 * kWordSize));
+    __ lw(left, compiler::Address(SP, 1 * kWordSize));
+    __ addiu(SP, SP, compiler::Immediate(2 * kWordSize));
+    __ CompareRegisters(CMPRES1, ZR);
+  } else {
+    ASSERT(left < 32 && right < 32);
+    __ CompareRegisters(left, right);
+  }
+  return EQ;
+}
+
 Condition FlowGraphCompiler::EmitBoolTest(Register value,
                                           BranchLabels labels,
                                           bool invert) {
