@@ -542,6 +542,29 @@ void FlowGraphCompiler::EmitOptimizedStaticCall(
   EmitDropArguments(size_with_type_args);
 }
 
+void FlowGraphCompiler::EmitDispatchTableCall(
+    int32_t selector_offset,
+    const Array& arguments_descriptor) {
+  const auto cid_reg = DispatchTableNullErrorABI::kClassIdReg;
+  ASSERT(CanCallDart());
+  const Register table_reg = T0;
+  ASSERT(cid_reg != table_reg);
+  ASSERT(cid_reg != ARGS_DESC_REG);
+  if (!arguments_descriptor.IsNull()) {
+    __ LoadObject(ARGS_DESC_REG, arguments_descriptor);
+  }
+  intptr_t offset = selector_offset - DispatchTable::kOriginElement;
+  __ lw(table_reg, compiler::Address(THR, compiler::target::Thread::dispatch_table_array_offset()));
+
+  // Would like cid_reg to be available on entry to the target function
+  // for checking purposes.
+  ASSERT(cid_reg != TMP);
+  __ AddShifted(T9, table_reg, cid_reg,
+                compiler::target::kWordSizeLog2);
+  __ LoadFromOffset(T9, T9, offset << compiler::target::kWordSizeLog2);
+  __ jalr(T9);
+}
+
 Condition FlowGraphCompiler::EmitEqualityRegConstCompare(
     Register reg,
     const Object& obj,
