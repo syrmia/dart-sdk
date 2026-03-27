@@ -266,6 +266,96 @@ void FlowGraphCompiler::GenerateStaticDartCall(intptr_t deopt_id,
   }
 }
 
+void FlowGraphCompiler::EmitFrameEntry() {
+  const Function& function = parsed_function().function();
+  if (CanOptimizeFunction() && function.IsOptimizable() &&
+      (!is_optimizing() || may_reoptimize())) {
+    __ Comment("Invocation Count Check");
+    const Register function_reg = T0;
+
+    __ lw(function_reg, compiler::FieldAddress(CODE_REG, compiler::target::Code::owner_offset()));
+
+    __ lw(T1, compiler::FieldAddress(function_reg, Function::usage_counter_offset()));
+    // Reoptimization of an optimized function is triggered by counting in
+    // IC stubs, but not at the entry of the function.
+    if (!is_optimizing()) {
+      __ addiu(T1, T1, compiler::Immediate(1));
+      __ sw(T1, compiler::FieldAddress(function_reg, Function::usage_counter_offset()));
+    }
+
+    // Skip Branch if T1 is less than the threshold.
+    compiler::Label dont_branch;
+    __ BranchSignedLess(T1, compiler::Immediate(GetOptimizationThreshold()),
+                        &dont_branch);
+
+    ASSERT(function_reg == T0);
+    __ lw(TMP, compiler::Address(THR, Thread::optimize_entry_offset())); // Load value from memory into TMP
+    __ jr(TMP);                                                          // Jump to address in TMP
+
+    __ Bind(&dont_branch);
+  }
+  if (flow_graph().graph_entry()->NeedsFrame()) {
+    __ Comment("Enter frame");
+    if (flow_graph().IsCompiledForOsr()) {
+      const intptr_t extra_slots = ExtraStackSlotsOnOsrEntry();
+      ASSERT(extra_slots >= 0);
+      __ EnterOsrFrame(extra_slots * compiler::target::kWordSize);
+    } else {
+      ASSERT(StackSize() >= 0);
+      __ EnterDartFrame(StackSize() * compiler::target::kWordSize);
+    }
+  } else if (FLAG_precompiled_mode) {
+    assembler()->set_constant_pool_allowed(true);
+  }
+}
+
+const InstructionSource& PrologueSource() {
+  static InstructionSource prologue_source(TokenPosition::kDartCodePrologue,
+                                           /*inlining_id=*/0);
+  return prologue_source;
+}
+
+void FlowGraphCompiler::EmitPrologue() {
+  BeginCodeSourceRange(PrologueSource());
+
+  EmitFrameEntry();
+  ASSERT(assembler()->constant_pool_allowed());
+
+  // In unoptimized code, initialize (non-argument) stack allocated slots.
+  if (!is_optimizing()) {
+    const int num_locals = parsed_function().num_stack_locals();
+
+    intptr_t args_desc_slot = -1;
+    if (parsed_function().has_arg_desc_var()) {
+      args_desc_slot = compiler::target::frame_layout.FrameSlotForVariable(
+          parsed_function().arg_desc_var());
+    }
+
+    __ Comment("Initialize spill slots");
+    if (num_locals > 1 || (num_locals == 1 && args_desc_slot == -1)) {
+      __ LoadObject(T1, Object::null_object());
+    }
+    for (intptr_t i = 0; i < num_locals; ++i) {
+      const intptr_t slot_index =
+          compiler::target::frame_layout.FrameSlotForVariableIndex(-i);
+      Register value_reg = slot_index == args_desc_slot ? ARGS_DESC_REG : T1;
+      __ StoreToOffset(value_reg, FP, slot_index * compiler::target::kWordSize);
+    }
+  } else if (parsed_function().suspend_state_var() != nullptr &&
+             !flow_graph().IsCompiledForOsr()) {
+    // Initialize synthetic :suspend_state variable early
+    // as it may be accessed by GC and exception handling before
+    // InitSuspendableFunction stub is called.
+    const intptr_t slot_index =
+        compiler::target::frame_layout.FrameSlotForVariable(
+            parsed_function().suspend_state_var());
+    __ LoadObject(T7, Object::null_object());
+    __ StoreToOffset(T7, FP, slot_index * compiler::target::kWordSize);
+  }
+
+  EndCodeSourceRange(PrologueSource());
+}
+
 void FlowGraphCompiler::EmitOptimizedInstanceCall(
     const Code& stub,
     const ICData& ic_data,

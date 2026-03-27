@@ -1095,6 +1095,27 @@ void Assembler::EnterDartFrame(intptr_t frame_size, bool load_pool_pointer) {
   AddImmediate(SP, -frame_size);
 }
 
+// On entry to a function compiled for OSR, the caller's frame pointer, the
+// stack locals, and any copied parameters are already in place.  The frame
+// pointer is already set up.  The PC marker is not correct for the
+// optimized function and there may be extra space for spill slots to
+// allocate. We must also set up the pool pointer for the function.
+void Assembler::EnterOsrFrame(intptr_t extra_size) {
+  ASSERT(!in_delay_slot_);
+  ASSERT(!constant_pool_allowed());
+  Comment("EnterOsrFrame");
+
+  // Restore return address.
+  lw(RA, Address(FP, 1 * target::kWordSize));
+
+  // Load the pool pointer. offset has already been subtracted from temp.
+  RestoreCodePointer();
+  LoadPoolPointer();
+
+  // Reserve space for locals.
+  AddImmediate(SP, -extra_size);
+}
+
 void Assembler::LeaveDartFrame(RestorePP restore_pp) {
   ASSERT(!in_delay_slot_);
   addiu(SP, FP, Immediate(-2 * target::kWordSize));
