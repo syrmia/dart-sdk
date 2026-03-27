@@ -307,6 +307,46 @@ void FlowGraphCompiler::EmitMegamorphicInstanceCall(
   EmitDropArguments(args_desc.SizeWithTypeArgs());
 }
 
+void FlowGraphCompiler::EmitUnoptimizedStaticCall(
+    intptr_t size_with_type_args,
+    intptr_t deopt_id,
+    const InstructionSource& source,
+    LocationSummary* locs,
+    const ICData& ic_data,
+    Code::EntryKind entry_kind) {
+  ASSERT(CanCallDart());
+  const Code& stub =
+      StubCode::UnoptimizedStaticCallEntry(ic_data.NumArgsTested());
+  __ LoadObject(S5, ic_data);
+  GenerateDartCall(deopt_id, source, stub,
+                   UntaggedPcDescriptors::kUnoptStaticCall, locs, entry_kind);
+  EmitDropArguments(size_with_type_args);
+}
+
+void FlowGraphCompiler::EmitOptimizedStaticCall(
+    const Function& function,
+    const Array& arguments_descriptor,
+    intptr_t size_with_type_args,
+    intptr_t deopt_id,
+    const InstructionSource& source,
+    LocationSummary* locs,
+    Code::EntryKind entry_kind) {
+  ASSERT(CanCallDart());
+  ASSERT(!function.IsClosureFunction());
+  if (function.PrologueNeedsArgumentsDescriptor()) {
+    __ LoadObject(ARGS_DESC_REG, arguments_descriptor);
+  } else {
+    if (!FLAG_precompiled_mode) {
+      __ LoadImmediate(ARGS_DESC_REG, 0);  // GC safe smi zero because of stub.
+    }
+  }
+  // Do not use the code from the function, but let the code be patched so that
+  // we can record the outgoing edges to other code.
+  GenerateStaticDartCall(deopt_id, source, UntaggedPcDescriptors::kOther, locs,
+                         function, entry_kind);
+  EmitDropArguments(size_with_type_args);
+}
+
 // This function must be in sync with FlowGraphCompiler::RecordSafepoint and
 // FlowGraphCompiler::SlowPathEnvironmentFor.
 void FlowGraphCompiler::SaveLiveRegisters(LocationSummary* locs) {
