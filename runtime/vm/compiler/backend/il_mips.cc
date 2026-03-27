@@ -438,6 +438,106 @@ void FfiCallInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   }
 }
 
+LocationSummary* UnboxInstr::MakeLocationSummary(Zone* zone, bool opt) const {
+  ASSERT(BoxCid() != kSmiCid);
+  const bool needs_temp = CanDeoptimize();
+  const intptr_t kNumInputs = 1;
+  const intptr_t kNumTemps = needs_temp ? 1 : 0;
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  summary->set_in(0, Location::RequiresRegister());
+  if (needs_temp) {
+    summary->set_temp(0, Location::RequiresRegister());
+  }
+  if (representation() == kUnboxedInt64) {
+    summary->set_out(0, Location::Pair(Location::RequiresRegister(),
+                                       Location::RequiresRegister()));
+  } else if (representation() == kUnboxedInt32) {
+    summary->set_out(0, Location::RequiresRegister());
+  } else {
+    summary->set_out(0, Location::RequiresFpuRegister());
+  }
+  return summary;
+}
+
+void UnboxInstr::EmitLoadFromBox(FlowGraphCompiler* compiler) {
+  const Register box = locs()->in(0).reg();
+
+  switch (representation()) {
+    case kUnboxedInt64: {
+      PairLocation* result = locs()->out(0).AsPairLocation();
+      ASSERT(result->At(0).reg() != box);
+      __ LoadFromOffset(result->At(0).reg(), box,
+                        ValueOffset() - kHeapObjectTag);
+      __ LoadFromOffset(result->At(1).reg(), box,
+                        ValueOffset() - kHeapObjectTag + compiler::target::kWordSize);
+      break;
+    }
+    case kUnboxedDouble: {
+      const DRegister result = locs()->out(0).fpu_reg();
+      __ LoadDFromOffset(result, box, Double::value_offset() - kHeapObjectTag);
+      break;
+    }
+    case kUnboxedFloat: {
+      const DRegister result = locs()->out(0).fpu_reg();
+      __ LoadDFromOffset(result, box, ValueOffset() - kHeapObjectTag);
+      __ cvtsd(EvenFRegisterOf(result), result);
+      break;
+    }
+    case kUnboxedFloat32x4:
+    case kUnboxedFloat64x2:
+    case kUnboxedInt32x4: {
+      UNIMPLEMENTED();
+      break;
+    }
+    default:
+      UNREACHABLE();
+      break;
+  }
+}
+
+void UnboxInstr::EmitSmiConversion(FlowGraphCompiler* compiler) {
+  const Register box = locs()->in(0).reg();
+
+  switch (representation()) {
+    case kUnboxedInt64: {
+      PairLocation* result = locs()->out(0).AsPairLocation();
+      __ SmiUntag(result->At(0).reg(), box);
+      __ sra(result->At(1).reg(), result->At(0).reg(), 31);
+      break;
+    }
+    case kUnboxedDouble: {
+      const DRegister result = locs()->out(0).fpu_reg();
+      __ SmiUntag(TMP, box);
+      __ mtc1(TMP, STMP1);
+      __ cvtdw(result, STMP1);
+      break;
+    }
+    default:
+      UNREACHABLE();
+      break;
+  }
+}
+
+void UnboxInstr::EmitLoadInt32FromBoxOrSmi(FlowGraphCompiler* compiler) {
+  const Register value = locs()->in(0).reg();
+  const Register result = locs()->out(0).reg();
+  __ LoadInt32FromBoxOrSmi(result, value);
+}
+
+void UnboxInstr::EmitLoadInt64FromBoxOrSmi(FlowGraphCompiler* compiler) {
+  const Register box = locs()->in(0).reg();
+  PairLocation* result = locs()->out(0).AsPairLocation();
+  ASSERT(result->At(0).reg() != box);
+  ASSERT(result->At(1).reg() != box);
+  compiler::Label done;
+  __ sra(result->At(1).reg(), box, 31);
+  __ SmiUntag(result->At(0).reg(), box);
+  __ BranchIfSmi(box, &done);
+  EmitLoadFromBox(compiler);
+  __ Bind(&done);
+}
+
 }  // namespace dart
 
 #endif  // defined TARGET_ARCH_MIPS
