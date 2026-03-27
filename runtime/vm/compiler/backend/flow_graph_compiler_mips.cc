@@ -183,6 +183,30 @@ void FlowGraphCompiler::EmitTailCallToStub(const Code& stub) {
   }
 }
 
+void FlowGraphCompiler::EmitOptimizedInstanceCall(
+    const Code& stub,
+    const ICData& ic_data,
+    intptr_t deopt_id,
+    const InstructionSource& source,
+    LocationSummary* locs,
+    Code::EntryKind entry_kind) {
+  ASSERT(CanCallDart());
+  ASSERT(Array::Handle(zone(), ic_data.arguments_descriptor()).Length() > 0);
+  // Each ICData propagated from unoptimized to optimized code contains the
+  // function that corresponds to the Dart function of that IC call. Due
+  // to inlining in optimized code, that function may not correspond to the
+  // top-level function (parsed_function().function()) which could be
+  // reoptimized and which counter needs to be incremented.
+  // Pass the function explicitly, it is used in IC stub.
+  __ Comment("OptimizedInstanceCall");
+  __ LoadObject(S2, parsed_function().function());
+  __ LoadFromOffset(A0, SP, (ic_data.SizeWithoutTypeArgs() - 1) * kWordSize);
+  __ LoadUniqueObject(S5, ic_data);
+  GenerateDartCall(deopt_id, source, stub, UntaggedPcDescriptors::kIcCall,
+                   locs, entry_kind);
+  EmitDropArguments(ic_data.SizeWithTypeArgs());
+}
+
 void FlowGraphCompiler::EmitInstanceCallJIT(const Code& stub,
                                             const ICData& ic_data,
                                             intptr_t deopt_id,
