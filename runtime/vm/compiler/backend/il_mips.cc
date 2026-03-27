@@ -45,6 +45,97 @@ void MemoryCopyInstr::PrepareLengthRegForLoop(FlowGraphCompiler* compiler,
   __ BranchEqual(length_reg, ZR, done);
 }
 
+// Copies [count] bytes from the memory region pointed to by [dest_reg] to the
+// memory region pointed to by [src_reg]. If [reversed] is true, then [dest_reg]
+// and [src_reg] are assumed to point at the end of the respective region.
+static void CopyBytes(FlowGraphCompiler* compiler,
+                      Register dest_reg,
+                      Register src_reg,
+                      intptr_t count,
+                      bool reversed,
+                      Register tmp) {
+  ASSERT(Utils::IsPowerOfTwo(count));
+
+  ASSERT(dest_reg != TMP);
+  ASSERT(src_reg != TMP);
+
+  if (count == 4 * compiler::target::kWordSize) {
+    auto const sz = OperandSizeFor(compiler::target::kWordSize);
+    const intptr_t offset = (reversed ? -1 : 1) * (compiler::target::kWordSize);
+    const intptr_t initial = reversed ? offset : 0;
+    __ LoadFromOffset(TMP, src_reg, initial, sz);
+    __ LoadFromOffset(tmp, src_reg, initial + offset, sz);
+    __ StoreToOffset(TMP, dest_reg, initial, sz);
+    __ StoreToOffset(tmp, dest_reg, initial + offset, sz);
+    __ LoadFromOffset(TMP, src_reg, initial + 2 * offset, sz);
+    __ LoadFromOffset(tmp, src_reg, initial + 3 * offset, sz);
+    __ StoreToOffset(TMP, dest_reg, initial + 2 * offset, sz);
+    __ StoreToOffset(tmp, dest_reg, initial + 3 * offset, sz);
+    __ AddImmediate(src_reg, src_reg, 4 * offset);
+    __ AddImmediate(dest_reg, dest_reg, 4 * offset);
+    return;
+  }
+
+  if (count == 2 * (compiler::target::kWordSize)) {
+    auto const sz = OperandSizeFor(compiler::target::kWordSize);
+    const intptr_t offset = (reversed ? -1 : 1) * (compiler::target::kWordSize);
+    const intptr_t initial = reversed ? offset : 0;
+    __ LoadFromOffset(TMP, src_reg, initial, sz);
+    __ LoadFromOffset(tmp, src_reg, initial + offset, sz);
+    __ StoreToOffset(TMP, dest_reg, initial, sz);
+    __ StoreToOffset(tmp, dest_reg, initial + offset, sz);
+    __ AddImmediate(src_reg, src_reg, 2 * offset);
+    __ AddImmediate(dest_reg, dest_reg, 2 * offset);
+    return;
+  }
+
+  auto const sz = OperandSizeFor(count);
+  const intptr_t offset = (reversed ? -1 : 1) * count;
+  const intptr_t initial = reversed ? offset : 0;
+  __ LoadFromOffset(TMP, src_reg, initial, sz);
+  __ StoreToOffset(TMP, dest_reg, initial, sz);
+  __ AddImmediate(src_reg, src_reg, offset);
+  __ AddImmediate(dest_reg, dest_reg, offset);
+}
+
+static void CopyUpToWordMultiple(FlowGraphCompiler* compiler,
+                                 Register dest_reg,
+                                 Register src_reg,
+                                 Register length_reg,
+                                 intptr_t element_size,
+                                 bool unboxed_inputs,
+                                 bool reversed,
+                                 compiler::Label* done,
+                                 Register temp) {
+  ASSERT(Utils::IsPowerOfTwo(element_size));
+  if (element_size >= compiler::target::kWordSize) return;
+
+  const intptr_t element_shift = Utils::ShiftForPowerOfTwo(element_size);
+  const intptr_t base_shift =
+      (unboxed_inputs ? 0 : kSmiTagShift) - element_shift;
+  intptr_t tested_bits = 0;
+
+  __ Comment("Copying until region is a multiple of word size");
+
+  for (intptr_t bit = compiler::target::kWordSizeLog2 - 1; bit >= element_shift;
+       bit--) {
+    const intptr_t bytes = 1 << bit;
+    const intptr_t tested_bit = bit + base_shift;
+    tested_bits |= (1 << tested_bit);
+    compiler::Label skip_copy;
+    __ AndImmediate(TMP, length_reg, 1 << tested_bit);
+    __ BranchEqual(TMP, ZR, &skip_copy);
+    for (intptr_t j = 0; j < bytes; j++) {
+      CopyBytes(compiler, dest_reg, src_reg, 1, reversed, temp);
+    }
+    __ Bind(&skip_copy);
+  }
+
+  ASSERT(tested_bits != 0);
+  __ AndImmediate(length_reg, length_reg, ~tested_bits);
+  __ BranchEqual(length_reg, ZR, done);
+}
+
 void MemoryCopyInstr::EmitLoopCopy(FlowGraphCompiler* compiler,
                                    Register dest_reg,
                                    Register src_reg,
