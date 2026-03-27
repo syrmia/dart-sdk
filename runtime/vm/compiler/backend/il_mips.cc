@@ -586,6 +586,106 @@ void BoxInteger32Instr::EmitNativeCode(FlowGraphCompiler* compiler) {
   }
 }
 
+LocationSummary* BoxInt64Instr::MakeLocationSummary(Zone* zone,
+                                                    bool opt) const {
+  const intptr_t kNumInputs = 1;
+  const intptr_t kNumTemps = ValueFitsSmi() ? 0 : 1;
+  // Shared slow path is used in BoxInt64Instr::EmitNativeCode in
+  // precompiled mode and only after VM isolate stubs where
+  // replaced with isolate-specific stubs.
+  auto object_store = IsolateGroup::Current()->object_store();
+  const bool stubs_in_vm_isolate =
+      object_store->allocate_mint_with_fpu_regs_stub()
+          ->untag()
+          ->InVMIsolateHeap() ||
+      object_store->allocate_mint_without_fpu_regs_stub()
+          ->untag()
+          ->InVMIsolateHeap();
+  const bool shared_slow_path_call =
+      SlowPathSharingSupported(opt) && !stubs_in_vm_isolate;
+  LocationSummary* summary = new (zone) LocationSummary(
+      zone, kNumInputs, kNumTemps,
+      ValueFitsSmi()
+          ? LocationSummary::kNoCall
+          : ((shared_slow_path_call ? LocationSummary::kCallOnSharedSlowPath
+                                    : LocationSummary::kCallOnSlowPath)));
+  summary->set_in(0, Location::Pair(Location::RequiresRegister(),
+                                    Location::RequiresRegister()));
+  if (ValueFitsSmi()) {
+    summary->set_out(0, Location::RequiresRegister());
+  } else if (shared_slow_path_call) {
+    summary->set_out(0,
+                     Location::RegisterLocation(AllocateMintABI::kResultReg));
+    summary->set_temp(0, Location::RegisterLocation(AllocateMintABI::kTempReg));
+  } else {
+    summary->set_out(0, Location::RequiresRegister());
+    summary->set_temp(0, Location::RequiresRegister());
+  }
+  return summary;
+}
+
+void BoxInt64Instr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  if (ValueFitsSmi()) {
+    PairLocation* value_pair = locs()->in(0).AsPairLocation();
+    Register value_lo = value_pair->At(0).reg();
+    Register out_reg = locs()->out(0).reg();
+    __ SmiTag(out_reg, value_lo);
+    return;
+  }
+
+  PairLocation* value_pair = locs()->in(0).AsPairLocation();
+  Register value_lo = value_pair->At(0).reg();
+  Register value_hi = value_pair->At(1).reg();
+  Register tmp = locs()->temp(0).reg();
+  Register out_reg = locs()->out(0).reg();
+
+  compiler::Label not_smi, done;
+  __ SmiTag(out_reg, value_lo);
+  __ SmiUntag(tmp, out_reg);
+  __ bne(tmp, value_lo, &not_smi);
+  __ delay_slot()->sra(tmp, out_reg, 31);
+  __ beq(tmp, value_hi, &done);
+
+  __ Bind(&not_smi);
+
+  if (compiler->intrinsic_mode()) {
+    __ TryAllocate(compiler->mint_class(),
+                   compiler->intrinsic_slow_path_label(),
+                   compiler::Assembler::kNearJump, out_reg, tmp);
+  } else if (locs()->call_on_shared_slow_path()) {
+    const bool has_frame = compiler->flow_graph().graph_entry()->NeedsFrame();
+    if (!has_frame) {
+      ASSERT(__ constant_pool_allowed());
+      __ set_constant_pool_allowed(false);
+      __ EnterDartFrame(0);
+    }
+    auto object_store = compiler->isolate_group()->object_store();
+    const bool live_fpu_regs = locs()->live_registers()->FpuRegisterCount() > 0;
+    const auto& stub = Code::ZoneHandle(
+        compiler->zone(),
+        live_fpu_regs ? object_store->allocate_mint_with_fpu_regs_stub()
+                      : object_store->allocate_mint_without_fpu_regs_stub());
+
+    ASSERT(!locs()->live_registers()->ContainsRegister(
+        AllocateMintABI::kResultReg));
+    auto extended_env = compiler->SlowPathEnvironmentFor(this, 0);
+    compiler->GenerateStubCall(source(), stub, UntaggedPcDescriptors::kOther,
+                               locs(), DeoptId::kNone, extended_env);
+    if (!has_frame) {
+      __ LeaveDartFrame();
+      __ set_constant_pool_allowed(true);
+    }
+  } else {
+    BoxAllocationSlowPath::Allocate(compiler, this, compiler->mint_class(),
+                                    out_reg, tmp);
+  }
+
+  __ StoreToOffset(value_lo, out_reg, Mint::value_offset() - kHeapObjectTag);
+  __ StoreToOffset(value_hi, out_reg,
+                   Mint::value_offset() - kHeapObjectTag + kWordSize);
+  __ Bind(&done);
+}
+
 LocationSummary* UnboxInteger32Instr::MakeLocationSummary(Zone* zone,
                                                           bool opt) const {
   ASSERT((representation() == kUnboxedInt32) ||
