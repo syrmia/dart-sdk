@@ -452,6 +452,19 @@ void FlowGraphCompiler::RestoreLiveRegisters(LocationSummary* locs) {
   __ PopRegisters(*locs->live_registers());
 }
 
+#if defined(DEBUG)
+void FlowGraphCompiler::ClobberDeadTempRegisters(LocationSummary* locs) {
+  // Clobber temporaries that have not been manually preserved.
+  for (intptr_t i = 0; i < locs->temp_count(); ++i) {
+    Location tmp = locs->temp(i);
+    if (tmp.IsRegister() &&
+        !locs->live_registers()->ContainsRegister(tmp.reg())) {
+      __ LoadImmediate(tmp.reg(), 0xf7);
+    }
+  }
+}
+#endif
+
 Register FlowGraphCompiler::EmitTestCidRegister() {
   return A1;
 }
