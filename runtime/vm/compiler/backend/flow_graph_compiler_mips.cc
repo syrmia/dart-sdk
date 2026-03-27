@@ -266,6 +266,28 @@ void FlowGraphCompiler::GenerateStaticDartCall(intptr_t deopt_id,
   }
 }
 
+void FlowGraphCompiler::EmitEdgeCounter(intptr_t edge_id) {
+  // We do not check for overflow when incrementing the edge counter.  The
+  // function should normally be optimized long before the counter can
+  // overflow; and though we do not reset the counters when we optimize or
+  // deoptimize, there is a bound on the number of
+  // optimization/deoptimization cycles we will attempt.
+  ASSERT(!edge_counters_array_.IsNull());
+  ASSERT(assembler_->constant_pool_allowed());
+  __ Comment("Edge counter");
+  __ LoadObject(T0, edge_counters_array_);
+#if defined(DEBUG)
+  bool old_use_far_branches = assembler_->use_far_branches();
+  assembler_->set_use_far_branches(true);
+#endif  // DEBUG
+  __ LoadFieldFromOffset(T1, T0, compiler::target::Array::element_offset(edge_id));
+  __ AddImmediate(T1, T1, Smi::RawValue(1));
+  __ StoreFieldToOffset(T1, T0, Array::element_offset(edge_id));
+#if defined(DEBUG)
+  assembler_->set_use_far_branches(old_use_far_branches);
+#endif  // DEBUG
+}
+
 void FlowGraphCompiler::EmitFrameEntry() {
   const Function& function = parsed_function().function();
   if (CanOptimizeFunction() && function.IsOptimizable() &&
