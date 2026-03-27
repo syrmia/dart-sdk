@@ -14,6 +14,8 @@ namespace dart {
 
 DEFINE_FLAG(bool, trap_on_deoptimization, false, "Trap on deoptimization.");
 
+void FlowGraphCompiler::ArchSpecificInitialization() {}
+
 FlowGraphCompiler::~FlowGraphCompiler() {
   // BlockInfos are zone-allocated, so their destructors are not called.
   // Verify the labels explicitly here.
@@ -144,6 +146,21 @@ void CompilerDeoptInfoWithStub::GenerateCode(FlowGraphCompiler* compiler,
 #undef __
 }
 
+#define __ assembler->
+
+void FlowGraphCompiler::GenerateIndirectTTSCall(compiler::Assembler* assembler,
+                                                Register reg_to_call,
+                                                intptr_t sub_type_cache_index) {
+  __ LoadField(
+      TTSInternalRegs::kScratchReg,
+      compiler::FieldAddress(
+          reg_to_call,
+          compiler::target::AbstractType::type_test_stub_entry_point_offset()));
+  __ LoadWordFromPoolIndex(TypeTestABI::kSubtypeTestCacheReg,
+                           sub_type_cache_index);
+  __ jalr(TTSInternalRegs::kScratchReg);
+}
+#undef __
 #define __ assembler()->
 
 // Fall through if bool_register contains null.
