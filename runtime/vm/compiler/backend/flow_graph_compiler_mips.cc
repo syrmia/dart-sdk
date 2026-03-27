@@ -361,6 +361,86 @@ void FlowGraphCompiler::RestoreLiveRegisters(LocationSummary* locs) {
   __ PopRegisters(*locs->live_registers());
 }
 
+void FlowGraphCompiler::EmitMove(Location destination,
+                                 Location source,
+                                 TemporaryRegisterAllocator* allocator) {
+  if (destination.Equals(source)) return;
+
+  if (source.IsRegister()) {
+    if (destination.IsRegister()) {
+      __ mov(destination.reg(), source.reg());
+    } else {
+      ASSERT(destination.IsStackSlot());
+      const intptr_t dest_offset = destination.ToStackSlotOffset();
+      __ StoreToOffset(source.reg(), destination.base_reg(), dest_offset);
+    }
+  } else if (source.IsStackSlot()) {
+    if (destination.IsRegister()) {
+      const intptr_t source_offset = source.ToStackSlotOffset();
+      __ LoadFromOffset(destination.reg(), source.base_reg(), source_offset);
+    } else {
+      ASSERT(destination.IsStackSlot());
+      const intptr_t source_offset = source.ToStackSlotOffset();
+      const intptr_t dest_offset = destination.ToStackSlotOffset();
+      Register tmp = allocator->AllocateTemporary();
+      __ LoadFromOffset(tmp, source.base_reg(), source_offset);
+      __ StoreToOffset(tmp, destination.base_reg(), dest_offset);
+      allocator->ReleaseTemporary();
+    }
+  } else if (source.IsFpuRegister()) {
+    if (destination.IsFpuRegister()) {
+      DRegister dst = destination.fpu_reg();
+      DRegister src = source.fpu_reg();
+      __ movd(dst, src);
+    } else if (destination.IsStackSlot()) {
+      // 32-bit float
+      const intptr_t dest_offset = destination.ToStackSlotOffset();
+      const FRegister src = EvenFRegisterOf(source.fpu_reg());
+      __ swc1(src, compiler::Address(destination.base_reg(), dest_offset));
+    } else {
+      ASSERT(destination.IsDoubleStackSlot());
+      const intptr_t dest_offset = destination.ToStackSlotOffset();
+      DRegister src = source.fpu_reg();
+      __ StoreDToOffset(src, destination.base_reg(), dest_offset);
+    }
+  } else if (source.IsDoubleStackSlot()) {
+    if (destination.IsFpuRegister()) {
+      const intptr_t source_offset = source.ToStackSlotOffset();
+      DRegister dst = destination.fpu_reg();
+      __ LoadDFromOffset(dst, source.base_reg(), source_offset);
+    } else if (destination.IsStackSlot()) {
+      const intptr_t source_offset = source.ToStackSlotOffset();
+      const intptr_t dest_offset = destination.ToStackSlotOffset();
+      __ lwc1(EvenFRegisterOf(DTMP), compiler::Address(source.base_reg(), source_offset));
+      __ swc1(EvenFRegisterOf(DTMP), compiler::Address(destination.base_reg(), dest_offset));
+
+    } else {
+      ASSERT(destination.IsDoubleStackSlot());
+      const intptr_t source_offset = source.ToStackSlotOffset();
+      const intptr_t dest_offset = destination.ToStackSlotOffset();
+      __ LoadDFromOffset(DTMP, source.base_reg(), source_offset);
+      __ StoreDToOffset(DTMP, destination.base_reg(), dest_offset);
+    }
+  } else if (source.IsPairLocation()) {
+    ASSERT(destination.IsPairLocation());
+    for (intptr_t i : {0, 1}) {
+      EmitMove(destination.Component(i), source.Component(i), allocator);
+    }
+  } else {
+    ASSERT(source.IsConstant());
+    if (destination.IsFpuRegister() || destination.IsDoubleStackSlot() ||
+        destination.IsStackSlot()) {
+      Register tmp = allocator->AllocateTemporary();
+      source.constant_instruction()->EmitMoveToLocation(this, destination, tmp,
+                                                        source.pair_index());
+      allocator->ReleaseTemporary();
+    } else {
+      source.constant_instruction()->EmitMoveToLocation(
+          this, destination, kNoRegister, source.pair_index());
+    }
+  }
+}
+
 static compiler::OperandSize BytesToOperandSize(intptr_t bytes) {
   switch (bytes) {
     case 8:
