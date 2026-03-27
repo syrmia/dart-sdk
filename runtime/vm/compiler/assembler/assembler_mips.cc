@@ -1247,6 +1247,17 @@ void Assembler::FinalizeHashForSize(intptr_t bit_size,
   movz(hash, CMPRES1, hash);  // If hash is 0, set to 1.
 }
 
+void Assembler::BranchOnMonomorphicCheckedEntryJIT(Label* label) {
+  has_monomorphic_entry_ = true;
+  while (CodeSize() < target::Instructions::kMonomorphicEntryOffsetJIT) {
+    break_(0);
+  }
+  b(label);
+  while (CodeSize() < target::Instructions::kPolymorphicEntryOffsetJIT) {
+    break_(0);
+  }
+}
+
 #ifndef PRODUCT
 void Assembler::MaybeTraceAllocation(intptr_t cid,
                                      Label* trace,

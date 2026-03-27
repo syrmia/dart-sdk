@@ -57,6 +57,107 @@ void StubCodeCompiler::EnsureIsNewOrRemembered() {
   __ Bind(&done);
 }
 
+// Input parameters:
+//   RA : return address.
+//   SP : address of last argument in argument array.
+//   SP + 4*S4 - 4 : address of first argument in argument array.
+//   SP + 4*S4 : address of return value.
+//   S5 : address of the runtime function to call.
+//   S4 : number of arguments to the call.
+void StubCodeCompiler::GenerateCallToRuntimeStub() {
+  const intptr_t thread_offset = target::NativeArguments::thread_offset();
+  const intptr_t argc_tag_offset = target::NativeArguments::argc_tag_offset();
+  const intptr_t argv_offset = target::NativeArguments::argv_offset();
+  const intptr_t retval_offset = target::NativeArguments::retval_offset();
+
+  __ lw(CODE_REG, Address(THR, target::Thread::call_to_runtime_stub_offset()));
+  __ Comment("CallToRuntimeStub");
+  __ EnterStubFrame();
+
+  // Save exit frame information to enable stack walking as we are about
+  // to transition to Dart VM C++ code.
+  __ sw(FP, Address(THR, Thread::top_exit_frame_info_offset()));
+
+  // Mark that the thread exited generated code through a runtime call.
+  __ LoadImmediate(T0, target::Thread::exit_through_runtime_call());
+  __ StoreToOffset(T0, THR, target::Thread::exit_through_ffi_offset());
+
+#if defined(DEBUG)
+  {
+    Label ok;
+    // Check that we are always entering from Dart code.
+    __ LoadFromOffset(T0, THR, target::Thread::vm_tag_offset());
+    __ BranchEqual(T0, Immediate(VMTag::kDartTagId), &ok);
+    __ Stop("Not coming from Dart code.");
+    __ Bind(&ok);
+  }
+#endif
+
+  // Mark that the thread is executing VM code.
+  __ sw(S5, Assembler::VMTagAddress());
+
+  // Reserve space for arguments and align frame before entering C++ world.
+  // NativeArguments are passed in registers.
+  ASSERT(target::NativeArguments::StructSize() == 4 * target::kWordSize);
+  __ ReserveAlignedFrameSpace(target::NativeArguments::StructSize());  // Reserve space for arguments.
+
+  // Pass NativeArguments structure by value and call runtime.
+  // Registers A0, A1, A2, and A3 are used.
+
+  ASSERT(thread_offset == 0 *target::kWordSize);
+  // Set thread in NativeArgs.
+  __ mov(A0, THR);
+
+  // There are no runtime calls to closures, so we do not need to set the tag
+  // bits kClosureFunctionBit and kInstanceFunctionBit in argc_tag_.
+  ASSERT(argc_tag_offset == 1 *target::kWordSize);
+  __ mov(A1, S4);  // Set argc in NativeArguments.
+
+  ASSERT(argv_offset == 2 *target::kWordSize);
+  __ sll(A2, S4, 2);
+  __ addu(A2, FP, A2);  // Compute argv.
+  // Set argv in NativeArguments.
+  __ addiu(A2, A2,
+        Immediate(target::frame_layout.param_end_from_fp *target::kWordSize));
+
+  ASSERT(retval_offset == 3 *target::kWordSize);
+  // Retval is next to 1st argument.
+  __ addiu(A3, A2, Immediate(target::kWordSize));
+
+  // Call runtime or redirection via simulator.
+  // We defensively always jalr through T9 because it is sometimes required by
+  // the MIPS ABI.
+  __ mov(T9, S5);
+  __ jalr(T9);
+
+  __ Comment("CallToRuntimeStub return");
+
+  // Mark that the thread is executing Dart code.
+  __ LoadImmediate(A2, VMTag::kDartTagId);
+  __ sw(A2, Assembler::VMTagAddress());
+
+  // Reset exit frame information in Isolate structure.
+  __ sw(ZR, Address(THR, Thread::exit_through_ffi_offset()));
+  __ sw(ZR, Address(THR, Thread::top_exit_frame_info_offset()));
+
+  // Restore the global object pool after returning from runtime (old space is
+  // moving, so the GOP could have been relocated).
+  if (FLAG_precompiled_mode) {
+    __ lw(PP, Address(THR, target::Thread::global_object_pool_offset()));
+  }
+
+  __ LeaveStubFrame();
+
+  // The following return can jump to a lazy-deopt stub, which assumes V0
+  // contains a return value and will save it in a GC-visible way.  We therefore
+  // have to ensure V0 does not contain any garbage value left from the C
+  // function we called (which has return type "void").
+  // (See GenerateDeoptimizationSequence::saved_result_slot_from_fp.)
+  __ LoadImmediate(V0, 0);
+
+  __ Ret();
+}
+
 // Call a native function within a safepoint.
 //
 // On entry:
@@ -315,6 +416,207 @@ void StubCodeCompiler::GenerateSharedStub(
   GenerateSharedStubGeneric(save_fpu_registers,
                             self_code_stub_offset_from_thread, allow_return,
                             perform_runtime_call);
+}
+
+// Input parameters:
+//   RA : return address.
+//   SP : address of return value.
+//   T5 : address of the native function to call.
+//   A2 : address of first argument in argument array.
+//   A1 : argc_tag including number of arguments and function kind.
+static void GenerateCallNativeWithWrapperStub(Assembler* assembler,
+                                              Address wrapper) {
+  const intptr_t thread_offset = NativeArguments::thread_offset();
+  const intptr_t argc_tag_offset = NativeArguments::argc_tag_offset();
+  const intptr_t argv_offset = NativeArguments::argv_offset();
+  const intptr_t retval_offset = NativeArguments::retval_offset();
+
+  __ SetPrologueOffset();
+  __ Comment("CallNativeCFunctionStub");
+  __ EnterStubFrame();
+
+  // Save exit frame information to enable stack walking as we are about
+  // to transition to native code.
+  __ sw(FP, Address(THR, Thread::top_exit_frame_info_offset()));
+
+  // Mark that the thread exited generated code through a runtime call.
+  __ LoadImmediate(T0, target::Thread::exit_through_runtime_call());
+  __ StoreToOffset(T0, THR, target::Thread::exit_through_ffi_offset());
+
+#if defined(DEBUG)
+  {
+    Label ok;
+    // Check that we are always entering from Dart code.
+    __ LoadFromOffset(T0, THR, target::Thread::vm_tag_offset());
+    __ BranchEqual(T0, Immediate(VMTag::kDartTagId), &ok);
+    __ Stop("Not coming from Dart code.");
+    __ Bind(&ok);
+  }
+#endif
+
+  // Mark that the thread is executing native code.
+  __ sw(T5, Assembler::VMTagAddress());
+
+  // Reserve space for the native arguments structure passed on the stack (the
+  // outgoing pointer parameter to the native arguments structure is passed in
+  // A0) and align frame before entering the C++ world.
+  __ ReserveAlignedFrameSpace(target::NativeArguments::StructSize());
+
+  // Initialize target::NativeArguments structure and call native function.
+  // Registers A0, A1, A2, and A3 are used.
+
+  ASSERT(thread_offset == 0 *target::kWordSize);
+  // Set thread in NativeArgs.
+  __ mov(A0, THR);
+
+  // There are no native calls to closures, so we do not need to set the tag
+  // bits kClosureFunctionBit and kInstanceFunctionBit in argc_tag_.
+  ASSERT(argc_tag_offset == 1 *target::kWordSize);
+  // Set argc in NativeArguments: A1 already contains argc.
+
+  ASSERT(argv_offset == 2 *target::kWordSize);
+  // Set argv in NativeArguments: A2 already contains argv.
+
+  ASSERT(retval_offset == 3 *target::kWordSize);
+  // Set retval in NativeArgs.
+  __ AddImmediate(
+      A3, FP, (target::frame_layout.param_end_from_fp + 1) * target::kWordSize);
+
+  // Passing the structure by value as in runtime calls would require changing
+  // Dart API for native functions.
+  // For now, space is reserved on the stack and we pass a pointer to it.
+  __ sw(A3, Address(SP, 3 *target::kWordSize));
+  __ sw(A2, Address(SP, 2 *target::kWordSize));
+  __ sw(A1, Address(SP, 1 *target::kWordSize));
+  __ sw(A0, Address(SP, 0 *target::kWordSize));
+  __ mov(A0, SP);  // Pass the pointer to the NativeArguments.
+  __ mov(A1, T5);  // Pass the function entrypoint.
+
+  // Call native wrapper function or redirection via simulator.
+  ASSERT(IsAbiPreservedRegister(THR));
+  __ lw(T9, wrapper);
+  __ jalr(T9);
+  __ Comment("CallNativeCFunctionStub return");
+
+  // Mark that the thread is executing Dart code.
+  __ LoadImmediate(A2, VMTag::kDartTagId);
+  __ StoreToOffset(A2, THR, target::Thread::vm_tag_offset());
+
+  // Mark that the thread has not exited generated Dart code.
+  __ sw(ZR, Address(THR, Thread::exit_through_ffi_offset()));
+
+  // Reset exit frame information in Isolate structure.
+  __ sw(ZR, Address(THR, Thread::top_exit_frame_info_offset()));
+
+  if (FLAG_precompiled_mode) {
+    __ lw(PP, Address(THR, target::Thread::global_object_pool_offset()));
+  }
+
+  __ LeaveStubFrame();
+
+  __ Ret();
+}
+
+void StubCodeCompiler::GenerateCallNoScopeNativeStub() {
+  GenerateCallNativeWithWrapperStub(
+      assembler,
+      Address(THR, Thread::no_scope_native_wrapper_entry_point_offset()));
+}
+
+void StubCodeCompiler::GenerateCallAutoScopeNativeStub() {
+  GenerateCallNativeWithWrapperStub(
+      assembler,
+      Address(THR, Thread::auto_scope_native_wrapper_entry_point_offset()));
+}
+
+// Input parameters:
+//   RA : return address.
+//   SP : address of return value.
+//   T5 : address of the native function to call.
+//   A2 : address of first argument in argument array.
+//   A1 : argc_tag including number of arguments and function kind.
+void StubCodeCompiler::GenerateCallBootstrapNativeStub() {
+  GenerateCallNativeWithWrapperStub(
+    assembler,
+    Address(THR,
+            target::Thread::bootstrap_native_wrapper_entry_point_offset()));
+}
+
+// Input parameters:
+//   S4: arguments descriptor array.
+void StubCodeCompiler::GenerateCallStaticFunctionStub() {
+  __ Comment("CallStaticFunctionStub");
+  __ EnterStubFrame();
+  // Setup space on stack for return value and preserve arguments descriptor.
+
+  __ addiu(SP, SP, Immediate(-2 *target::kWordSize));
+  __ sw(S4, Address(SP, 1 *target::kWordSize));
+  __ sw(ZR, Address(SP, 0 *target::kWordSize));
+
+  __ CallRuntime(kPatchStaticCallRuntimeEntry, 0);
+  __ Comment("CallStaticFunctionStub return");
+
+  // Get Code object result and restore arguments descriptor array.
+  __ lw(CODE_REG, Address(SP, 0 *target::kWordSize));
+  __ lw(S4, Address(SP, 1 *target::kWordSize));
+  __ addiu(SP, SP, Immediate(2 *target::kWordSize));
+
+  __ lw(T0, FieldAddress(CODE_REG, Code::entry_point_offset()));
+
+  // Remove the stub frame as we are about to jump to the dart function.
+  __ LeaveStubFrameAndReturn(T0);
+}
+
+// Called from a static call only when an invalid code has been entered
+// (invalid because its function was optimized or deoptimized).
+// S4: arguments descriptor array.
+void StubCodeCompiler::GenerateFixCallersTargetStub() {
+  Label monomorphic;
+  __ BranchOnMonomorphicCheckedEntryJIT(&monomorphic);
+
+  // Load code pointer to this stub from the thread:
+  // The one that is passed in, is not correct - it points to the code object
+  // that needs to be replaced.
+  __ lw(CODE_REG,
+         Address(THR, target::Thread::fix_callers_target_code_offset()));
+  // Create a stub frame as we are pushing some objects on the stack before
+  // calling into the runtime.
+  __ EnterStubFrame();
+  // Setup space on stack for return value and preserve arguments descriptor.
+  __ PushRegistersInOrder({ARGS_DESC_REG, ZR});
+  __ CallRuntime(kFixCallersTargetRuntimeEntry, 0);
+  // Get Code object result and restore arguments descriptor array.
+  __ PopRegister(CODE_REG);
+  __ PopRegister(ARGS_DESC_REG);
+  // Remove the stub frame.
+  __ LeaveStubFrame();
+  // Jump to the dart function.
+  __ LoadFieldFromOffset(TMP, CODE_REG, target::Code::entry_point_offset());
+  __ jr(TMP);
+
+  __ Bind(&monomorphic);
+  // Load code pointer to this stub from the thread:
+  // The one that is passed in, is not correct - it points to the code object
+  // that needs to be replaced.
+  __ lw(CODE_REG,
+         Address(THR, target::Thread::fix_callers_target_code_offset()));
+  // Create a stub frame as we are pushing some objects on the stack before
+  // calling into the runtime.
+  __ EnterStubFrame();
+  // Setup result slot, preserve receiver and
+  // push old cache value (also 2nd return value).
+  __ PushRegistersInOrder({ZR, A0, S5});
+  __ CallRuntime(kFixCallersTargetMonomorphicRuntimeEntry, 2);
+  __ PopRegister(S5);        // Get target cache object.
+  __ PopRegister(A0);        // Restore receiver.
+  __ PopRegister(CODE_REG);  // Get target Code object.
+  // Remove the stub frame.
+  __ LeaveStubFrame();
+  // Jump to the dart function.
+  __ LoadFieldFromOffset(
+      T9, CODE_REG,
+      target::Code::entry_point_offset(CodeEntryKind::kMonomorphic));
+__ jr(T9);
 }
 
 // Used by eager and lazy deoptimization. Preserve result in V0 if necessary.
@@ -837,6 +1139,17 @@ void StubCodeCompiler::GenerateInvokeDartCodeStub() {
   __ LeaveFrameAndReturn();
 }
 
+// Called when invoking compiled Dart code from interpreted Dart code.
+// Input parameters:
+//   RA : points to return address.
+//   A0 : target code or entry point (in AOT mode).
+//   A1 : arguments descriptor array.
+//   A2 : address of first argument.
+//   A3 : current thread.
+void StubCodeCompiler::GenerateInvokeDartCodeFromBytecodeStub() {
+  __ Stop("Not implemented on MIPS.");
+}
+
 // Called for inline allocation of objects.
 // Input parameters:
 //   RA : return address.
@@ -1036,6 +1349,80 @@ void StubCodeCompiler::GenerateAllocateContextStub() {
   __ CallRuntime(kAllocateContextRuntimeEntry, 1);  // Allocate context.
   __ Drop(1);          // Pop number of context variables argument.
   __ PopRegister(V0);  // Pop the new context object.
+
+  // Write-barrier elimination might be enabled for this context (depending on
+  // the size). To be sure we will check if the allocated object is in old
+  // space and if so call a leaf runtime to add it to the remembered set.
+  EnsureIsNewOrRemembered();
+
+  // V0: new object
+  // Restore the frame pointer.
+  __ LeaveStubFrame();
+  __ Ret();
+}
+
+// Called for clone of contexts.
+// Input:
+//   T5: context variable to clone.
+// Output:
+//   V0: new allocated Context object.
+// Clobbered:
+//   Potentially any since it can go to runtime.
+void StubCodeCompiler::GenerateCloneContextStub() {
+  if (!FLAG_use_slow_path && FLAG_inline_alloc) {
+    Label slow_case;
+
+    // Load num. variable in the existing context.
+    __ lw(T1, FieldAddress(T5, target::Context::num_variables_offset()));
+
+    GenerateAllocateContext(assembler, &slow_case);
+
+    // Load parent in the existing context.
+    __ lw(T2, FieldAddress(T5, target::Context::parent_offset()));
+    // Setup the parent field.
+    // V0: new object.
+    __ StoreIntoObjectNoBarrier(
+        V0, FieldAddress(V0, target::Context::parent_offset()), T2);
+
+    // Clone the context variables.
+    // V0: new object.
+    // T1: number of context variables.
+    {
+      Label loop, done;
+      __ AddImmediate(T2, V0,
+                      target::Context::variable_offset(0) - kHeapObjectTag);
+      __ AddImmediate(T3, T5,
+                      target::Context::variable_offset(0) - kHeapObjectTag);
+
+      __ Bind(&loop);
+      __ AddImmediate(T1, T1, -1);
+      __ BranchSignedLess(T1, ZR, &done);
+
+      __ lw(T5, Address(T3, 0));
+      __ addi(T3, T3, Immediate(target::kWordSize));
+      __ sw(T5, Address(T2, 0));
+      __ addi(T2, T2, Immediate(target::kWordSize));
+      __ b(&loop);
+
+      __ Bind(&done);
+    }
+
+    // Done allocating and initializing the context.
+    // V0: new object.
+    __ Ret();
+
+    __ Bind(&slow_case);
+  }
+
+  // Create a stub frame as we are pushing some objects on the stack before
+  // calling into the runtime.
+  __ EnterStubFrame();
+  // Setup space on stack for return value.
+  __ PushRegisterPair(T5, ZR);
+  __ CallRuntime(kCloneContextRuntimeEntry, 1);  // Clone context.
+  // T5: Pop number of context variables argument.
+  // V0: Pop the new context object.
+  __ PopRegisterPair(T5, V0);
 
   // Write-barrier elimination might be enabled for this context (depending on
   // the size). To be sure we will check if the allocated object is in old
@@ -1372,6 +1759,151 @@ void StubCodeCompiler::GenerateAllocateObjectStub() {
   GenerateAllocateObjectHelper(assembler, /*is_cls_parameterized=*/false);
 }
 
+void StubCodeCompiler::GenerateAllocateObjectParameterizedStub() {
+  GenerateAllocateObjectHelper(assembler, /*is_cls_parameterized=*/true);
+}
+
+void StubCodeCompiler::GenerateAllocateObjectSlowStub() {
+  const Register kClsReg = A0;
+
+  if (!FLAG_precompiled_mode) {
+    __ lw(CODE_REG,
+           Address(THR, target::Thread::call_to_runtime_stub_offset()));
+  }
+
+  // Create a stub frame as we are pushing some objects on the stack before
+  // calling into the runtime.
+  __ EnterStubFrame();
+
+  __ ExtractClassIdFromTags(AllocateObjectABI::kResultReg,
+                            AllocateObjectABI::kTagsReg);
+  __ LoadClassById(kClsReg, AllocateObjectABI::kResultReg);
+
+  __ LoadObject(AllocateObjectABI::kResultReg, NullObject());
+
+  __ addiu(SP, SP, Immediate(-3 * target::kWordSize));
+  __ sw(AllocateObjectABI::kResultReg, Address(SP, 2 * target::kWordSize));       // Result slot.
+  __ sw(kClsReg, Address(SP, 1 * target::kWordSize));  // Arg0: Class object.
+  __ sw(AllocateObjectABI::kTypeArgumentsReg,
+        Address(SP, 0 * target::kWordSize));  // Arg1: Type args or null.
+  __ CallRuntime(kAllocateObjectRuntimeEntry, 2);
+
+  // Load result off the stack into result register.
+  __ lw(AllocateObjectABI::kResultReg, Address(SP, 2 * target::kWordSize));
+  __ addiu(SP, SP, Immediate(3 * target::kWordSize));
+
+  // Write-barrier elimination is enabled for [cls] and we therefore need to
+  // ensure that the object is in new-space or has remembered bit set.
+  EnsureIsNewOrRemembered();
+
+  __ LeaveDartFrameAndReturn();
+}
+
+// Stub for compiling a function and jumping to the compiled code.
+// S5/ICREG: IC-Data (for methods).
+// S4/ARGS_DESC_REG: Arguments descriptor.
+// T0/FUNCTION_REG: Function.
+void StubCodeCompiler::GenerateLazyCompileStub() {
+  __ EnterStubFrame();
+  __ addiu(SP, SP, Immediate(-3 *target::kWordSize));
+  __ sw(ICREG, Address(SP, 2 *target::kWordSize));  // Preserve IC data object.
+  __ sw(ARGS_DESC_REG, Address(SP, 1 *target::kWordSize));  // Preserve args descriptor array.
+  __ sw(FUNCTION_REG, Address(SP, 0 *target::kWordSize));  // Pass function.
+  __ CallRuntime(kCompileFunctionRuntimeEntry, 1);
+  __ lw(FUNCTION_REG, Address(SP, 0 *target::kWordSize));  // Restore function.
+  __ lw(ARGS_DESC_REG, Address(SP, 1 *target::kWordSize));  // Restore args descriptor array.
+  __ lw(ICREG, Address(SP, 2 *target::kWordSize));  // Restore IC data array.
+  __ addiu(SP, SP, Immediate(3 *target::kWordSize));
+  __ LeaveStubFrame();
+
+  __ lw(CODE_REG, FieldAddress(FUNCTION_REG, target::Function::code_offset()));
+  __ lw(T2, FieldAddress(FUNCTION_REG, target::Function::entry_point_offset()));
+  __ jr(T2);
+}
+
+// Stub for interpreting a function call.
+// S4/ARGS_DESC_REG: Arguments descriptor.
+// T0/FUNCTION_REG: Function.
+void StubCodeCompiler::GenerateInterpretCallStub() {
+#if defined(DART_DYNAMIC_MODULES)
+
+  __ EnterStubFrame();
+
+#if defined(DEBUG)
+  {
+    Label ok;
+    // Check that we are always entering from Dart code.
+    __ LoadFromOffset(CMPRES1, THR, target::Thread::vm_tag_offset());
+    __ BranchEqual(CMPRES1, compiler::Immediate(VMTag::kDartTagId), &ok);
+    __ Stop("Not coming from Dart code.");
+    __ Bind(&ok);
+  }
+#endif
+
+  // Adjust arguments count for type arguments vector.
+  __ LoadFieldFromOffset(A2, ARGS_DESC_REG, target::ArgumentsDescriptor::count_offset());
+  __ SmiUntag(A2);
+  __ LoadFieldFromOffset(T1, ARGS_DESC_REG, target::ArgumentsDescriptor::type_args_len_offset());
+  Label args_count_ok;
+  __ BranchEqual(T1, Immediate(0), &args_count_ok);
+  __ AddImmediate(A2, A2, 1);  // Include the type arguments.
+  __ Bind(&args_count_ok);
+
+  // Compute argv.
+  __ sll(A3, A2, 2);
+  __ addu(A3, A3, FP);
+  __ AddImmediate(A3, A3, target::frame_layout.param_end_from_fp * target::kWordSize);
+
+  // Indicate decreasing memory addresses of arguments with negative argc.
+  __ subu(A2, ZR, A2);
+
+  // Align frame before entering C++ world. Fifth argument passed on the stack.
+  __ ReserveAlignedFrameSpace(1 * target::kWordSize);
+
+  // Pass arguments in registers.
+  __ mov(A0, FUNCTION_REG);   // T0/FUNCTION_REG: Function.
+  __ mov(A1, ARGS_DESC_REG);  // Arguments descriptor.
+  // A2: Negative argc.
+  // A3: Argv.
+  __ sw(THR, Address(SP, 0));  // Fifth argument: Thread.
+
+  // Save exit frame information to enable stack walking as we are about
+  // to transition to Dart VM C++ code.
+  __ StoreToOffset(FP, THR,
+                   target::Thread::top_exit_frame_info_offset());
+
+  // Mark that the thread exited generated code through a runtime call.
+  __ LoadImmediate(T5, target::Thread::exit_through_runtime_call());
+  __ StoreToOffset(T5, THR, target::Thread::exit_through_ffi_offset());
+
+  // Mark that the thread is executing VM code.
+  __ LoadFromOffset(T5, THR,
+                    target::Thread::interpret_call_entry_point_offset());
+  __ StoreToOffset(T5, THR, target::Thread::vm_tag_offset());
+
+  __ mov(T9, T5);
+  __ Call(T9);
+
+  // Mark that the thread is executing Dart code.
+  __ LoadImmediate(T2, VMTag::kDartTagId);
+  __ StoreToOffset(T2, THR, target::Thread::vm_tag_offset());
+
+  // Mark that the thread has not exited generated Dart code.
+  __ LoadImmediate(T2, 0);
+  __ StoreToOffset(T2, THR, target::Thread::exit_through_ffi_offset());
+
+  // Reset exit frame information in Isolate's mutator thread structure.
+  __ StoreToOffset(T2, THR,
+                   target::Thread::top_exit_frame_info_offset());
+
+  __ LeaveStubFrame();
+  __ Ret();
+
+#else
+  __ Stop("Not using Dart dynamic modules");
+#endif  // defined(DART_DYNAMIC_MODULES)
+}
+
 // S5: Contains an ICData.
 void StubCodeCompiler::GenerateICCallBreakpointStub() {
 #if defined(PRODUCT)
@@ -1432,6 +1964,34 @@ void StubCodeCompiler::GenerateRuntimeCallBreakpointStub() {
   __ lw(TMP, FieldAddress(CODE_REG, Code::entry_point_offset()));
   __ jr(TMP);
 #endif  // defined(PRODUCT)
+}
+
+// Called only from unoptimized code. All relevant registers have been saved.
+// RA: return address.
+void StubCodeCompiler::GenerateDebugStepCheckStub() {
+#if defined(PRODUCT)
+  __ Stop("No debugging in PRODUCT mode");
+#else
+  // Check single stepping.
+  Label stepping, done_stepping;
+  __ LoadIsolate(T1);
+  __ lbu(T1, Address(T1, target::Thread::single_step_offset()));
+  __ BranchNotEqual(T1, Immediate(0), &stepping);
+  __ Bind(&done_stepping);
+
+  __ Ret();
+
+  // Call single step callback in debugger.
+  __ Bind(&stepping);
+  __ EnterStubFrame();
+  __ addiu(SP, SP, Immediate(-1 *target::kWordSize));
+  __ sw(RA, Address(SP, 0 *target::kWordSize));  // Return address.
+  __ CallRuntime(kSingleStepHandlerRuntimeEntry, 0);
+  __ lw(RA, Address(SP, 0 *target::kWordSize));
+  __ addiu(SP, SP, Immediate(1 *target::kWordSize));
+  __ LeaveStubFrame();
+  __ b(&done_stepping);
+#endif
 }
 
 // Return the current stack pointer address, used to stack alignment
@@ -1540,6 +2100,118 @@ void StubCodeCompiler::GenerateDeoptForRewindStub() {
   __ CallRuntime(kRewindPostDeoptRuntimeEntry, 0);
   __ LeaveStubFrame();
   __ break_(0);
+}
+
+// Implement the monomorphic entry check for call-sites where the receiver
+// might be a Smi.
+//
+//   A0: receiver
+//   S5: MonomorphicSmiableCall object
+//
+//   T1, T2: clobbered
+void StubCodeCompiler::GenerateMonomorphicSmiableCheckStub() {
+  Label miss;
+  __ LoadClassIdMayBeSmi(T1, A0);
+
+  // entrypoint_ should come right after expected_cid_
+  ASSERT(target::MonomorphicSmiableCall::entrypoint_offset() ==
+      target::MonomorphicSmiableCall::expected_cid_offset() +
+      target::kWordSize);
+
+  // Note: this stub is only used in AOT mode, hence the direct (bare) call.
+  __ LoadField(
+      T2,
+      FieldAddress(S5, target::MonomorphicSmiableCall::expected_cid_offset()));
+  __ LoadField(
+    T9,
+      FieldAddress(S5, target::MonomorphicSmiableCall::entrypoint_offset()));
+  __ BranchNotEqual(T1, T2, &miss);
+  __ jr(T9);
+
+  __ Bind(&miss);
+  __ lw(T9, Address(THR, target::Thread::switchable_call_miss_entry_offset()));
+  __ jr(T9);
+}
+
+// Calls to the runtime to optimize the given function.
+// T0: function to be reoptimized.
+// S4: argument descriptor (preserved).
+void StubCodeCompiler::GenerateOptimizeFunctionStub() {
+  __ Comment("OptimizeFunctionStub");
+  __ lw(CODE_REG, Address(THR, target::Thread::optimize_stub_offset()));
+  __ EnterStubFrame();
+  __ addiu(SP, SP, Immediate(-3 *target::kWordSize));
+  __ sw(S4, Address(SP, 2 *target::kWordSize));
+  // Setup space on stack for return value.
+  __ sw(ZR, Address(SP, 1 *target::kWordSize));
+  __ sw(T0, Address(SP, 0 *target::kWordSize));
+  __ CallRuntime(kOptimizeInvokedFunctionRuntimeEntry, 1);
+  __ Comment("OptimizeFunctionStub return");
+  __ lw(FUNCTION_REG, Address(SP, 1 *target::kWordSize));       // Get Function object
+  __ lw(S4, Address(SP, 2 *target::kWordSize));       // Restore argument descriptor.
+  __ addiu(SP, SP, Immediate(3 *target::kWordSize));  // Discard argument.
+
+  __ lw(CODE_REG, FieldAddress(FUNCTION_REG, Function::code_offset()));
+  __ lw(T1, FieldAddress(FUNCTION_REG, Function::entry_point_offset()));
+  __ LeaveStubFrameAndReturn(T1);
+  __ break_(0);
+}
+
+static void CallSwitchableCallMissRuntimeEntry(Assembler* assembler,
+                                               Register receiver_reg) {
+  __ Push(receiver_reg);
+  __ Push(ZR);  // Result slot.
+  __ Push(ZR);  // Arg0: stub out.
+  __ Push(receiver_reg);  // Arg1: Receiver
+  __ CallRuntime(kSwitchableCallMissRuntimeEntry, 2);
+  __ Drop(1);
+  __ Pop(CODE_REG);  // result = stub
+  __ Pop(S5);  // result = IC
+  __ Pop(receiver_reg);
+}
+
+// Called from switchable IC calls.
+//  A0: receiver
+//  S5: SingleTargetCache
+void StubCodeCompiler::GenerateSwitchableCallMissStub() {
+  __ lw(CODE_REG,
+         Address(THR, target::Thread::switchable_call_miss_stub_offset()));
+
+  __ EnterStubFrame();
+  CallSwitchableCallMissRuntimeEntry(assembler, /*receiver_reg=*/A0);
+  __ LeaveStubFrame();
+
+  __ lw(T1, FieldAddress(CODE_REG, target::Code::entry_point_offset(
+                                        CodeEntryKind::kNormal)));
+  __ jr(T1);
+}
+
+// Called from switchable IC calls.
+//  A0: receiver
+//  S5: SingleTargetCache
+// Passed to target:
+//  CODE_REG: target Code object
+void StubCodeCompiler::GenerateSingleTargetCallStub() {
+  Label miss;
+  __ LoadClassIdMayBeSmi(T1, A0);
+  __ lhu(T2, FieldAddress(S5, target::SingleTargetCache::lower_limit_offset()));
+  __ lhu(T3, FieldAddress(S5, target::SingleTargetCache::upper_limit_offset()));
+
+  __ BranchUnsignedLess(T1, T2, &miss);
+  __ BranchUnsignedGreater(T1, T3, &miss);
+
+  __ lw(T1, FieldAddress(S5, target::SingleTargetCache::entry_point_offset()));
+  __ lw(CODE_REG, FieldAddress(S5, target::SingleTargetCache::target_offset()));
+  __ jr(T1);
+
+  __ Bind(&miss);
+  __ EnterStubFrame();
+  CallSwitchableCallMissRuntimeEntry(assembler, /*receiver_reg=*/A0);
+  __ LeaveStubFrame();
+
+  __ lw(T1, FieldAddress(CODE_REG,
+          target::Code::entry_point_offset(CodeEntryKind::kMonomorphic)));
+  __ jr(T1);
 }
 
 }  // namespace compiler
