@@ -538,6 +538,113 @@ void UnboxInstr::EmitLoadInt64FromBoxOrSmi(FlowGraphCompiler* compiler) {
   __ Bind(&done);
 }
 
+LocationSummary* BoxInteger32Instr::MakeLocationSummary(Zone* zone,
+                                                        bool opt) const {
+  ASSERT((from_representation() == kUnboxedInt32) ||
+         (from_representation() == kUnboxedUint32));
+  const intptr_t kNumInputs = 1;
+  const intptr_t kNumTemps = 1;
+  LocationSummary* summary = new (zone) LocationSummary(
+      zone, kNumInputs, kNumTemps, LocationSummary::kCallOnSlowPath);
+  summary->set_in(0, Location::RequiresRegister());
+  summary->set_temp(0, Location::RequiresRegister());
+  summary->set_out(0, Location::RequiresRegister());
+  return summary;
+}
+
+void BoxInteger32Instr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  Register value = locs()->in(0).reg();
+  Register out = locs()->out(0).reg();
+  ASSERT(value != out);
+
+  __ SmiTag(out, value);
+  if (!ValueFitsSmi()) {
+    Register temp = locs()->temp(0).reg();
+    compiler::Label done;
+    if (from_representation() == kUnboxedInt32) {
+      __ SmiUntag(CMPRES1, out);
+      __ BranchEqual(CMPRES1, value, &done);
+    } else {
+      ASSERT(from_representation() == kUnboxedUint32);
+      __ AndImmediate(CMPRES1, value, 0xC0000000);
+      __ BranchEqual(CMPRES1, ZR, &done);
+    }
+    BoxAllocationSlowPath::Allocate(compiler, this, compiler->mint_class(), out,
+                                    temp);
+    Register hi;
+    if (from_representation() == kUnboxedInt32) {
+      hi = temp;
+      __ sra(hi, value, kBitsPerWord - 1);
+    } else {
+      ASSERT(from_representation() == kUnboxedUint32);
+      hi = ZR;
+    }
+    __ StoreToOffset(value, out, Mint::value_offset() - kHeapObjectTag);
+    __ StoreToOffset(hi, out,
+                     Mint::value_offset() - kHeapObjectTag + kWordSize);
+    __ Bind(&done);
+  }
+}
+
+LocationSummary* UnboxInteger32Instr::MakeLocationSummary(Zone* zone,
+                                                          bool opt) const {
+  ASSERT((representation() == kUnboxedInt32) ||
+         (representation() == kUnboxedUint32));
+  const intptr_t kNumInputs = 1;
+  const intptr_t kNumTemps = 0;
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  summary->set_in(0, Location::RequiresRegister());
+  summary->set_out(0, Location::RequiresRegister());
+  return summary;
+}
+
+static void LoadInt32FromMint(FlowGraphCompiler* compiler,
+                              Register mint,
+                              Register result,
+                              compiler::Label* deopt) {
+  __ LoadFieldFromOffset(result, mint, Mint::value_offset());
+  if (deopt != NULL) {
+    __ LoadFieldFromOffset(CMPRES1, mint, Mint::value_offset() + kWordSize);
+    __ sra(CMPRES2, result, kBitsPerWord - 1);
+    __ BranchNotEqual(CMPRES1, CMPRES2, deopt);
+  }
+}
+
+void UnboxInteger32Instr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  const intptr_t value_cid = value()->Type()->ToCid();
+  const Register value = locs()->in(0).reg();
+  const Register out = locs()->out(0).reg();
+  compiler::Label* deopt =
+      CanDeoptimize()
+          ? compiler->AddDeoptStub(GetDeoptId(), ICData::kDeoptUnboxInteger)
+          : NULL;
+  compiler::Label* out_of_range = !is_truncating() ? deopt : NULL;
+  ASSERT(value != out);
+
+  if (value_cid == kSmiCid) {
+    __ SmiUntag(out, value);
+  } else if (value_cid == kMintCid) {
+    LoadInt32FromMint(compiler, value, out, out_of_range);
+  } else if (!CanDeoptimize()) {
+    compiler::Label done;
+    __ SmiUntag(out, value);
+    __ AndImmediate(CMPRES1, value, kSmiTagMask);
+    __ beq(CMPRES1, ZR, &done);
+    LoadInt32FromMint(compiler, value, out, NULL);
+    __ Bind(&done);
+  } else {
+    compiler::Label done;
+    __ SmiUntag(out, value);
+    __ AndImmediate(CMPRES1, value, kSmiTagMask);
+    __ beq(CMPRES1, ZR, &done);
+    __ LoadClassId(CMPRES1, value);
+    __ BranchNotEqual(CMPRES1, compiler::Immediate(kMintCid), deopt);
+    LoadInt32FromMint(compiler, value, out, out_of_range);
+    __ Bind(&done);
+  }
+}
+
 }  // namespace dart
 
 #endif  // defined TARGET_ARCH_MIPS
