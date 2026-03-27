@@ -361,6 +361,222 @@ void FlowGraphCompiler::RestoreLiveRegisters(LocationSummary* locs) {
   __ PopRegisters(*locs->live_registers());
 }
 
+static compiler::OperandSize BytesToOperandSize(intptr_t bytes) {
+  switch (bytes) {
+    case 8:
+      return compiler::OperandSize::kEightBytes;
+    case 4:
+      return compiler::OperandSize::kFourBytes;
+    case 2:
+      return compiler::OperandSize::kTwoBytes;
+    case 1:
+      return compiler::OperandSize::kByte;
+    default:
+      UNIMPLEMENTED();
+  }
+}
+
+void FlowGraphCompiler::EmitNativeMoveArchitecture(
+    const compiler::ffi::NativeLocation& destination,
+    const compiler::ffi::NativeLocation& source) {
+  const auto& src_payload_type = source.payload_type();
+  const auto& dst_payload_type = destination.payload_type();
+  const auto& src_container_type = source.container_type();
+  const auto& dst_container_type = destination.container_type();
+  ASSERT(src_container_type.IsFloat() == dst_container_type.IsFloat());
+  ASSERT(src_container_type.IsInt() == dst_container_type.IsInt());
+  ASSERT(src_payload_type.IsSigned() == dst_payload_type.IsSigned());
+  ASSERT(src_payload_type.IsPrimitive());
+  ASSERT(dst_payload_type.IsPrimitive());
+  const intptr_t src_size = src_payload_type.SizeInBytes();
+  const intptr_t dst_size = dst_payload_type.SizeInBytes();
+  const bool sign_or_zero_extend = dst_size > src_size;
+
+  if (source.IsRegisters()) {
+    const auto& src = source.AsRegisters();
+
+    if (destination.IsRegisters()) {
+      ASSERT(src.num_regs() == 1);
+      ASSERT(src_size <= 4);
+      const auto src_reg = src.reg_at(0);
+      const auto& dst = destination.AsRegisters();
+      ASSERT(dst.num_regs() == 1);
+      const auto dst_reg = dst.reg_at(0);
+      ASSERT(destination.container_type().SizeInBytes() <=
+            compiler::target::kWordSize);
+      if (!sign_or_zero_extend) {
+        __ MoveRegister(dst_reg, src_reg);
+      } else {
+        switch (src_payload_type.AsPrimitive().representation()) {
+          case compiler::ffi::kInt8:  // Sign extend operand.
+            __ ExtendValue(dst_reg, src_reg, compiler::kByte);
+            return;
+          case compiler::ffi::kInt16:
+            __ ExtendValue(dst_reg, src_reg, compiler::kTwoBytes);
+            return;
+          case compiler::ffi::kInt24:
+            __ MoveRegister(dst_reg, src_reg);
+            __ sll(dst_reg, dst_reg, 8);
+            __ sra(dst_reg, dst_reg, 8);
+            return;
+          case compiler::ffi::kUint8:  // Zero extend operand.
+            __ ExtendValue(dst_reg, src_reg, compiler::kUnsignedByte);
+            return;
+          case compiler::ffi::kUint16:
+            __ ExtendValue(dst_reg, src_reg, compiler::kUnsignedTwoBytes);
+            return;
+          case compiler::ffi::kUint24:
+            __ AndImmediate(dst_reg, src_reg, 0xFFFFFF);
+            return;
+          default:
+            UNIMPLEMENTED();
+        }
+      }
+
+    } else if (destination.IsFpuRegisters()) {
+      const auto& dst = destination.AsFpuRegisters();
+      ASSERT(src_size == dst_size);
+      ASSERT(dst.fpu_reg_kind() == compiler::ffi::kSingleFpuReg ||
+             dst.fpu_reg_kind() == compiler::ffi::kDoubleFpuReg);
+      const DRegister dst_dreg = dst.fpu_reg();
+
+      if (src_size == 4) {
+        // Single float: move 1 int reg to even F-register
+        ASSERT(src.num_regs() == 1);
+        __ mtc1(src.reg_at(0), EvenFRegisterOf(dst_dreg));
+      } else if (src_size == 8) {
+        // Double: move 2 int regs to D-register (for varargs doubles passed in int regs)
+        // On little-endian MIPS, reg_at(0) has low word, reg_at(1) has high word
+        ASSERT(src.num_regs() == 2);
+        __ mtc1(src.reg_at(0), EvenFRegisterOf(dst_dreg));  // Low word to even F-reg
+        __ mtc1(src.reg_at(1), OddFRegisterOf(dst_dreg));   // High word to odd F-reg
+      } else {
+        UNREACHABLE();
+      }
+
+    } else {
+      ASSERT(destination.IsStack());
+      const auto& dst = destination.AsStack();
+      ASSERT(!sign_or_zero_extend);
+      auto const op_size =
+          BytesToOperandSize(destination.container_type().SizeInBytes());
+      __ StoreToOffset(src.reg_at(0), dst.base_register(),
+                       dst.offset_in_bytes(), op_size);
+    }
+
+  } else if (source.IsFpuRegisters()) {
+    const auto& src = source.AsFpuRegisters();
+    // We have not implemented conversions here, use IL convert instructions.
+    ASSERT(src_payload_type.Equals(dst_payload_type));
+
+    if (destination.IsRegisters()) {
+      const auto& dst = destination.AsRegisters();
+      ASSERT(src_size == dst_size);
+      ASSERT(src.fpu_reg_kind() == compiler::ffi::kSingleFpuReg ||
+             src.fpu_reg_kind() == compiler::ffi::kDoubleFpuReg);
+      const DRegister src_dreg = src.fpu_reg();
+
+      if (src_size == 4) {
+        // Single float: move even F-register to 1 int reg
+        ASSERT(dst.num_regs() == 1);
+        __ mfc1(dst.reg_at(0), EvenFRegisterOf(src_dreg));
+      } else if (src_size == 8) {
+        // Double: move D-register to 2 int regs (for varargs doubles passed in int regs)
+        // On little-endian MIPS, reg_at(0) gets low word, reg_at(1) gets high word
+        ASSERT(dst.num_regs() == 2);
+        __ mfc1(dst.reg_at(0), EvenFRegisterOf(src_dreg));  // Low word from even F-reg
+        __ mfc1(dst.reg_at(1), OddFRegisterOf(src_dreg));   // High word from odd F-reg
+      } else {
+        UNREACHABLE();
+      }
+
+    } else if (destination.IsFpuRegisters()) {
+      const auto& dst = destination.AsFpuRegisters();
+      // Get the D-register indices and convert to F-registers
+      ASSERT(src.fpu_reg_kind() == compiler::ffi::kSingleFpuReg ||
+             src.fpu_reg_kind() == compiler::ffi::kDoubleFpuReg);
+      ASSERT(dst.fpu_reg_kind() == compiler::ffi::kSingleFpuReg ||
+             dst.fpu_reg_kind() == compiler::ffi::kDoubleFpuReg);
+      switch (dst_size) {
+        case 8: {
+          const DRegister src_dreg = src.fpu_reg();
+          const DRegister dst_dreg = dst.fpu_reg();
+          __ movd(dst_dreg, src_dreg);
+          return;
+        }
+        case 4: {
+          const intptr_t src_dreg_index = static_cast<intptr_t>(src.fpu_reg());
+          const intptr_t dst_dreg_index = static_cast<intptr_t>(dst.fpu_reg());
+          __ movs(FRegister(dst_dreg_index*2), FRegister(src_dreg_index*2));
+          return;
+        }
+        default:
+          UNREACHABLE();
+      }
+
+    } else {
+      ASSERT(destination.IsStack());
+      ASSERT(src_payload_type.IsFloat());
+      const auto& dst = destination.AsStack();
+      const auto dst_addr = NativeLocationToStackSlotAddress(dst);
+      // Get the D-register index and convert to F-register.
+      ASSERT(src.fpu_reg_kind() == compiler::ffi::kSingleFpuReg ||
+             src.fpu_reg_kind() == compiler::ffi::kDoubleFpuReg);
+      switch (dst_size) {
+        case 8: {
+          const DRegister src_dreg = src.fpu_reg();
+          __ sdc1(src_dreg, dst_addr);
+          return;
+        }
+        case 4: {
+          const intptr_t src_dreg_index = static_cast<intptr_t>(src.fpu_reg());
+          __ swc1(FRegister(src_dreg_index*2), dst_addr);
+          return;
+        }
+        default:
+          UNREACHABLE();
+      }
+    }
+
+  } else {
+    ASSERT(source.IsStack());
+    const auto& src = source.AsStack();
+    const auto src_addr = NativeLocationToStackSlotAddress(src);
+    if (destination.IsRegisters()) {
+      const auto& dst = destination.AsRegisters();
+      ASSERT(dst.num_regs() == 1);
+      const auto dst_reg = dst.reg_at(0);
+      EmitNativeLoad(dst_reg, src.base_register(), src.offset_in_bytes(),
+                     src_payload_type.AsPrimitive().representation());
+    } else if (destination.IsFpuRegisters()) {
+      ASSERT(src_payload_type.Equals(dst_payload_type));
+      ASSERT(src_payload_type.IsFloat());
+      const auto& dst = destination.AsFpuRegisters();
+      // Get the D-register index and convert to F-register.
+      ASSERT(dst.fpu_reg_kind() == compiler::ffi::kSingleFpuReg ||
+             dst.fpu_reg_kind() == compiler::ffi::kDoubleFpuReg);
+      switch (src_size) {
+        case 8: {
+          const DRegister dst_dreg = dst.fpu_reg();
+          __ ldc1(dst_dreg, src_addr);
+          return;
+        }
+        case 4: {
+          const intptr_t dst_dreg_index = static_cast<intptr_t>(dst.fpu_reg());
+          __ lwc1(FRegister(dst_dreg_index*2), src_addr);
+          return;
+        }
+        default:
+          UNIMPLEMENTED();
+      }
+
+    } else {
+      ASSERT(destination.IsStack());
+      UNREACHABLE();
+    }
+  }
+}
+
 #undef __
 
 }  // namespace dart
