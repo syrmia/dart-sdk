@@ -361,6 +361,35 @@ void FlowGraphCompiler::RestoreLiveRegisters(LocationSummary* locs) {
   __ PopRegisters(*locs->live_registers());
 }
 
+Register FlowGraphCompiler::EmitTestCidRegister() {
+  return A1;
+}
+
+void FlowGraphCompiler::EmitTestAndCallLoadReceiver(
+    intptr_t argument_count,
+    const Array& arguments_descriptor) {
+  __ Comment("EmitTestAndCall");
+  // Load receiver into T0.
+  __ LoadFromOffset(T0, SP, (argument_count - 1) * kWordSize);
+  __ LoadObject(S4, arguments_descriptor);
+}
+
+void FlowGraphCompiler::EmitTestAndCallSmiBranch(compiler::Label* label, bool if_smi) {
+  __ AndImmediate(CMPRES1, T0, kSmiTagMask);
+  if (if_smi) {
+    // Jump if receiver is Smi.
+    __ beq(CMPRES1, ZR, label);
+  } else {
+    // Jump if receiver is not Smi.
+    __ bne(CMPRES1, ZR, label);
+  }
+}
+
+void FlowGraphCompiler::EmitTestAndCallLoadCid(Register class_id_reg) {
+  ASSERT(class_id_reg != T0);
+  __ LoadClassId(class_id_reg, T0);
+}
+
 void FlowGraphCompiler::EmitMove(Location destination,
                                  Location source,
                                  TemporaryRegisterAllocator* allocator) {
