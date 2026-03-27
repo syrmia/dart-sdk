@@ -1204,6 +1204,14 @@ void Simulator::DoBreak(Instr* instr) {
 void Simulator::DecodeSpecial(Instr* instr) {
   ASSERT(instr->OpcodeField() == SPECIAL);
   switch (instr->FunctionField()) {
+    case ADD: {
+      ASSERT(instr->SaField() == 0);
+      // Format(instr, "add 'rd, 'rs, 'rt");
+      int32_t rs_val = get_register(instr->RsField());
+      int32_t rt_val = get_register(instr->RtField());
+      set_register(instr->RdField(), rs_val + rt_val);
+      break;
+    }
     case ADDU: {
       ASSERT(instr->SaField() == 0);
       // Format(instr, "addu 'rd, 'rs, 'rt");
