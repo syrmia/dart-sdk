@@ -919,6 +919,10 @@ class Assembler : public AssemblerBase {
     UNIMPLEMENTED();
   }
 
+  Register LoadConditionOperand(Register rd,
+                              const Object& operand,
+                              int16_t* imm);
+
   void BranchIf(Condition cond, Label* l, JumpDistance distance = kFarJump);
 
   void BranchIfZero(Register rn,

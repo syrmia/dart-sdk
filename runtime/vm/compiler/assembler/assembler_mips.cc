@@ -457,6 +457,19 @@ void Assembler::BranchLinkWithEquivalence(const Code& target,
   delay_slot_available_ = false;  // CodePatcher expects a nop.
 }
 
+Register Assembler::LoadConditionOperand(Register rd,
+                                const Object& operand,
+                                int16_t* imm) {
+  if (target::IsSmi(operand)) {
+    const int32_t val = target::ToRawSmi(operand);
+    if (val == 0) {
+      return ZR;
+    }
+  }
+  LoadObject(rd, operand);
+  return rd;
+}
+
 void Assembler::AddBranchOverflow(Register rd,
                                   Register rs1,
                                   Register rs2,
