@@ -15,6 +15,154 @@
 
 namespace dart {
 
+LocationSummary* MemoryCopyInstr::MakeLocationSummary(Zone* zone,
+                                                      bool opt) const {
+  // The compiler must optimize any function that includes a MemoryCopy
+  // instruction that uses typed data cids, since extracting the payload address
+  // from views is done in a compiler pass after all code motion has happened.
+  ASSERT((!IsTypedDataBaseClassId(src_cid_) &&
+          !IsTypedDataBaseClassId(dest_cid_)) ||
+         opt);
+  const intptr_t kNumInputs = 5;
+  const intptr_t kNumTemps = 3;
+  LocationSummary* locs = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  locs->set_in(kSrcPos, Location::RequiresRegister());
+  locs->set_in(kDestPos, Location::RequiresRegister());
+  locs->set_in(kSrcStartPos, LocationRegisterOrConstant(src_start()));
+  locs->set_in(kDestStartPos, LocationRegisterOrConstant(dest_start()));
+  locs->set_in(kLengthPos,
+               LocationWritableRegisterOrSmiConstant(length(), 0, 4));
+  locs->set_temp(0, Location::RequiresRegister());
+  locs->set_temp(1, Location::RequiresRegister());
+  locs->set_temp(2, Location::RequiresRegister());
+  return locs;
+}
+
+void MemoryCopyInstr::PrepareLengthRegForLoop(FlowGraphCompiler* compiler,
+                                              Register length_reg,
+                                              compiler::Label* done) {
+  __ BranchEqual(length_reg, ZR, done);
+}
+
+void MemoryCopyInstr::EmitLoopCopy(FlowGraphCompiler* compiler,
+                                   Register dest_reg,
+                                   Register src_reg,
+                                   Register length_reg,
+                                   compiler::Label* done,
+                                   compiler::Label* copy_forwards) {
+  const bool reversed = copy_forwards != nullptr;
+  const Register temp = locs()->temp(2).reg();
+  if (reversed) {
+    // Verify that the overlap actually exists by checking to see if the start
+    // of the destination region is after the end of the source region.
+    const intptr_t shift = Utils::ShiftForPowerOfTwo(element_size_) -
+                           (unboxed_inputs() ? 0 : kSmiTagShift);
+
+    if (shift == 0) {
+      __ addu(TMP, src_reg, length_reg);
+    } else if (shift < 0) {
+      __ sra(TMP, length_reg, -shift);
+      __ addu(TMP, src_reg, TMP);
+    } else {
+      __ sll(TMP, length_reg, shift);
+      __ addu(TMP, src_reg, TMP);
+    }
+    __ BranchUnsignedGreaterEqual(dest_reg, TMP, copy_forwards);
+    // Adjust dest_reg and src_reg to point at the end (i.e. one past the
+    // last element) of their respective region.
+    __ addu(dest_reg, dest_reg, TMP);
+    __ subu(dest_reg, dest_reg, src_reg);
+    __ MoveRegister(src_reg, TMP);
+  }
+  CopyUpToWordMultiple(compiler, dest_reg, src_reg, length_reg, element_size_,
+                       unboxed_inputs_, reversed, done, temp);
+  // The size of the uncopied region is a multiple of the word size, so now we
+  // copy the rest by word (unless the element size is larger).
+  const intptr_t loop_subtract =
+      Utils::Maximum<intptr_t>(1, compiler::target::kWordSize / element_size_)
+      << (unboxed_inputs_ ? 0 : kSmiTagShift);
+  __ Comment("Copying by multiples of word size");
+  compiler::Label loop;
+  __ Bind(&loop);
+  switch (element_size_) {
+    // Fall through for the sizes smaller than compiler::target::kWordSize.
+    case 1:
+      CopyBytes(compiler, dest_reg, src_reg, 1, reversed, temp);
+      CopyBytes(compiler, dest_reg, src_reg, 1, reversed, temp);
+      CopyBytes(compiler, dest_reg, src_reg, 1, reversed, temp);
+      CopyBytes(compiler, dest_reg, src_reg, 1, reversed, temp);
+      break;
+    case 2:
+      CopyBytes(compiler, dest_reg, src_reg, 2, reversed, temp);
+      CopyBytes(compiler, dest_reg, src_reg, 2, reversed, temp);
+      break;
+    case 4:
+      CopyBytes(compiler, dest_reg, src_reg, 4, reversed, temp);
+      break;
+    case 8:
+      CopyBytes(compiler, dest_reg, src_reg, 8, reversed, temp);
+      break;
+    case 16:
+      CopyBytes(compiler, dest_reg, src_reg, 16, reversed, temp);
+      break;
+    default:
+      UNREACHABLE();
+      break;
+  }
+  __ AddImmediate(length_reg, length_reg, -loop_subtract);
+  __ BranchNotEqual(length_reg, ZR, &loop);
+}
+
+void MemoryCopyInstr::EmitComputeStartPointer(FlowGraphCompiler* compiler,
+                                              classid_t array_cid,
+                                              Register array_reg,
+                                              Register payload_reg,
+                                              Representation array_rep,
+                                              Location start_loc) {
+  intptr_t offset = 0;
+  if (array_rep != kTagged) {
+    // Do nothing, array_reg already contains the payload address.
+  } else if (IsTypedDataBaseClassId(array_cid)) {
+    // The incoming array must have been proven to be an internal typed data
+    // object, where the payload is in the object and we can just offset.
+    ASSERT_EQUAL(array_rep, kTagged);
+    offset = compiler::target::TypedData::payload_offset() - kHeapObjectTag;
+  } else {
+    ASSERT_EQUAL(array_rep, kTagged);
+    ASSERT(!IsExternalPayloadClassId(array_cid));
+    switch (array_cid) {
+      case kOneByteStringCid:
+        offset =
+            compiler::target::OneByteString::data_offset() - kHeapObjectTag;
+        break;
+      case kTwoByteStringCid:
+        offset =
+            compiler::target::TwoByteString::data_offset() - kHeapObjectTag;
+        break;
+      default:
+        UNREACHABLE();
+        break;
+    }
+  }
+  ASSERT(start_loc.IsRegister() || start_loc.IsConstant());
+  if (start_loc.IsConstant()) {
+    const auto& constant = start_loc.constant();
+    ASSERT(constant.IsInteger());
+    const int64_t start_value = Integer::Cast(constant).Value();
+    const intptr_t add_value = Utils::AddWithWrapAround(
+        Utils::MulWithWrapAround<intptr_t>(start_value, element_size_), offset);
+    __ AddImmediate(payload_reg, array_reg, add_value);
+    return;
+  }
+  const Register start_reg = start_loc.reg();
+  intptr_t shift = Utils::ShiftForPowerOfTwo(element_size_) -
+                   (unboxed_inputs() ? 0 : kSmiTagShift);
+
+  __ AddShifted(payload_reg, array_reg, start_reg, shift);
+  __ AddImmediate(payload_reg, offset);
+}
+
 #define R(r) (1 << r)
 
 LocationSummary* FfiCallInstr::MakeLocationSummary(Zone* zone,
