@@ -146,6 +146,24 @@ void CompilerDeoptInfoWithStub::GenerateCode(FlowGraphCompiler* compiler,
 
 #define __ assembler()->
 
+// Fall through if bool_register contains null.
+void FlowGraphCompiler::GenerateBoolToJump(Register bool_register,
+                                           compiler::Label* is_true,
+                                           compiler::Label* is_false) {
+  __ Comment("BoolToJump");
+  compiler::Label fall_through;
+  __ BranchEqual(bool_register, Object::null_object(), &fall_through);
+  BranchLabels labels = {is_true, is_false, &fall_through};
+  Condition true_condition =
+      EmitBoolTest(bool_register, labels, /*invert=*/false);
+  ASSERT(true_condition != kInvalidCondition);
+  __ BranchIf(true_condition, is_true);
+  __ b(is_false);
+  __ Bind(&fall_through);
+}
+
+#define __ assembler()->
+
 void FlowGraphCompiler::EmitCallToStub(
     const Code& stub,
     ObjectPool::SnapshotBehavior snapshot_behavior) {
@@ -393,6 +411,14 @@ void FlowGraphCompiler::EmitOptimizedStaticCall(
   GenerateStaticDartCall(deopt_id, source, UntaggedPcDescriptors::kOther, locs,
                          function, entry_kind);
   EmitDropArguments(size_with_type_args);
+}
+
+Condition FlowGraphCompiler::EmitBoolTest(Register value,
+                                          BranchLabels labels,
+                                          bool invert) {
+  __ Comment("BoolTest");
+  __ TestImmediate(value, compiler::target::ObjectAlignment::kBoolValueMask);
+  return invert ? NE : EQ;
 }
 
 // This function must be in sync with FlowGraphCompiler::RecordSafepoint and
