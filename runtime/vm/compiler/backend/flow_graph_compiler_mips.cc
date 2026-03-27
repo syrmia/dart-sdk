@@ -192,8 +192,6 @@ void FlowGraphCompiler::GenerateBoolToJump(Register bool_register,
   __ Bind(&fall_through);
 }
 
-#define __ assembler()->
-
 void FlowGraphCompiler::EmitCallToStub(
     const Code& stub,
     ObjectPool::SnapshotBehavior snapshot_behavior) {
@@ -1053,6 +1051,78 @@ void FlowGraphCompiler::EmitNativeLoad(Register dst,
 }
 #undef __
 #define __ compiler_->assembler()->
+
+void ParallelMoveEmitter::EmitSwap(const MoveOperands& move) {
+  const Location source = move.src();
+  const Location destination = move.dest();
+
+  if (source.IsRegister() && destination.IsRegister()) {
+    ASSERT(source.reg() != TMP);
+    ASSERT(destination.reg() != TMP);
+    __ mov(TMP, source.reg());
+    __ mov(source.reg(), destination.reg());
+    __ mov(destination.reg(), TMP);
+  } else if (source.IsRegister() && destination.IsStackSlot()) {
+    Exchange(source.reg(), destination.base_reg(),
+             destination.ToStackSlotOffset());
+  } else if (source.IsStackSlot() && destination.IsRegister()) {
+    Exchange(destination.reg(), source.base_reg(), source.ToStackSlotOffset());
+  } else if (source.IsStackSlot() && destination.IsStackSlot()) {
+    Exchange(source.base_reg(), source.ToStackSlotOffset(),
+             destination.base_reg(), destination.ToStackSlotOffset());
+  } else if (source.IsFpuRegister() && destination.IsFpuRegister()) {
+    DRegister dst = destination.fpu_reg();
+    DRegister src = source.fpu_reg();
+    __ movd(DTMP, src);
+    __ movd(src, dst);
+    __ movd(dst, DTMP);
+  } else if (source.IsFpuRegister() || destination.IsFpuRegister()) {
+    ASSERT(destination.IsDoubleStackSlot() || source.IsDoubleStackSlot());
+    DRegister reg =
+        source.IsFpuRegister() ? source.fpu_reg() : destination.fpu_reg();
+    Register base_reg =
+        source.IsFpuRegister() ? destination.base_reg() : source.base_reg();
+    const intptr_t slot_offset = source.IsFpuRegister()
+                                     ? destination.ToStackSlotOffset()
+                                     : source.ToStackSlotOffset();
+    __ LoadDFromOffset(DTMP, base_reg, slot_offset);
+    __ StoreDToOffset(reg, base_reg, slot_offset);
+    __ movd(reg, DTMP);
+  } else if (source.IsDoubleStackSlot() && destination.IsDoubleStackSlot()) {
+    const intptr_t source_offset = source.ToStackSlotOffset();
+    const intptr_t dest_offset = destination.ToStackSlotOffset();
+
+    ScratchFpuRegisterScope ensure_scratch(this, DTMP);
+    DRegister scratch = ensure_scratch.reg();
+    __ LoadDFromOffset(DTMP, source.base_reg(), source_offset);
+    __ LoadDFromOffset(scratch, destination.base_reg(), dest_offset);
+    __ StoreDToOffset(DTMP, destination.base_reg(), dest_offset);
+    __ StoreDToOffset(scratch, source.base_reg(), source_offset);
+  } else {
+    UNREACHABLE();
+  }
+}
+
+void ParallelMoveEmitter::Exchange(Register reg,
+                                    Register base_reg,
+                                    intptr_t stack_offset) {
+  ScratchRegisterScope tmp(this, reg);
+  __ mov(tmp.reg(), reg);
+  __ LoadFromOffset(reg, base_reg, stack_offset);
+  __ StoreToOffset(tmp.reg(), base_reg, stack_offset);
+}
+
+void ParallelMoveEmitter::Exchange(Register base_reg1,
+                                    intptr_t stack_offset1,
+                                    Register base_reg2,
+                                    intptr_t stack_offset2) {
+  ScratchRegisterScope tmp1(this, kNoRegister);
+  ScratchRegisterScope tmp2(this, tmp1.reg());
+  __ LoadFromOffset(tmp1.reg(), base_reg1, stack_offset1);
+  __ LoadFromOffset(tmp2.reg(), base_reg2, stack_offset2);
+  __ StoreToOffset(tmp1.reg(), base_reg2, stack_offset2);
+  __ StoreToOffset(tmp2.reg(), base_reg1, stack_offset1);
+}
 
 void ParallelMoveEmitter::SpillScratch(Register reg) {
   __ Comment("ParallelMoveEmitter::SpillScratch");
