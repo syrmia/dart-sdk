@@ -183,6 +183,54 @@ void FlowGraphCompiler::EmitTailCallToStub(const Code& stub) {
   }
 }
 
+void FlowGraphCompiler::GeneratePatchableCall(
+    const InstructionSource& source,
+    const Code& stub,
+    UntaggedPcDescriptors::Kind kind,
+    LocationSummary* locs,
+    ObjectPool::SnapshotBehavior snapshot_behavior) {
+  __ BranchLinkPatchable(stub, CodeEntryKind::kNormal, snapshot_behavior);
+  EmitCallsiteMetadata(source, DeoptId::kNone, kind, locs,
+                       pending_deoptimization_env_);
+}
+
+void FlowGraphCompiler::GenerateDartCall(intptr_t deopt_id,
+                                         const InstructionSource& source,
+                                         const Code& stub,
+                                         UntaggedPcDescriptors::Kind kind,
+                                         LocationSummary* locs,
+                                         Code::EntryKind entry_kind) {
+    ASSERT(CanCallDart());
+  __ BranchLinkPatchable(stub, entry_kind);
+  EmitCallsiteMetadata(source, deopt_id, kind, locs, pending_deoptimization_env_);
+}
+
+void FlowGraphCompiler::GenerateStaticDartCall(intptr_t deopt_id,
+                                               const InstructionSource& source,
+                                               UntaggedPcDescriptors::Kind kind,
+                                               LocationSummary* locs,
+                                               const Function& target,
+                                               Code::EntryKind entry_kind) {
+  ASSERT(CanCallDart());
+  if (CanPcRelativeCall(target)) {
+    __ GenerateUnRelocatedPcRelativeCall();
+    AddPcRelativeCallTarget(target, entry_kind);
+    EmitCallsiteMetadata(source, deopt_id, kind, locs,
+                            pending_deoptimization_env_);
+  } else {
+    // Call sites to the same target can share object pool entries. These
+    // call sites are never patched for breakpoints: the function is deoptimized
+    // and the unoptimized code with IC calls for static calls is patched instead.
+    ASSERT(is_optimizing());
+    const auto& stub = StubCode::CallStaticFunction();
+    __ BranchLinkWithEquivalence(stub, target, entry_kind);
+
+    EmitCallsiteMetadata(source, deopt_id, kind, locs,
+                        pending_deoptimization_env_);
+    AddStaticCallTarget(target, entry_kind);
+  }
+}
+
 void FlowGraphCompiler::EmitOptimizedInstanceCall(
     const Code& stub,
     const ICData& ic_data,
