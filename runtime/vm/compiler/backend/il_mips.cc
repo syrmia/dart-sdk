@@ -39,6 +39,23 @@ LocationSummary* MemoryCopyInstr::MakeLocationSummary(Zone* zone,
   return locs;
 }
 
+static compiler::OperandSize OperandSizeFor(intptr_t bytes) {
+  ASSERT(Utils::IsPowerOfTwo(bytes));
+  switch (bytes) {
+    case 1:
+      return compiler::kUnsignedByte;
+    case 2:
+      return compiler::kUnsignedTwoBytes;
+    case 4:
+      return compiler::kUnsignedFourBytes;
+    case 8:
+      return compiler::kEightBytes;
+    default:
+      UNREACHABLE();
+      return compiler::kEightBytes;
+  }
+}
+
 void MemoryCopyInstr::PrepareLengthRegForLoop(FlowGraphCompiler* compiler,
                                               Register length_reg,
                                               compiler::Label* done) {
