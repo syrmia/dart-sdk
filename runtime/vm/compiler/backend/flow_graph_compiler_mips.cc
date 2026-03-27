@@ -12,6 +12,8 @@
 
 namespace dart {
 
+DEFINE_FLAG(bool, trap_on_deoptimization, false, "Trap on deoptimization.");
+
 FlowGraphCompiler::~FlowGraphCompiler() {
   // BlockInfos are zone-allocated, so their destructors are not called.
   // Verify the labels explicitly here.
@@ -122,6 +124,24 @@ TypedDataPtr CompilerDeoptInfo::CreateDeoptInfo(FlowGraphCompiler* compiler,
   }
 
   return builder->CreateDeoptInfo(deopt_table);
+}
+
+void CompilerDeoptInfoWithStub::GenerateCode(FlowGraphCompiler* compiler,
+                                             intptr_t stub_ix) {
+  // Calls do not need stubs, they share a deoptimization trampoline.
+  ASSERT(reason() != ICData::kDeoptAtCall);
+  compiler::Assembler* assembler = compiler->assembler();
+#define __ assembler->
+  __ Comment("%s", Name());
+  __ Bind(entry_label());
+  if (FLAG_trap_on_deoptimization) {
+    __ break_(0);
+  }
+
+  ASSERT(deopt_env() != nullptr);
+  __ Call(compiler::Address(THR, Thread::deoptimize_entry_offset()));
+  set_pc_offset(assembler->CodeSize());
+#undef __
 }
 
 #define __ assembler()->
