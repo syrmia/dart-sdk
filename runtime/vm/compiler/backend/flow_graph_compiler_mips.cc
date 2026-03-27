@@ -880,6 +880,48 @@ void FlowGraphCompiler::EmitNativeMoveArchitecture(
   }
 }
 
+void FlowGraphCompiler::EmitNativeLoad(Register dst,
+                                       Register base,
+                                       intptr_t offset,
+                                       compiler::ffi::PrimitiveType type) {
+  switch (type) {
+    case compiler::ffi::kInt8:
+      __ lb(dst, compiler::Address(base, offset));
+      break;
+    case compiler::ffi::kUint8:
+      __ lbu(dst, compiler::Address(base, offset));
+      break;
+    case compiler::ffi::kInt16:
+      __ lh(dst, compiler::Address(base, offset));
+      break;
+    case compiler::ffi::kUint16:
+      __ lhu(dst, compiler::Address(base, offset));
+      break;
+    case compiler::ffi::kInt32:
+      __ lw(dst, compiler::Address(base, offset));
+      break;
+    case compiler::ffi::kUint32:
+    case compiler::ffi::kFloat:
+    case compiler::ffi::kHalfDouble:
+      __ lw (dst, compiler::Address(base, offset));
+      break;
+    case compiler::ffi::kInt24:
+      __ lhu(dst, compiler::Address(base, offset));
+      __ lb(TMP, compiler::Address(base, offset + 2));
+      __ sll(TMP, TMP, 16);
+      __ or_(dst, dst, TMP);
+      break;
+    case compiler::ffi::kUint24:
+      __ lhu(dst, compiler::Address(base, offset));
+      __ lbu(TMP, compiler::Address(base, offset + 2));
+      __ sll(TMP, TMP, 16);
+      __ or_(dst, dst, TMP);
+      break;
+    default:
+      UNREACHABLE();
+  }
+}
+
 #undef __
 
 }  // namespace dart
