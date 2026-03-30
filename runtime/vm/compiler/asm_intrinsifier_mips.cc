@@ -389,6 +389,15 @@ static void EquivalentClassIds(Assembler* assembler,
   }
 }
 
+void AsmIntrinsifier::String_getHashCode(Assembler* assembler,
+                                         Label* normal_ir_body) {
+  __ lw(T0, Address(SP, 0 * target::kWordSize));
+  __ lw(V0, FieldAddress(T0, target::String::hash_offset()));
+  __ beq(V0, ZR, normal_ir_body);
+  __ Ret();
+  __ Bind(normal_ir_body);  // Hash not yet computed.
+}
+
 void AsmIntrinsifier::Type_equality(Assembler* assembler,
                                     Label* normal_ir_body) {
   Label equal, not_equal, equiv_cids_may_be_generic, equiv_cids;
@@ -457,9 +466,178 @@ void AsmIntrinsifier::AbstractType_equality(Assembler* assembler,
   __ Bind(normal_ir_body);
 }
 
+void GenerateSubstringMatchesSpecialization(Assembler* assembler,
+                                            intptr_t receiver_cid,
+                                            intptr_t other_cid,
+                                            Label* return_true,
+                                            Label* return_false) {
+  __ SmiUntag(A1);
+  __ lw(T1, FieldAddress(A0, target::String::length_offset()));  // this.length
+  __ SmiUntag(T1);
+  __ lw(T2, FieldAddress(A2, target::String::length_offset()));  // other.length
+  __ SmiUntag(T2);
+
+  // if (other.length == 0) return true;
+  __ beq(T2, ZR, return_true);
+
+  // if (start < 0) return false;
+  __ bltz(A1, return_false);
+
+  // if (start + other.length > this.length) return false;
+  __ addu(T0, A1, T2);
+  __ BranchSignedGreater(T0, T1, return_false);
+
+  if (receiver_cid == kOneByteStringCid) {
+    __ AddImmediate(A0, A0, target::OneByteString::data_offset() - kHeapObjectTag);
+    __ addu(A0, A0, A1);
+  } else {
+    ASSERT(receiver_cid == kTwoByteStringCid);
+    __ AddImmediate(A0, A0, target::TwoByteString::data_offset() - kHeapObjectTag);
+    __ addu(A0, A0, A1);
+    __ addu(A0, A0, A1);
+  }
+  if (other_cid == kOneByteStringCid) {
+    __ AddImmediate(A2, A2, target::OneByteString::data_offset() - kHeapObjectTag);
+  } else {
+    ASSERT(other_cid == kTwoByteStringCid);
+    __ AddImmediate(A2, A2, target::TwoByteString::data_offset() - kHeapObjectTag);
+  }
+
+  // i = 0
+  __ LoadImmediate(T0, 0);
+
+  // do
+  Label loop;
+  __ Bind(&loop);
+
+  if (receiver_cid == kOneByteStringCid) {
+    __ lbu(T3, Address(A0, 0));  // this.codeUnitAt(i + start)
+  } else {
+    __ lhu(T3, Address(A0, 0));  // this.codeUnitAt(i + start)
+  }
+  if (other_cid == kOneByteStringCid) {
+    __ lbu(T4, Address(A2, 0));  // other.codeUnitAt(i)
+  } else {
+    __ lhu(T4, Address(A2, 0));  // other.codeUnitAt(i)
+  }
+  __ bne(T3, T4, return_false);
+
+  // i++, while (i < len)
+  __ AddImmediate(T0, T0, 1);
+  __ AddImmediate(A0, A0, receiver_cid == kOneByteStringCid ? 1 : 2);
+  __ AddImmediate(A2, A2, other_cid == kOneByteStringCid ? 1 : 2);
+  __ BranchSignedLess(T0, T2, &loop);
+
+  __ b(return_true);
+}
+
+// bool _substringMatches(int start, String other)
+// This intrinsic handles a OneByteString or TwoByteString receiver with a
+// OneByteString other.
+void AsmIntrinsifier::StringBaseSubstringMatches(Assembler* assembler,
+                                                 Label* normal_ir_body) {
+  Label return_true, return_false, try_two_byte;
+  __ lw(A0, Address(SP, 2 * target::kWordSize));  // this
+  __ lw(A1, Address(SP, 1 * target::kWordSize));  // start
+  __ lw(A2, Address(SP, 0 * target::kWordSize));  // other
+
+  __ AndImmediate(CMPRES1, A1, kSmiTagMask);
+  __ bne(CMPRES1, ZR, normal_ir_body);  // 'start' is not a Smi.
+
+  __ LoadClassId(CMPRES1, A2);
+  __ BranchNotEqual(CMPRES1, Immediate(kOneByteStringCid), normal_ir_body);
+
+  __ LoadClassId(CMPRES1, A0);
+  __ BranchNotEqual(CMPRES1, Immediate(kOneByteStringCid), &try_two_byte);
+
+  GenerateSubstringMatchesSpecialization(assembler, kOneByteStringCid,
+                                         kOneByteStringCid, &return_true,
+                                         &return_false);
+
+  __ Bind(&try_two_byte);
+  __ LoadClassId(CMPRES1, A0);
+  __ BranchNotEqual(CMPRES1, Immediate(kTwoByteStringCid), normal_ir_body);
+
+  GenerateSubstringMatchesSpecialization(assembler, kTwoByteStringCid,
+                                         kOneByteStringCid, &return_true,
+                                         &return_false);
+
+  __ Bind(&return_true);
+  __ LoadObject(V0, CastHandle<Object>(TrueObject()));
+  __ Ret();
+
+  __ Bind(&return_false);
+  __ LoadObject(V0, CastHandle<Object>(FalseObject()));
+  __ Ret();
+
+  __ Bind(normal_ir_body);
+}
+
 void AsmIntrinsifier::Object_getHash(Assembler* assembler,
                                      Label* normal_ir_body) {
   UNREACHABLE();
+}
+
+void AsmIntrinsifier::StringBaseCharAt(Assembler* assembler,
+                                       Label* normal_ir_body) {
+  Label try_two_byte_string;
+
+  __ lw(T1, Address(SP, 0 * target::kWordSize));  // Index.
+  __ lw(T0, Address(SP, 1 * target::kWordSize));  // String.
+
+  // Checks.
+  __ AndImmediate(CMPRES1, T1, kSmiTagMask);
+  __ bne(CMPRES1, ZR, normal_ir_body);                    // Index is not a Smi.
+  __ lw(T2, FieldAddress(T0, target::String::length_offset()));  // Range check.
+  // Runtime throws exception.
+  __ BranchUnsignedGreaterEqual(T1, T2, normal_ir_body);
+  __ LoadClassId(CMPRES1, T0);  // Class ID check.
+  __ BranchNotEqual(CMPRES1, Immediate(kOneByteStringCid),
+                    &try_two_byte_string);
+
+  // Grab byte and return.
+  __ SmiUntag(T1);
+  __ addu(T2, T0, T1);
+  __ lbu(T2, FieldAddress(T2, target::OneByteString::data_offset()));
+  __ BranchSignedGreaterEqual(
+      T2, Immediate(target::Symbols::kNumberOfOneCharCodeSymbols), normal_ir_body);
+  __ lw(V0, Address(THR, target::Thread::predefined_symbols_address_offset()));
+  __ AddImmediate(V0, target::Symbols::kNullCharCodeSymbolOffset * target::kWordSize);
+  __ sll(T2, T2, 2);
+  __ addu(T2, T2, V0);
+  __ Ret();
+  __ delay_slot()->lw(V0, Address(T2));
+
+  __ Bind(&try_two_byte_string);
+  __ BranchNotEqual(CMPRES1, Immediate(kTwoByteStringCid), normal_ir_body);
+  ASSERT(kSmiTagShift == 1);
+  __ addu(T2, T0, T1);
+  __ lhu(T2, FieldAddress(T2, target::TwoByteString::data_offset()));
+  __ BranchSignedGreaterEqual(
+      T2, Immediate(target::Symbols::kNumberOfOneCharCodeSymbols), normal_ir_body);
+  __ lw(V0, Address(THR, target::Thread::predefined_symbols_address_offset()));
+  __ AddImmediate(V0, target::Symbols::kNullCharCodeSymbolOffset * target::kWordSize);
+  __ sll(T2, T2, 2);
+  __ addu(T2, T2, V0);
+  __ Ret();
+  __ delay_slot()->lw(V0, Address(T2));
+
+  __ Bind(normal_ir_body);
+}
+
+void AsmIntrinsifier::StringBaseIsEmpty(Assembler* assembler,
+                                        Label* normal_ir_body) {
+  Label is_true;
+
+  __ lw(T0, Address(SP, 0 * target::kWordSize));
+  __ lw(T0, FieldAddress(T0, target::String::length_offset()));
+
+  __ beq(T0, ZR, &is_true);
+  __ LoadObject(V0, CastHandle<Object>(FalseObject()));
+  __ Ret();
+  __ Bind(&is_true);
+  __ LoadObject(V0, CastHandle<Object>(TrueObject()));
+  __ Ret();
 }
 
 void AsmIntrinsifier::OneByteString_getHashCode(Assembler* assembler, Label* normal_ir_body) {
