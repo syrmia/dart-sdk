@@ -3299,6 +3299,138 @@ void StubCodeCompiler::GenerateSingleTargetCallStub() {
   __ jr(T1);
 }
 
+static int GetScaleFactor(intptr_t size) {
+  switch (size) {
+    case 1:
+      return 0;
+    case 2:
+      return 1;
+    case 4:
+      return 2;
+    case 8:
+      return 3;
+    case 16:
+      return 4;
+  }
+  UNREACHABLE();
+  return -1;
+}
+
+void StubCodeCompiler::GenerateAllocateTypedDataArrayStub(intptr_t cid) {
+  const intptr_t element_size = TypedDataElementSizeInBytes(cid);
+  const intptr_t max_len = TypedDataMaxNewSpaceElements(cid);
+  const int scale_shift = GetScaleFactor(element_size);
+
+  COMPILE_ASSERT(AllocateTypedDataArrayABI::kLengthReg == A1);
+  COMPILE_ASSERT(AllocateTypedDataArrayABI::kResultReg == V0);
+
+  if (!FLAG_use_slow_path && FLAG_inline_alloc) {
+    Label call_runtime;
+    NOT_IN_PRODUCT(__ MaybeTraceAllocation(cid, &call_runtime, T3));
+    __ mov(T3, AllocateTypedDataArrayABI::kLengthReg); /* Array length. */
+    /* Check that length is a positive Smi. */
+    /* T3: requested array length argument. */
+    __ BranchIfNotSmi(T3, &call_runtime);
+    __ SmiUntag(T3);
+    /* Check for maximum allowed length. */
+    /* T3: untagged array length. */
+    __ BranchUnsignedGreater(T3, Immediate(max_len), &call_runtime);
+    if (scale_shift != 0) {
+      __ sll(T3, T3, scale_shift);
+    }
+    const intptr_t fixed_size_plus_alignment_padding =
+        target::TypedData::HeaderSize() +
+        target::ObjectAlignment::kObjectAlignment - 1;
+    __ AddImmediate(T3, fixed_size_plus_alignment_padding);
+    __ AndImmediate(T3, T3, ~(target::ObjectAlignment::kObjectAlignment - 1));
+    __ lw(V0, Address(THR, target::Thread::top_offset()));
+
+    /* T3: allocation size. */
+    __ addu(T4, V0, T3);
+    /* Branch on unsigned overflow. */
+    __ BranchUnsignedLess(T4, V0, &call_runtime);
+
+    /* Check if the allocation fits into the remaining space. */
+    /* V0: potential new object start. */
+    /* T4: potential next object start. */
+    /* T3: allocation size. */
+    __ lw(TMP, Address(THR, target::Thread::end_offset()));
+    __ BranchUnsignedGreaterEqual(T4, TMP, &call_runtime);
+    __ CheckAllocationCanary(V0);
+
+    /* Successfully allocated the object(s), now update top to point to */
+    /* next object start and initialize the object. */
+    __ sw(T4, Address(THR, target::Thread::top_offset()));
+    __ AddImmediate(V0, kHeapObjectTag);
+    /* Initialize the tags. */
+    /* V0: new object start as a tagged pointer. */
+    /* T4: new object end address. */
+    /* T3: allocation size. */
+    {
+      compiler::Label skip_shift;
+      __ BranchSignedLessEqual(
+        T3, Immediate(target::UntaggedObject::kSizeTagMaxSizeTag),
+        &skip_shift);
+      __ LoadImmediate(T5, 0);  // overflow: tag == 0
+      compiler::Label done;
+      __ b(&done);
+
+      __ Bind(&skip_shift);
+      __ sll(T5, T3, target::UntaggedObject::kTagBitsSizeTagPos -
+                              target::ObjectAlignment::kObjectAlignmentLog2);
+      __ Bind(&done);
+
+      ASSERT(cid != kIllegalCid);
+
+      /* Get the class index and insert it into the tags. */
+      uword tags =
+          target::MakeTagWordForNewSpaceObject(cid, /*instance_size=*/0);
+      __ OrImmediate(T5, T5, tags);
+      __ InitializeHeader(T5, V0);
+    }
+    /* Set the length field. */
+    /* V0: new object start as a tagged pointer. */
+    /* T4: new object end address. */
+    __ mov(T3, AllocateTypedDataArrayABI::kLengthReg); /* Array length. */
+    __ StoreIntoObjectNoBarrier(
+        V0, FieldAddress(V0, target::TypedDataBase::length_offset()), T3);
+    /* Initialize all array elements to 0. */
+    /* V0: new object start as a tagged pointer. */
+    /* T4: new object end address. */
+    /* T3: iterator which initially points to the start of the variable */
+    /* data area to be initialized. */
+    __ AddImmediate(T3, V0, target::TypedData::HeaderSize() - 1);
+    __ StoreInternalPointer(
+            V0, FieldAddress(V0, target::PointerBase::data_offset()), T3);
+
+      Label loop;
+    __ Bind(&loop);
+    for (intptr_t offset = 0; offset < target::kObjectAlignment;
+         offset += target::kWordSize) {
+      __ sw(ZR, Address(T3, offset));
+    }
+
+    // Safe to only check every kObjectAlignment bytes instead of each word.
+    ASSERT(kAllocationRedZoneSize >= target::kObjectAlignment);
+    __ AddImmediate(T3, T3, target::kObjectAlignment);
+    __ BranchUnsignedLess(T3, T4, &loop);
+    __ WriteAllocationCanary(T4);  // Fix overshoot.
+    __ Ret();
+    __ Bind(&call_runtime);
+  }
+
+  __ EnterStubFrame();
+  __ PushRegister(ZR);  // Make room for the result.
+  __ PushImmediate(target::ToRawSmi(cid));
+  __ PushRegister(AllocateTypedDataArrayABI::kLengthReg);
+  __ CallRuntime(kAllocateTypedDataRuntimeEntry, 2);
+  __ Drop(2);  // Drop arguments.
+  __ PopRegister(AllocateTypedDataArrayABI::kResultReg);
+  __ LeaveStubFrame();
+
+  __ Ret();
+}
+
 }  // namespace compiler
 }  // namespace dart
 
