@@ -435,6 +435,28 @@ void AsmIntrinsifier::Type_equality(Assembler* assembler,
   __ Bind(normal_ir_body);
 }
 
+void AsmIntrinsifier::AbstractType_getHashCode(Assembler* assembler,
+                                               Label* normal_ir_body) {
+  __ lw(T0, Address(SP, 0 * target::kWordSize));
+  __ LoadCompressed(V0, FieldAddress(T0, target::AbstractType::hash_offset()));
+  __ beq(V0, ZR, normal_ir_body);
+  __ Ret();
+  // Hash not yet computed.
+  __ Bind(normal_ir_body);
+}
+
+void AsmIntrinsifier::AbstractType_equality(Assembler* assembler,
+                                            Label* normal_ir_body) {
+  __ lw(T0, Address(SP, 1 * target::kWordSize));
+  __ lw(T1, Address(SP, 0 * target::kWordSize));
+  __ bne(T0, T1, normal_ir_body);
+
+  __ LoadObject(V0, CastHandle<Object>(TrueObject()));
+  __ Ret();
+
+  __ Bind(normal_ir_body);
+}
+
 void AsmIntrinsifier::Object_getHash(Assembler* assembler,
                                      Label* normal_ir_body) {
   UNREACHABLE();
