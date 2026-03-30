@@ -273,6 +273,54 @@ void MemoryCopyInstr::EmitComputeStartPointer(FlowGraphCompiler* compiler,
   __ AddImmediate(payload_reg, offset);
 }
 
+LocationSummary* IfThenElseInstr::MakeLocationSummary(Zone* zone,
+                                                      bool opt) const {
+  condition()->InitializeLocationSummary(zone, opt);
+  return condition()->locs();
+}
+
+void IfThenElseInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  const Register result = locs()->out(0).reg();
+
+  intptr_t true_value = if_true_;
+  intptr_t false_value = if_false_;
+  bool swapped = false;
+  if (true_value == 0) {
+    // Swap values so that false_value is zero.
+    intptr_t temp = true_value;
+    true_value = false_value;
+    false_value = temp;
+    swapped = true;
+  }
+
+  // Initialize result with the true value.
+  __ LoadImmediate(result, Smi::RawValue(true_value));
+
+  // Emit comparison code. This must not overwrite the result register.
+  // IfThenElseInstr::Supports() should prevent EmitConditionCode from using
+  // the labels or returning an invalid condition.
+  BranchLabels labels = {NULL, NULL, NULL};  // Emit branch-free code.
+  Condition true_condition = condition()->EmitConditionCode(compiler, labels);
+  ASSERT(true_condition != kInvalidCondition);
+  if (swapped) {
+    true_condition = InvertCondition(true_condition);
+  }
+
+  // Evaluate condition and provide result in CMPRES1.
+  __ SetIf(true_condition, CMPRES1);
+
+  // CMPRES1 is the evaluated condition, zero or non-zero, as specified by the
+  // flag zero_is_false.
+  Register false_value_reg;
+  if (false_value == 0) {
+    false_value_reg = ZR;
+  } else {
+    __ LoadImmediate(CMPRES2, Smi::RawValue(false_value));
+    false_value_reg = CMPRES2;
+  }
+  __ movz(result, false_value_reg, CMPRES1);
+}
+
 LocationSummary* EqualityCompareInstr::MakeLocationSummary(Zone* zone,
                                                            bool opt) const {
   const intptr_t kNumInputs = 2;
@@ -618,6 +666,164 @@ Condition StrictCompareInstr::EmitComparisonCodeRegConstant(
     const Object& obj) {
   return compiler->EmitEqualityRegConstCompare(reg, obj, needs_number_check(),
                                                 source(), deopt_id());
+}
+
+void ConditionInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  compiler::Label is_true, is_false;
+  BranchLabels labels = {&is_true, &is_false, &is_false};
+  Condition true_condition = EmitConditionCode(compiler, labels);
+  if (true_condition != kInvalidCondition) {
+    EmitBranchOnCondition(compiler, true_condition, labels);
+  }
+
+  Register result = this->locs()->out(0).reg();
+  compiler::Label done;
+  __ Bind(&is_false);
+  __ LoadObject(result, Bool::False());
+  __ b(&done);
+  __ Bind(&is_true);
+  __ LoadObject(result, Bool::True());
+  __ Bind(&done);
+}
+
+void ConditionInstr::EmitBranchCode(FlowGraphCompiler* compiler,
+                                      BranchInstr* branch) {
+  BranchLabels labels = compiler->CreateBranchLabels(branch);
+  Condition true_condition = EmitConditionCode(compiler, labels);
+  if (true_condition != kInvalidCondition) {
+    EmitBranchOnCondition(compiler, true_condition, labels);
+  }
+}
+
+LocationSummary* TestIntInstr::MakeLocationSummary(Zone* zone,
+                                                    bool opt) const {
+  const intptr_t kNumInputs = 2;
+  const intptr_t kNumTemps = 0;
+  LocationSummary* locs = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  locs->set_in(0, Location::RequiresRegister());
+  // Only one input can be a constant operand. The case of two constant
+  // operands should be handled by constant propagation.
+  locs->set_in(1, LocationRegisterOrConstant(right()));
+  locs->set_out(0, Location::RequiresRegister());
+  return locs;
+}
+
+Condition TestIntInstr::EmitConditionCode(FlowGraphCompiler* compiler,
+                                            BranchLabels labels) {
+  Register left = locs()->in(0).reg();
+  Location right = locs()->in(1);
+
+  if (right.IsConstant()) {
+    const int32_t imm = static_cast<int32_t>(ComputeImmediateMask());
+    __ TestImmediate(left, imm);
+  } else {
+    ASSERT(right.IsRegister());
+    __ TestRegisters(left, right.reg());
+  }
+  Condition true_condition = (kind() == Token::kNE) ? NE : EQ;
+  return true_condition;
+}
+
+LocationSummary* TestCidsInstr::MakeLocationSummary(Zone* zone,
+                                                    bool opt) const {
+  const intptr_t kNumInputs = 1;
+  const intptr_t kNumTemps = 1;
+  LocationSummary* locs = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  locs->set_in(0, Location::RequiresRegister());
+  locs->set_temp(0, Location::RequiresRegister());
+  locs->set_out(0, Location::RequiresRegister());
+  return locs;
+}
+
+Condition TestCidsInstr::EmitConditionCode(FlowGraphCompiler* compiler,
+                                            BranchLabels labels) {
+  ASSERT((kind() == Token::kIS) || (kind() == Token::kISNOT));
+  Register val_reg = locs()->in(0).reg();
+  Register cid_reg = locs()->temp(0).reg();
+
+  compiler::Label* deopt =
+      CanDeoptimize()
+          ? compiler->AddDeoptStub(deopt_id(), ICData::kDeoptTestCids)
+          : nullptr;
+
+  const intptr_t true_result = (kind() == Token::kIS) ? 1 : 0;
+  const ZoneGrowableArray<intptr_t>& data = cid_results();
+  ASSERT(data[0] == kSmiCid);
+  bool result = data[1] == true_result;
+  __ BranchIfSmi(val_reg, result ? labels.true_label : labels.false_label);
+  __ LoadClassId(cid_reg, val_reg);
+  for (intptr_t i = 2; i < data.length(); i += 2) {
+    const intptr_t test_cid = data[i];
+    ASSERT(test_cid != kSmiCid);
+    result = data[i + 1] == true_result;
+    __ BranchEqual(cid_reg, compiler::Immediate(test_cid),
+                    result ? labels.true_label : labels.false_label);
+  }
+  // No match found, deoptimize or default action.
+  if (deopt == NULL) {
+    // If the cid is not in the list, jump to the opposite label from the cids
+    // that are in the list.  These must be all the same (see asserts in the
+    // constructor).
+    compiler::Label* target = result ? labels.false_label : labels.true_label;
+    if (target != labels.fall_through) {
+      __ b(target);
+    }
+  } else {
+    __ b(deopt);
+  }
+  // Dummy result as this method already did the jump, there's no need
+  // for the caller to branch on a condition.
+  return kInvalidCondition;
+}
+
+LocationSummary* RelationalOpInstr::MakeLocationSummary(Zone* zone,
+                                                        bool opt) const {
+  const intptr_t kNumInputs = 2;
+  const intptr_t kNumTemps = 0;
+  if (input_representation() == kUnboxedInt64) {
+    const intptr_t kNumTemps = 0;
+    LocationSummary* locs = new (zone) LocationSummary(
+        zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+    locs->set_in(0, Location::Pair(Location::RequiresRegister(),
+                                    Location::RequiresRegister()));
+    locs->set_in(1, Location::Pair(Location::RequiresRegister(),
+                                    Location::RequiresRegister()));
+    locs->set_out(0, Location::RequiresRegister());
+    return locs;
+  }
+  if (input_representation() == kUnboxedDouble) {
+    LocationSummary* summary = new (zone) LocationSummary(
+        zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+    summary->set_in(0, Location::RequiresFpuRegister());
+    summary->set_in(1, Location::RequiresFpuRegister());
+    summary->set_out(0, Location::RequiresRegister());
+    return summary;
+  }
+  ASSERT(input_representation() == kTagged);
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  summary->set_in(0, LocationRegisterOrConstant(left()));
+  // Only one input can be a constant operand. The case of two constant
+  // operands should be handled by constant propagation.
+  summary->set_in(1, summary->in(0).IsConstant()
+                          ? Location::RequiresRegister()
+                          : LocationRegisterOrConstant(right()));
+  summary->set_out(0, Location::RequiresRegister());
+  return summary;
+}
+
+Condition RelationalOpInstr::EmitConditionCode(FlowGraphCompiler* compiler,
+                                                BranchLabels labels) {
+  if (input_representation() == kTagged) {
+    return EmitSmiComparisonOp(compiler, *locs(), kind());
+  } else if (input_representation() == kUnboxedInt64) {
+    return EmitUnboxedInt64ComparisonOp(compiler, *locs(), kind(), labels);
+  } else {
+    ASSERT(input_representation() == kUnboxedDouble);
+    return EmitDoubleComparisonOp(compiler, *locs(), kind(), labels);
+  }
 }
 
 #define R(r) (1 << r)
@@ -1214,6 +1420,18 @@ LocationSummary* FloatCompareInstr::MakeLocationSummary(Zone* zone,
 
 void FloatCompareInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   UNREACHABLE();
+}
+
+LocationSummary* BranchInstr::MakeLocationSummary(Zone* zone, bool opt) const {
+  condition()->InitializeLocationSummary(zone, opt);
+  // Branches don't produce a result.
+  condition()->locs()->set_out(0, Location::NoLocation());
+  return condition()->locs();
+}
+
+void BranchInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  __ Comment("BranchInstr");
+  condition()->EmitBranchCode(compiler, this);
 }
 
 LocationSummary* StrictCompareInstr::MakeLocationSummary(Zone* zone,
