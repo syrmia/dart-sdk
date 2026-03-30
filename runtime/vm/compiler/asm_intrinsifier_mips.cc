@@ -16,6 +16,66 @@ namespace compiler{
 
 #define __ assembler->
 
+// Loads args from stack into T0 and T1
+// Tests if they are smis, jumps to label not_smi if not.
+static void TestBothArgumentsSmis(Assembler* assembler, Label* not_smi) {
+  __ lw(T0, Address(SP, 0 * target::kWordSize));
+  __ lw(T1, Address(SP, 1 * target::kWordSize));
+  __ or_(CMPRES1, T0, T1);
+  __ AndImmediate(CMPRES1, CMPRES1, kSmiTagMask);
+  __ bne(CMPRES1, ZR, not_smi);
+  return;
+}
+
+void AsmIntrinsifier::Integer_shl(Assembler* assembler, Label* normal_ir_body) {
+  ASSERT(kSmiTagShift == 1);
+  ASSERT(kSmiTag == 0);
+  Label overflow;
+
+  TestBothArgumentsSmis(assembler, normal_ir_body);
+  __ BranchUnsignedGreater(T0, Immediate(target::ToRawSmi(target::kSmiBits)),
+                           normal_ir_body);
+  __ SmiUntag(T0);
+
+  // Check for overflow by shifting left and shifting back arithmetically.
+  // If the result is different from the original, there was overflow.
+  __ sllv(TMP, T1, T0);
+  __ srav(CMPRES1, TMP, T0);
+  __ bne(CMPRES1, T1, &overflow);
+
+  // No overflow, result in V0.
+  __ Ret();
+  __ delay_slot()->sllv(V0, T1, T0);
+
+  __ Bind(&overflow);
+  // Arguments are Smi but the shift produced an overflow to Mint.
+  __ bltz(T1, normal_ir_body);
+  __ SmiUntag(T1);
+
+  // Pull off high bits that will be shifted off of T1 by making a mask
+  // ((1 << T0) - 1), shifting it to the right, masking T1, then shifting back.
+  // high bits = (((1 << T0) - 1) << (32 - T0)) & T1) >> (32 - T0)
+  // lo bits = T1 << T0
+  __ LoadImmediate(T3, 1);
+  __ sllv(T3, T3, T0);              // T3 <- T3 << T0
+  __ addiu(T3, T3, Immediate(-1));  // T3 <- T3 - 1
+  __ subu(T4, ZR, T0);              // T4 <- -T0
+  __ addiu(T4, T4, Immediate(32));  // T4 <- 32 - T0
+  __ sllv(T3, T3, T4);              // T3 <- T3 << T4
+  __ and_(T3, T3, T1);              // T3 <- T3 & T1
+  __ srlv(T3, T3, T4);              // T3 <- T3 >> T4
+  // Now T3 has the bits that fall off of T1 on a left shift.
+  __ sllv(T0, T1, T0);  // T0 gets low bits.
+
+  const Class& mint_class = MintClass();
+  __ TryAllocate(mint_class, normal_ir_body, Assembler::kFarJump, V0, T1);
+
+  __ sw(T0, FieldAddress(V0, target::Mint::value_offset()));
+  __ Ret();
+  __ delay_slot()->sw(T3, FieldAddress(V0, target::Mint::value_offset() + target::kWordSize));
+  __ Bind(normal_ir_body);
+}
+
 // Allocates one-byte string of length 'end - start'. The content is not
 // initialized.
 // 'length-reg' (T2) contains tagged length.
