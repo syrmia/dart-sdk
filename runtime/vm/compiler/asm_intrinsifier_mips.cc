@@ -259,6 +259,122 @@ void AsmIntrinsifier::Integer_equal(Assembler* assembler,
   Integer_equalToInteger(assembler, normal_ir_body);
 }
 
+// Left is double right is integer (Bigint, Mint or Smi)
+void AsmIntrinsifier::Double_mulFromInteger(Assembler* assembler,
+                                            Label* normal_ir_body) {
+  // Only smis allowed.
+  __ lw(T0, Address(SP, 0 * target::kWordSize));
+  __ AndImmediate(CMPRES1, T0, kSmiTagMask);
+  __ bne(CMPRES1, ZR, normal_ir_body);
+
+  // Is Smi.
+  __ SmiUntag(T0);
+  __ mtc1(T0, F4);
+  __ cvtdw(D1, F4);
+
+  __ lw(T0, Address(SP, 1 * target::kWordSize));
+  __ lwc1(F0, FieldAddress(T0, target::Double::value_offset()));
+  __ lwc1(F1, FieldAddress(T0, target::Double::value_offset() + target::kWordSize));
+  __ muld(D0, D0, D1);
+  const Class& double_class = DoubleClass();
+  __ TryAllocate(double_class, normal_ir_body, Assembler::kFarJump, V0, T1);  // Result register.
+  __ swc1(F0, FieldAddress(V0, target::Double::value_offset()));
+  __ Ret();
+  __ delay_slot()->swc1(F1,
+                        FieldAddress(V0, target::Double::value_offset() + target::kWordSize));
+  __ Bind(normal_ir_body);
+}
+
+void AsmIntrinsifier::DoubleFromInteger(Assembler* assembler,
+                                        Label* normal_ir_body) {
+
+  __ lw(T0, Address(SP, 0 * target::kWordSize));
+  __ AndImmediate(CMPRES1, T0, kSmiTagMask);
+  __ bne(CMPRES1, ZR, normal_ir_body);
+
+  // Is Smi.
+  __ SmiUntag(T0);
+  __ mtc1(T0, F4);
+  __ cvtdw(D0, F4);
+  const Class& double_class = DoubleClass();
+  __ TryAllocate(double_class, normal_ir_body, Assembler::kFarJump, V0, T1);  // Result register.
+  __ swc1(F0, FieldAddress(V0, target::Double::value_offset()));
+  __ Ret();
+  __ delay_slot()->swc1(F1,
+                        FieldAddress(V0, target::Double::value_offset() + target::kWordSize));
+  __ Bind(normal_ir_body);
+}
+
+void AsmIntrinsifier::Double_getIsNaN(Assembler* assembler,
+                                      Label* normal_ir_body) {
+  Label is_true;
+
+  __ lw(T0, Address(SP, 0 * target::kWordSize));
+  __ lwc1(F0, FieldAddress(T0, target::Double::value_offset()));
+  __ lwc1(F1, FieldAddress(T0, target::Double::value_offset() + target::kWordSize));
+  __ cund(D0, D0);  // Check for NaN.
+  __ bc1t(&is_true);
+  __ LoadObject(V0, CastHandle<Object>(FalseObject()));  // Return false if either is NaN.
+  __ Ret();
+  __ Bind(&is_true);
+  __ LoadObject(V0, CastHandle<Object>(TrueObject()));
+  __ Ret();
+}
+
+void AsmIntrinsifier::Double_getIsInfinite(Assembler* assembler,
+                                           Label* normal_ir_body) {
+  Label not_inf;
+  __ lw(T0, Address(SP, 0 * target::kWordSize));
+  __ lw(T1, FieldAddress(T0, target::Double::value_offset()));
+  __ lw(T2, FieldAddress(T0, target::Double::value_offset() + target::kWordSize));
+  // If the low word isn't zero, then it isn't infinity.
+  __ bne(T1, ZR, &not_inf);
+  // Mask off the sign bit.
+  __ AndImmediate(T2, T2, 0x7FFFFFFF);
+  // Compare with +infinity.
+  __ BranchNotEqual(T2, Immediate(0x7FF00000), &not_inf);
+
+  __ LoadObject(V0, CastHandle<Object>(TrueObject()));
+  __ Ret();
+
+  __ Bind(&not_inf);
+  __ LoadObject(V0, CastHandle<Object>(FalseObject()));
+  __ Ret();
+}
+
+void AsmIntrinsifier::Double_getIsNegative(Assembler* assembler,
+                                           Label* normal_ir_body) {
+  Label is_false, is_true, is_zero;
+  __ lw(T0, Address(SP, 0 * target::kWordSize));
+  __ LoadDFromOffset(D0, T0, target::Double::value_offset() - kHeapObjectTag);
+
+  __ cund(D0, D0);
+  __ bc1t(&is_false);  // NaN -> false.
+
+  __ LoadImmediate(D1, 0.0);
+  __ ceqd(D0, D1);
+  __ bc1t(&is_zero);  // Check for negative zero.
+
+  __ coled(D1, D0);
+  __ bc1t(&is_false);  // >= 0 -> false.
+
+  __ Bind(&is_true);
+  __ LoadObject(V0, CastHandle<Object>(TrueObject()));
+  __ Ret();
+
+  __ Bind(&is_false);
+  __ LoadObject(V0, CastHandle<Object>(FalseObject()));
+  __ Ret();
+
+  __ Bind(&is_zero);
+  // Check for negative zero by looking at the sign bit.
+  __ mfc1(T0, F1);                     // Moves bits 32...63 of D0 to T0.
+  __ srl(T0, T0, 31);                  // Get the sign bit down to bit 0 of T0.
+  __ AndImmediate(CMPRES1, T0, 1);  // Check if the bit is set.
+  __ bne(T0, ZR, &is_true);            // Sign bit set. True.
+  __ b(&is_false);
+}
+
 void AsmIntrinsifier::ObjectEquals(Assembler* assembler,
                                    Label* normal_ir_body) {
   Label is_true;
