@@ -745,6 +745,40 @@ void UnboxInteger32Instr::EmitNativeCode(FlowGraphCompiler* compiler) {
   }
 }
 
+LocationSummary* BinaryDoubleOpInstr::MakeLocationSummary(Zone* zone,
+                                                          bool opt) const {
+  const intptr_t kNumInputs = 2;
+  const intptr_t kNumTemps = 0;
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  summary->set_in(0, Location::RequiresFpuRegister());
+  summary->set_in(1, Location::RequiresFpuRegister());
+  summary->set_out(0, Location::RequiresFpuRegister());
+  return summary;
+}
+
+void BinaryDoubleOpInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  DRegister left = locs()->in(0).fpu_reg();
+  DRegister right = locs()->in(1).fpu_reg();
+  DRegister result = locs()->out(0).fpu_reg();
+  switch (op_kind()) {
+    case Token::kADD:
+      __ addd(result, left, right);
+      break;
+    case Token::kSUB:
+      __ subd(result, left, right);
+      break;
+    case Token::kMUL:
+      __ muld(result, left, right);
+      break;
+    case Token::kDIV:
+      __ divd(result, left, right);
+      break;
+    default:
+      UNREACHABLE();
+  }
+}
+
 }  // namespace dart
 
 #endif  // defined TARGET_ARCH_MIPS
