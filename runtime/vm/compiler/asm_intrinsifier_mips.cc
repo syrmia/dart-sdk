@@ -259,6 +259,83 @@ void AsmIntrinsifier::Integer_equal(Assembler* assembler,
   Integer_equalToInteger(assembler, normal_ir_body);
 }
 
+// Check if the last argument is a double, jump to label 'is_smi' if smi
+// (easy to convert to double), otherwise jump to label 'not_double_smi',
+// Returns the last argument in T0.
+static void TestLastArgumentIsDouble(Assembler* assembler,
+                                     Label* is_smi,
+                                     Label* not_double_smi) {
+  __ lw(T0, Address(SP, 0 * target::kWordSize));
+  __ AndImmediate(CMPRES1, T0, kSmiTagMask);
+  __ beq(CMPRES1, ZR, is_smi);
+  __ LoadClassId(CMPRES1, T0);
+  __ BranchNotEqual(CMPRES1, Immediate(kDoubleCid), not_double_smi);
+  // Fall through with Double in T0.
+}
+
+// Expects left argument to be double (receiver). Right argument is unknown.
+// Both arguments are on stack.
+static void DoubleArithmeticOperations(Assembler* assembler,
+                                       Label* normal_ir_body,
+                                       Token::Kind kind) {
+  Label is_smi, double_op;
+
+  TestLastArgumentIsDouble(assembler, &is_smi, normal_ir_body);
+  // Both arguments are double, right operand is in T0.
+  __ lwc1(F2, FieldAddress(T0, target::Double::value_offset()));
+  __ lwc1(F3, FieldAddress(T0, target::Double::value_offset() + target::kWordSize));
+  __ Bind(&double_op);
+  __ lw(T0, Address(SP, 1 * target::kWordSize));  // Left argument.
+  __ lwc1(F0, FieldAddress(T0, target::Double::value_offset()));
+  __ lwc1(F1, FieldAddress(T0, target::Double::value_offset() + target::kWordSize));
+  switch (kind) {
+    case Token::kADD:
+      __ addd(D0, D0, D1);
+      break;
+    case Token::kSUB:
+      __ subd(D0, D0, D1);
+      break;
+    case Token::kMUL:
+      __ muld(D0, D0, D1);
+      break;
+    case Token::kDIV:
+      __ divd(D0, D0, D1);
+      break;
+    default:
+      UNREACHABLE();
+  }
+  const Class& double_class = DoubleClass();
+  __ TryAllocate(double_class, normal_ir_body, Assembler::kFarJump, V0, T1);  // Result register.
+  __ swc1(F0, FieldAddress(V0, target::Double::value_offset()));
+  __ Ret();
+  __ delay_slot()->swc1(F1,
+                        FieldAddress(V0, target::Double::value_offset() + target::kWordSize));
+
+  __ Bind(&is_smi);
+  __ SmiUntag(T0);
+  __ mtc1(T0, STMP1);
+  __ b(&double_op);
+  __ delay_slot()->cvtdw(D1, STMP1);
+
+  __ Bind(normal_ir_body);
+}
+
+void AsmIntrinsifier::Double_add(Assembler* assembler, Label* normal_ir_body) {
+  DoubleArithmeticOperations(assembler, normal_ir_body, Token::kADD);
+}
+
+void AsmIntrinsifier::Double_mul(Assembler* assembler, Label* normal_ir_body) {
+  DoubleArithmeticOperations(assembler, normal_ir_body, Token::kMUL);
+}
+
+void AsmIntrinsifier::Double_sub(Assembler* assembler, Label* normal_ir_body) {
+  DoubleArithmeticOperations(assembler, normal_ir_body, Token::kSUB);
+}
+
+void AsmIntrinsifier::Double_div(Assembler* assembler, Label* normal_ir_body) {
+  DoubleArithmeticOperations(assembler, normal_ir_body, Token::kDIV);
+}
+
 // Left is double right is integer (Bigint, Mint or Smi)
 void AsmIntrinsifier::Double_mulFromInteger(Assembler* assembler,
                                             Label* normal_ir_body) {
