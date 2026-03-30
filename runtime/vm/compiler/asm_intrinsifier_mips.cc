@@ -76,6 +76,112 @@ void AsmIntrinsifier::Integer_shl(Assembler* assembler, Label* normal_ir_body) {
   __ Bind(normal_ir_body);
 }
 
+static void Get64SmiOrMint(Assembler* assembler,
+                           Register res_hi,
+                           Register res_lo,
+                           Register reg,
+                           Label* not_smi_or_mint) {
+  Label not_smi, done;
+  __ AndImmediate(CMPRES1, reg, kSmiTagMask);
+  __ bne(CMPRES1, ZR, &not_smi);
+  __ SmiUntag(reg);
+
+  // Sign extend to 64 bit
+  __ mov(res_lo, reg);
+  __ b(&done);
+  __ delay_slot()->sra(res_hi, reg, 31);
+
+  __ Bind(&not_smi);
+  __ LoadClassId(CMPRES1, reg);
+  __ BranchNotEqual(CMPRES1, Immediate(kMintCid), not_smi_or_mint);
+
+  // Mint.
+  __ lw(res_lo, FieldAddress(reg, target::Mint::value_offset()));
+  __ lw(res_hi, FieldAddress(reg, target::Mint::value_offset() + target::kWordSize));
+  __ Bind(&done);
+  return;
+}
+
+static void CompareIntegers(Assembler* assembler,
+                            Label* normal_ir_body,
+                            Condition cond) {
+  Label try_mint_smi, is_true, is_false, drop_two_fall_through;
+  TestBothArgumentsSmis(assembler, &try_mint_smi);
+  // T0 contains the right argument. T1 contains left argument
+
+  switch (cond) {
+    case LT:
+      __ BranchSignedLess(T1, T0, &is_true);
+      break;
+    case LE:
+      __ BranchSignedLessEqual(T1, T0, &is_true);
+      break;
+    case GT:
+      __ BranchSignedGreater(T1, T0, &is_true);
+      break;
+    case GE:
+      __ BranchSignedGreaterEqual(T1, T0, &is_true);
+      break;
+    default:
+      UNREACHABLE();
+      break;
+  }
+
+  __ Bind(&is_false);
+  __ LoadObject(V0, CastHandle<Object>(FalseObject()));
+  __ Ret();
+  __ Bind(&is_true);
+  __ LoadObject(V0, CastHandle<Object>(TrueObject()));
+  __ Ret();
+
+  __ Bind(&try_mint_smi);
+  // Get left as 64 bit integer.
+  Get64SmiOrMint(assembler, T3, T2, T1, normal_ir_body);
+  // Get right as 64 bit integer.
+  Get64SmiOrMint(assembler, T5, T4, T0, normal_ir_body);
+  // T3: left high.
+  // T2: left low.
+  // T5: right high.
+  // T4: right low.
+
+  // 64-bit comparison
+  switch (cond) {
+    case LT:
+    case LE: {
+      // Compare left hi, right high.
+      __ BranchSignedGreater(T3, T5, &is_false);
+      __ BranchSignedLess(T3, T5, &is_true);
+      // Compare left lo, right lo.
+      if (cond == LT) {
+        __ BranchUnsignedGreaterEqual(T2, T4, &is_false);
+      } else {
+        __ BranchUnsignedGreater(T2, T4, &is_false);
+      }
+      break;
+    }
+    case GT:
+    case GE: {
+      // Compare left hi, right high.
+      __ BranchSignedLess(T3, T5, &is_false);
+      __ BranchSignedGreater(T3, T5, &is_true);
+      // Compare left lo, right lo.
+      if (cond == GT) {
+        __ BranchUnsignedLessEqual(T2, T4, &is_false);
+      } else {
+        __ BranchUnsignedLess(T2, T4, &is_false);
+      }
+      break;
+    }
+    default:
+      UNREACHABLE();
+      break;
+  }
+  // Else is true.
+  __ b(&is_true);
+
+  __ Bind(normal_ir_body);
+}
+
 // Allocates one-byte string of length 'end - start'. The content is not
 // initialized.
 // 'length-reg' (T2) contains tagged length.
