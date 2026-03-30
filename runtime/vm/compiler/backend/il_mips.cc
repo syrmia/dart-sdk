@@ -1064,6 +1064,167 @@ void FfiCallInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   }
 }
 
+LocationSummary* CheckStackOverflowInstr::MakeLocationSummary(Zone* zone,
+                                                              bool opt) const {
+  const intptr_t kNumInputs = 0;
+  const intptr_t kNumTemps = 2;
+  const bool using_shared_stub = UseSharedSlowPathStub(opt);
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps,
+                      using_shared_stub ? LocationSummary::kCallOnSharedSlowPath
+                                        : LocationSummary::kCallOnSlowPath);
+  summary->set_temp(0, Location::RequiresRegister());
+  summary->set_temp(1, Location::RequiresRegister());
+  return summary;
+}
+
+class CheckStackOverflowSlowPath : public TemplateSlowPathCode<CheckStackOverflowInstr> {
+ public:
+  static constexpr intptr_t kNumSlowPathArgs = 0;
+
+  explicit CheckStackOverflowSlowPath(CheckStackOverflowInstr* instruction)
+      : TemplateSlowPathCode(instruction) {}
+
+  virtual void EmitNativeCode(FlowGraphCompiler* compiler) {
+    if (compiler->isolate_group()->use_osr() && osr_entry_label()->IsLinked()) {
+      Register value = instruction()->locs()->temp(0).reg();
+      __ Comment("CheckStackOverflowSlowPathOsr");
+      __ Bind(osr_entry_label());
+      __ LoadImmediate(value, Thread::kOsrRequest);
+      __ sw(value, compiler::Address(THR, Thread::stack_overflow_flags_offset()));
+    }
+    __ Comment("CheckStackOverflowSlowPath");
+    __ Bind(entry_label());
+    const bool using_shared_stub =
+        instruction()->locs()->call_on_shared_slow_path();
+    if (!using_shared_stub) {
+      compiler->SaveLiveRegisters(instruction()->locs());
+    }
+    // pending_deoptimization_env_ is needed to generate a runtime call that
+    // may throw an exception.
+    ASSERT(compiler->pending_deoptimization_env_ == nullptr);
+    Environment* env = compiler->SlowPathEnvironmentFor(instruction(), kNumSlowPathArgs);
+    compiler->pending_deoptimization_env_ = env;
+
+    const bool has_frame = compiler->flow_graph().graph_entry()->NeedsFrame();
+    if (using_shared_stub) {
+      if (!has_frame) {
+        ASSERT(__ constant_pool_allowed());
+        __ set_constant_pool_allowed(false);
+        __ EnterDartFrame(0);
+      }
+      const uword entry_point_offset = compiler::target::Thread::
+          stack_overflow_shared_stub_entry_point_offset(
+              instruction()->locs()->live_registers()->FpuRegisterCount() > 0);
+      __ Call(compiler::Address(THR, entry_point_offset));
+      compiler->RecordSafepoint(instruction()->locs(), kNumSlowPathArgs);
+      compiler->RecordCatchEntryMoves(env);
+      compiler->AddCurrentDescriptor(UntaggedPcDescriptors::kOther,
+                                     instruction()->deopt_id(),
+                                     instruction()->source());
+      if (!has_frame) {
+        __ LeaveDartFrame();
+        __ set_constant_pool_allowed(true);
+      }
+    } else {
+      ASSERT(has_frame);
+      __ CallRuntime(kInterruptOrStackOverflowRuntimeEntry, kNumSlowPathArgs);
+      compiler->EmitCallsiteMetadata(
+          instruction()->source(), instruction()->deopt_id(),
+          UntaggedPcDescriptors::kOther, instruction()->locs(), env);
+    }
+
+    if (compiler->isolate_group()->use_osr() && !compiler->is_optimizing() &&
+        instruction()->in_loop()) {
+      // In unoptimized code, record loop stack checks as possible OSR entries.
+      compiler->AddCurrentDescriptor(UntaggedPcDescriptors::kOsrEntry,
+                                     instruction()->deopt_id(),
+                                     InstructionSource());
+    }
+    compiler->pending_deoptimization_env_ = nullptr;
+    if (!using_shared_stub) {
+      compiler->RestoreLiveRegisters(instruction()->locs());
+    }
+    __ b(exit_label());
+  }
+
+  compiler::Label* osr_entry_label() {
+    ASSERT(IsolateGroup::Current()->use_osr());
+    return &osr_entry_label_;
+  }
+
+ private:
+  compiler::Label osr_entry_label_;
+};
+
+void CheckStackOverflowInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  __ Comment("CheckStackOverflowInstr");
+  CheckStackOverflowSlowPath* slow_path = new CheckStackOverflowSlowPath(this);
+  compiler->AddSlowPathCode(slow_path);
+
+  __ lw(CMPRES1, compiler::Address(THR, Thread::stack_limit_offset()));
+  __ BranchUnsignedLessEqual(SP, CMPRES1, slow_path->entry_label());
+  if (compiler->CanOSRFunction() && in_loop()) {
+    const Register function = locs()->temp(0).reg();
+    const Register count = locs()->temp(1).reg();
+    // In unoptimized code check the usage counter to trigger OSR at loop
+    // stack checks.  Use progressively higher thresholds for more deeply
+    // nested loops to attempt to hit outer loops with OSR when possible.
+    __ LoadObject(function, compiler->parsed_function().function());
+    const intptr_t configured_optimization_counter_threshold =
+        compiler->thread()->isolate_group()->optimization_counter_threshold();
+    const int32_t threshold =
+        configured_optimization_counter_threshold * (loop_depth() + 1);
+    __ lw(count,
+          compiler::FieldAddress(
+              function, compiler::target::Function::usage_counter_offset()));
+    __ AddImmediate(count, count, 1);
+    __ sw(count,
+          compiler::FieldAddress(
+              function, compiler::target::Function::usage_counter_offset()));
+    __ BranchSignedGreaterEqual(count, compiler::Immediate(threshold),
+                                slow_path->osr_entry_label());
+  }
+  if (compiler->ForceSlowPathForStackOverflow()) {
+    __ b(slow_path->entry_label());
+  }
+  __ Bind(slow_path->exit_label());
+}
+
+LocationSummary* CheckEitherNonSmiInstr::MakeLocationSummary(Zone* zone,
+                                                             bool opt) const {
+  intptr_t left_cid = left()->Type()->ToCid();
+  intptr_t right_cid = right()->Type()->ToCid();
+  ASSERT((left_cid != kDoubleCid) && (right_cid != kDoubleCid));
+  const intptr_t kNumInputs = 2;
+  const intptr_t kNumTemps = 0;
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  summary->set_in(0, Location::RequiresRegister());
+  summary->set_in(1, Location::RequiresRegister());
+  return summary;
+}
+
+void CheckEitherNonSmiInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  compiler::Label* deopt =
+      compiler->AddDeoptStub(deopt_id(), ICData::kDeoptBinaryDoubleOp);
+  intptr_t left_cid = left()->Type()->ToCid();
+  intptr_t right_cid = right()->Type()->ToCid();
+  Register left = locs()->in(0).reg();
+  Register right = locs()->in(1).reg();
+  if (this->left()->definition() == this->right()->definition()) {
+    __ AndImmediate(CMPRES1, left, kSmiTagMask);
+  } else if (left_cid == kSmiCid) {
+    __ AndImmediate(CMPRES1, right, kSmiTagMask);
+  } else if (right_cid == kSmiCid) {
+    __ AndImmediate(CMPRES1, left, kSmiTagMask);
+  } else {
+    __ or_(TMP, left, right);
+    __ AndImmediate(CMPRES1, TMP, kSmiTagMask);
+  }
+  __ beq(CMPRES1, ZR, deopt);
+}
+
 LocationSummary* UnboxInstr::MakeLocationSummary(Zone* zone, bool opt) const {
   ASSERT(BoxCid() != kSmiCid);
   const bool needs_temp = CanDeoptimize();
@@ -1505,6 +1666,221 @@ void BranchInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   condition()->EmitBranchCode(compiler, this);
 }
 
+LocationSummary* CheckClassInstr::MakeLocationSummary(Zone* zone,
+                                                      bool opt) const {
+  const intptr_t kNumInputs = 1;
+  const bool need_mask_temp = IsBitTest();
+  const intptr_t kNumTemps = !IsNullCheck() ? (need_mask_temp ? 2 : 1) : 0;
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  summary->set_in(0, Location::RequiresRegister());
+  if (!IsNullCheck()) {
+    summary->set_temp(0, Location::RequiresRegister());
+    if (need_mask_temp) {
+      summary->set_temp(1, Location::RequiresRegister());
+    }
+  }
+  return summary;
+}
+
+void CheckClassInstr::EmitNullCheck(FlowGraphCompiler* compiler, compiler::Label* deopt) {
+  if (IsDeoptIfNull()) {
+    __ BranchEqual(locs()->in(0).reg(), Object::null_object(), deopt);
+  } else {
+    ASSERT(IsDeoptIfNotNull());
+    __ BranchNotEqual(locs()->in(0).reg(), Object::null_object(), deopt);
+  }
+}
+
+void CheckClassInstr::EmitBitTest(FlowGraphCompiler* compiler,
+                                  intptr_t min,
+                                  intptr_t max,
+                                  intptr_t mask,
+                                  compiler::Label* deopt) {
+  Register biased_cid = locs()->temp(0).reg();
+  __ LoadImmediate(TMP, min);
+  __ subu(biased_cid, biased_cid, TMP);
+  __ LoadImmediate(TMP, max - min);
+  __ BranchUnsignedGreater(biased_cid, TMP, deopt);
+
+  Register bit_reg = locs()->temp(1).reg();
+  __ LoadImmediate(bit_reg, 1);
+  __ sllv(bit_reg, bit_reg, biased_cid);
+  __ AndImmediate(bit_reg, bit_reg, mask);
+  __ beq(bit_reg, ZR, deopt);
+}
+
+int CheckClassInstr::EmitCheckCid(FlowGraphCompiler* compiler,
+                                  int bias,
+                                  intptr_t cid_start,
+                                  intptr_t cid_end,
+                                  bool is_last,
+                                  compiler::Label* is_ok,
+                                  compiler::Label* deopt,
+                                  bool use_near_jump) {
+  Register biased_cid = locs()->temp(0).reg();
+  if (cid_start == cid_end) {
+    __ LoadImmediate(TMP, cid_start - bias);
+    if (is_last) {
+      __ bne(biased_cid, TMP, deopt);
+    } else {
+      __ beq(biased_cid, TMP, is_ok);
+    }
+  } else {
+    // For class ID ranges use a subtract followed by an unsigned
+    // comparison to check both ends of the ranges with one comparison.
+    __ AddImmediate(biased_cid, biased_cid, bias - cid_start);
+    bias = cid_start;
+    // the range is small enough.
+    __ LoadImmediate(TMP, cid_end - cid_start);
+    // Reverse comparison so we get 1 if biased_cid > tmp ie cid is out of
+    // range.
+    __ sltu(TMP, TMP, biased_cid);
+    if (is_last) {
+      __ bne(TMP, ZR, deopt);
+    } else {
+      __ beq(TMP, ZR, is_ok);
+    }
+  }
+  return bias;
+}
+
+LocationSummary* CheckSmiInstr::MakeLocationSummary(Zone* zone,
+                                                    bool opt) const {
+  const intptr_t kNumInputs = 1;
+  const intptr_t kNumTemps = 0;
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  summary->set_in(0, Location::RequiresRegister());
+  return summary;
+}
+
+void CheckSmiInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  __ Comment("CheckSmiInstr");
+  Register value = locs()->in(0).reg();
+  compiler::Label* deopt = compiler->AddDeoptStub(deopt_id(), ICData::kDeoptCheckSmi);
+  __ BranchIfNotSmi(value, deopt);
+}
+
+void CheckNullInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  ThrowErrorSlowPathCode* slow_path = new NullErrorSlowPath(this);
+  compiler->AddSlowPathCode(slow_path);
+
+  Register value_reg = locs()->in(0).reg();
+  // in order to be able to allocate it on register.
+  __ BranchEqual(value_reg, Object::null_object(), slow_path->entry_label());
+}
+
+LocationSummary* CheckClassIdInstr::MakeLocationSummary(Zone* zone,
+                                                        bool opt) const {
+  const intptr_t kNumInputs = 1;
+  const intptr_t kNumTemps = 0;
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  summary->set_in(0, cids_.IsSingleCid() ? Location::RequiresRegister()
+                                         : Location::WritableRegister());
+  return summary;
+}
+
+void CheckClassIdInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  Register value = locs()->in(0).reg();
+  compiler::Label* deopt = compiler->AddDeoptStub(deopt_id(), ICData::kDeoptCheckClass);
+  if (cids_.IsSingleCid()) {
+    __ BranchNotEqual(value, compiler::Immediate(Smi::RawValue(cids_.cid_start)), deopt);
+  } else {
+    __ AddImmediate(value, value, -Smi::RawValue(cids_.cid_start));
+    // the range is small enough.
+    __ LoadImmediate(TMP, cids_.Extent());
+    // Reverse comparison so we get 1 if biased_cid > tmp ie cid is out of
+    // range.
+    __ sltu(TMP, TMP, value);
+    __ bne(TMP, ZR, deopt);
+  }
+}
+
+LocationSummary* CheckArrayBoundInstr::MakeLocationSummary(Zone* zone,
+                                                           bool opt) const {
+  const intptr_t kNumInputs = 2;
+  const intptr_t kNumTemps = 0;
+  LocationSummary* locs = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  locs->set_in(kLengthPos, LocationRegisterOrSmiConstant(length()));
+  locs->set_in(kIndexPos, LocationRegisterOrSmiConstant(index()));
+  return locs;
+}
+
+void CheckArrayBoundInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  uint32_t flags = generalized_ ? ICData::kGeneralized : 0;
+  compiler::Label* deopt =
+      compiler->AddDeoptStub(deopt_id(), ICData::kDeoptCheckArrayBound, flags);
+
+  Location length_loc = locs()->in(kLengthPos);
+  Location index_loc = locs()->in(kIndexPos);
+
+  if (length_loc.IsConstant() && index_loc.IsConstant()) {
+    ASSERT((Smi::Cast(length_loc.constant()).Value() <=
+            Smi::Cast(index_loc.constant()).Value()) ||
+           (Smi::Cast(index_loc.constant()).Value() < 0));
+    // Unconditionally deoptimize for constant bounds checks because they
+    // only occur only when index is out-of-bounds.
+    __ b(deopt);
+    return;
+  }
+
+  const intptr_t index_cid = index()->Type()->ToCid();
+  if (index_loc.IsConstant()) {
+    Register length = length_loc.reg();
+    const Smi& index = Smi::Cast(index_loc.constant());
+    __ BranchUnsignedLessEqual(
+        length, compiler::Immediate(compiler::target::ToRawSmi(index)), deopt);
+  } else if (length_loc.IsConstant()) {
+    const Smi& length = Smi::Cast(length_loc.constant());
+    Register index = index_loc.reg();
+    if (index_cid != kSmiCid) {
+      __ BranchIfNotSmi(index, deopt);
+    }
+    if (length.Value() == Smi::kMaxValue) {
+      __ BranchSignedLess(index, compiler::Immediate(0), deopt);
+    } else {
+      __ BranchUnsignedGreaterEqual(
+          index, compiler::Immediate(compiler::target::ToRawSmi(length)), deopt);
+    }
+  } else {
+    Register length = length_loc.reg();
+    Register index = index_loc.reg();
+    if (index_cid != kSmiCid) {
+      __ BranchIfNotSmi(index, deopt);
+    }
+    __ BranchUnsignedGreaterEqual(index, length, deopt);
+  }
+}
+
+LocationSummary* CheckWritableInstr::MakeLocationSummary(Zone* zone,
+                                                         bool opt) const {
+  const intptr_t kNumInputs = 1;
+  const intptr_t kNumTemps = 0;
+  LocationSummary* locs = new (zone) LocationSummary(
+      zone, kNumInputs, kNumTemps,
+      UseSharedSlowPathStub(opt) ? LocationSummary::kCallOnSharedSlowPath
+                                 : LocationSummary::kCallOnSlowPath);
+  locs->set_in(kReceiver, Location::RequiresRegister());
+  return locs;
+}
+
+void CheckWritableInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  WriteErrorSlowPath* slow_path = new WriteErrorSlowPath(this);
+  compiler->AddSlowPathCode(slow_path);
+  __ lbu(TMP, compiler::FieldAddress(locs()->in(0).reg(),
+                                    compiler::target::Object::tags_offset()));
+  // In the first byte.
+  ASSERT(compiler::target::UntaggedObject::kDeeplyImmutableBit < 8);
+  ASSERT(compiler::target::UntaggedObject::kShallowImmutableBit < 8);
+  __ AndImmediate(TMP, TMP,
+                  1 << compiler::target::UntaggedObject::kDeeplyImmutableBit |
+               1 << compiler::target::UntaggedObject::kShallowImmutableBit);
+  __ bne(TMP, ZR, slow_path->entry_label());
+}
+
 LocationSummary* StrictCompareInstr::MakeLocationSummary(Zone* zone,
                                                          bool opt) const {
   const intptr_t kNumInputs = 2;
@@ -1554,6 +1930,17 @@ void BooleanNegateInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
 
   __ xori(result, value,
       compiler::Immediate(compiler::target::ObjectAlignment::kBoolValueMask));
+}
+
+void DebugStepCheckInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+#ifdef PRODUCT
+  UNREACHABLE();
+#else
+  ASSERT(!compiler->is_optimizing());
+  __ BranchLinkPatchable(StubCode::DebugStepCheck());
+  compiler->AddCurrentDescriptor(stub_kind_, deopt_id_, source());
+  compiler->RecordSafepoint(locs());
+#endif
 }
 
 }  // namespace dart
