@@ -271,6 +271,87 @@ void MemoryCopyInstr::EmitComputeStartPointer(FlowGraphCompiler* compiler,
   __ AddImmediate(payload_reg, offset);
 }
 
+LocationSummary* EqualityCompareInstr::MakeLocationSummary(Zone* zone,
+                                                           bool opt) const {
+  const intptr_t kNumInputs = 2;
+  const intptr_t kNumTemps = 0;
+  if (is_null_aware()) {
+    LocationSummary* locs = new (zone)
+        LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+    locs->set_in(0, Location::RequiresRegister());
+    locs->set_in(1, Location::RequiresRegister());
+    locs->set_out(0, Location::RequiresRegister());
+    return locs;
+  }
+  if (operation_cid() == kMintCid) {
+    LocationSummary* locs = new (zone)
+        LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+    locs->set_in(0, Location::Pair(Location::RequiresRegister(),
+                                   Location::RequiresRegister()));
+    locs->set_in(1, Location::Pair(Location::RequiresRegister(),
+                                   Location::RequiresRegister()));
+    locs->set_out(0, Location::RequiresRegister());
+    return locs;
+  }
+  if (operation_cid() == kDoubleCid) {
+    LocationSummary* locs = new (zone)
+        LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+    locs->set_in(0, Location::RequiresFpuRegister());
+    locs->set_in(1, Location::RequiresFpuRegister());
+    locs->set_out(0, Location::RequiresRegister());
+    return locs;
+  }
+  if (operation_cid() == kSmiCid || operation_cid() == kMintCid ||
+      operation_cid() == kIntegerCid) {
+    LocationSummary* locs = new (zone)
+        LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+    if (is_null_aware()) {
+      locs->set_in(0, Location::RequiresRegister());
+      locs->set_in(1, Location::RequiresRegister());
+    } else {
+      locs->set_in(0, LocationRegisterOrConstant(left()));
+      // Only one input can be a constant operand. The case of two constant
+      // operands should be handled by constant propagation.
+      // Only right can be a stack slot.
+      locs->set_in(1, locs->in(0).IsConstant()
+                          ? Location::RequiresRegister()
+                          : LocationRegisterOrConstant(right()));
+    }
+    locs->set_out(0, Location::RequiresRegister());
+    return locs;
+  }
+  UNREACHABLE();
+  return nullptr;
+}
+
+Condition EqualityCompareInstr::EmitConditionCode(
+    FlowGraphCompiler* compiler,
+    BranchLabels labels) {
+  if (is_null_aware()) {
+    ASSERT(operation_cid() == kMintCid);
+    return EmitNullAwareInt64ComparisonOp(compiler, locs(), kind(), labels);
+  }
+  if (operation_cid() == kSmiCid) {
+    return EmitSmiComparisonOp(compiler, *locs(), kind());
+  } else if (operation_cid() == kIntegerCid) {
+    return EmitWordComparisonOp(compiler, locs(), kind());
+  } else if (operation_cid() == kMintCid) {
+    return EmitUnboxedMintEqualityOp(compiler, *locs(), kind(), labels);
+  } else {
+    ASSERT(operation_cid() == kDoubleCid);
+    return EmitDoubleComparisonOp(compiler, *locs(), kind(), labels);
+  }
+}
+
+Condition StrictCompareInstr::EmitComparisonCodeRegConstant(
+    FlowGraphCompiler* compiler,
+    BranchLabels labels,
+    Register reg,
+    const Object& obj) {
+  return compiler->EmitEqualityRegConstCompare(reg, obj, needs_number_check(),
+                                                source(), deopt_id());
+}
+
 #define R(r) (1 << r)
 
 LocationSummary* FfiCallInstr::MakeLocationSummary(Zone* zone,
@@ -855,6 +936,53 @@ LocationSummary* SimdOpInstr::MakeLocationSummary(Zone* zone, bool opt) const {
 
 void SimdOpInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   UNIMPLEMENTED();
+}
+
+LocationSummary* FloatCompareInstr::MakeLocationSummary(Zone* zone,
+                                                        bool opt) const {
+  UNREACHABLE();
+  return NULL;
+}
+
+void FloatCompareInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  UNREACHABLE();
+}
+
+LocationSummary* StrictCompareInstr::MakeLocationSummary(Zone* zone,
+                                                         bool opt) const {
+  const intptr_t kNumInputs = 2;
+  const intptr_t kNumTemps = 0;
+  if (needs_number_check()) {
+    LocationSummary* locs = new (zone)
+        LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kCall);
+    locs->set_in(0, Location::RegisterLocation(A0));
+    locs->set_in(1, Location::RegisterLocation(A1));
+    locs->set_out(0, Location::RegisterLocation(A0));
+    return locs;
+  }
+  LocationSummary* locs = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  // If a constant has more than one use, make sure it is loaded in register
+  // so that multiple immediate loads can be avoided.
+  ConstantInstr* constant = left()->definition()->AsConstant();
+  if ((constant != nullptr) && !left()->IsSingleUse()) {
+    locs->set_in(0, Location::RequiresRegister());
+  } else {
+    locs->set_in(0, LocationRegisterOrConstant(left()));
+  }
+
+  constant = right()->definition()->AsConstant();
+  if ((constant != nullptr) && !right()->IsSingleUse()) {
+    locs->set_in(1, Location::RequiresRegister());
+  } else {
+    // Only one of the inputs can be a constant. Choose register if the first
+    // one is a constant.
+    locs->set_in(1, locs->in(0).IsConstant()
+                        ? Location::RequiresRegister()
+                        : LocationRegisterOrConstant(right()));
+  }
+  locs->set_out(0, Location::RequiresRegister());
+  return locs;
 }
 
 }  // namespace dart
