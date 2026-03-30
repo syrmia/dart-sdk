@@ -848,6 +848,15 @@ Condition DoubleTestOpInstr::EmitConditionCode(FlowGraphCompiler* compiler,
   }
 }
 
+LocationSummary* SimdOpInstr::MakeLocationSummary(Zone* zone, bool opt) const {
+  UNIMPLEMENTED();
+  return nullptr;
+}
+
+void SimdOpInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  UNIMPLEMENTED();
+}
+
 }  // namespace dart
 
 #endif  // defined TARGET_ARCH_MIPS
