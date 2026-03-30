@@ -985,6 +985,20 @@ LocationSummary* StrictCompareInstr::MakeLocationSummary(Zone* zone,
   return locs;
 }
 
+LocationSummary* BooleanNegateInstr::MakeLocationSummary(Zone* zone,
+                                                         bool opt) const {
+  return LocationSummary::Make(zone, 1, Location::RequiresRegister(),
+                               LocationSummary::kNoCall);
+}
+
+void BooleanNegateInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  Register value = locs()->in(0).reg();
+  Register result = locs()->out(0).reg();
+
+  __ xori(result, value,
+      compiler::Immediate(compiler::target::ObjectAlignment::kBoolValueMask));
+}
+
 }  // namespace dart
 
 #endif  // defined TARGET_ARCH_MIPS
