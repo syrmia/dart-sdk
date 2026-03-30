@@ -370,6 +370,144 @@ void AsmIntrinsifier::Bigint_rsh(Assembler* assembler, Label* normal_ir_body) {
   __ Ret();
 }
 
+void AsmIntrinsifier::Bigint_absAdd(Assembler* assembler,
+                                    Label* normal_ir_body) {
+  // static void _absAdd(Uint32List digits, int used,
+  //                     Uint32List a_digits, int a_used,
+  //                     Uint32List r_digits)
+
+  // T2 = used, T3 = digits
+  __ lw(T2, Address(SP, 3 * target::kWordSize));
+  __ lw(T3, Address(SP, 4 * target::kWordSize));
+  // T3 = &digits[0]
+  __ addiu(T3, T3, Immediate(target::TypedData::payload_offset() - kHeapObjectTag));
+
+  // T4 = a_used, T5 = a_digits
+  __ lw(T4, Address(SP, 1 * target::kWordSize));
+  __ lw(T5, Address(SP, 2 * target::kWordSize));
+  // T5 = &a_digits[0]
+  __ addiu(T5, T5, Immediate(target::TypedData::payload_offset() - kHeapObjectTag));
+
+  // T6 = r_digits
+  __ lw(T6, Address(SP, 0 * target::kWordSize));
+  // T6 = &r_digits[0]
+  __ addiu(T6, T6, Immediate(target::TypedData::payload_offset() - kHeapObjectTag));
+
+  // V0 = &digits[a_used >> 1], a_used is Smi.
+  __ sll(V0, T4, 1);
+  __ addu(V0, V0, T3);
+
+  // V1 = &digits[used >> 1], used is Smi.
+  __ sll(V1, T2, 1);
+  __ addu(V1, V1, T3);
+
+  // T2 = carry in = 0.
+  __ mov(T2, ZR);
+  Label add_loop;
+  __ Bind(&add_loop);
+  // Loop a_used times, a_used > 0.
+  __ lw(T0, Address(T3, 0));  // T0 = x.
+  __ addiu(T3, T3, Immediate(kBytesPerBigIntDigit));
+  __ lw(T1, Address(T5, 0));  // T1 = y.
+  __ addiu(T5, T5, Immediate(kBytesPerBigIntDigit));
+  __ addu(T1, T0, T1);  // T1 = x + y.
+  __ sltu(T4, T1, T0);  // T4 = carry out of x + y.
+  __ addu(T0, T1, T2);  // T0 = x + y + carry in.
+  __ sltu(T2, T0, T1);  // T2 = carry out of (x + y) + carry in.
+  __ or_(T2, T2, T4);   // T2 = carry out of x + y + carry in.
+  __ sw(T0, Address(T6, 0));
+  __ bne(T3, V0, &add_loop);
+  __ delay_slot()->addiu(T6, T6, Immediate(kBytesPerBigIntDigit));
+
+  Label last_carry;
+  __ beq(T3, V1, &last_carry);
+
+  Label carry_loop;
+  __ Bind(&carry_loop);
+  // Loop used - a_used times, used - a_used > 0.
+  __ lw(T0, Address(T3, 0));  // T0 = x.
+  __ addiu(T3, T3, Immediate(kBytesPerBigIntDigit));
+  __ addu(T1, T0, T2);  // T1 = x + carry in.
+  __ sltu(T2, T1, T0);  // T2 = carry out of x + carry in.
+  __ sw(T1, Address(T6, 0));
+  __ bne(T3, V1, &carry_loop);
+  __ delay_slot()->addiu(T6, T6, Immediate(kBytesPerBigIntDigit));
+
+  __ Bind(&last_carry);
+  __ sw(T2, Address(T6, 0));
+
+  // Returning Object::null() is not required, since this method is private.
+  __ Ret();
+}
+
+void AsmIntrinsifier::Bigint_absSub(Assembler* assembler,
+                                    Label* normal_ir_body) {
+  // static void _absSub(Uint32List digits, int used,
+  //                     Uint32List a_digits, int a_used,
+  //                     Uint32List r_digits)
+
+  // T2 = used, T3 = digits
+  __ lw(T2, Address(SP, 3 * target::kWordSize));
+  __ lw(T3, Address(SP, 4 * target::kWordSize));
+  // T3 = &digits[0]
+  __ addiu(T3, T3, Immediate(target::TypedData::payload_offset() - kHeapObjectTag));
+
+  // T4 = a_used, T5 = a_digits
+  __ lw(T4, Address(SP, 1 * target::kWordSize));
+  __ lw(T5, Address(SP, 2 * target::kWordSize));
+  // T5 = &a_digits[0]
+  __ addiu(T5, T5, Immediate(target::TypedData::payload_offset() - kHeapObjectTag));
+
+  // T6 = r_digits
+  __ lw(T6, Address(SP, 0 * target::kWordSize));
+  // T6 = &r_digits[0]
+  __ addiu(T6, T6, Immediate(target::TypedData::payload_offset() - kHeapObjectTag));
+
+  // V0 = &digits[a_used >> 1], a_used is Smi.
+  __ sll(V0, T4, 1);
+  __ addu(V0, V0, T3);
+
+  // V1 = &digits[used >> 1], used is Smi.
+  __ sll(V1, T2, 1);
+  __ addu(V1, V1, T3);
+
+  // T2 = borrow in = 0.
+  __ mov(T2, ZR);
+  Label sub_loop;
+  __ Bind(&sub_loop);
+  // Loop a_used times, a_used > 0.
+  __ lw(T0, Address(T3, 0));  // T0 = x.
+  __ addiu(T3, T3, Immediate(kBytesPerBigIntDigit));
+  __ lw(T1, Address(T5, 0));  // T1 = y.
+  __ addiu(T5, T5, Immediate(kBytesPerBigIntDigit));
+  __ subu(T1, T0, T1);  // T1 = x - y.
+  __ sltu(T4, T0, T1);  // T4 = borrow out of x - y.
+  __ subu(T0, T1, T2);  // T0 = x - y - borrow in.
+  __ sltu(T2, T1, T0);  // T2 = borrow out of (x - y) - borrow in.
+  __ or_(T2, T2, T4);   // T2 = borrow out of x - y - borrow in.
+  __ sw(T0, Address(T6, 0));
+  __ bne(T3, V0, &sub_loop);
+  __ delay_slot()->addiu(T6, T6, Immediate(kBytesPerBigIntDigit));
+
+  Label done;
+  __ beq(T3, V1, &done);
+
+  Label borrow_loop;
+  __ Bind(&borrow_loop);
+  // Loop used - a_used times, used - a_used > 0.
+  __ lw(T0, Address(T3, 0));  // T0 = x.
+  __ addiu(T3, T3, Immediate(kBytesPerBigIntDigit));
+  __ subu(T1, T0, T2);  // T1 = x - borrow in.
+  __ sltu(T2, T0, T1);  // T2 = borrow out of x - borrow in.
+  __ sw(T1, Address(T6, 0));
+  __ bne(T3, V1, &borrow_loop);
+  __ delay_slot()->addiu(T6, T6, Immediate(kBytesPerBigIntDigit));
+
+  __ Bind(&done);
+  // Returning Object::null() is not required, since this method is private.
+  __ Ret();
+}
+
 void AsmIntrinsifier::Montgomery_mulMod(Assembler* assembler,
                                         Label* normal_ir_body) {
   // T4 = args
