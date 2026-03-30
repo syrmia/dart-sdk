@@ -273,6 +273,97 @@ static void TestLastArgumentIsDouble(Assembler* assembler,
   // Fall through with Double in T0.
 }
 
+// Both arguments on stack, arg0 (left) is a double, arg1 (right) is of unknown
+// type. Return true or false object in the register V0. Any NaN argument
+// returns false. Any non-double arg1 causes control flow to fall through to the
+// slow case (compiled method body).
+static void CompareDoubles(Assembler* assembler,
+                           Label* normal_ir_body,
+                           Condition cond) {
+  Label is_smi, double_op, no_NaN;
+  __ Comment("CompareDoubles Intrinsic");
+
+  TestLastArgumentIsDouble(assembler, &is_smi, normal_ir_body);
+  // Both arguments are double, right operand is in T0.
+  __ LoadDFromOffset(D1, T0, target::Double::value_offset() - kHeapObjectTag);
+  __ Bind(&double_op);
+  __ lw(T0, Address(SP, 1 * target::kWordSize));  // Left argument.
+  __ LoadDFromOffset(D0, T0, target::Double::value_offset() - kHeapObjectTag);
+  // Now, left is in D0, right is in D1.
+
+  __ cund(D0, D1);  // Check for NaN.
+  __ bc1f(&no_NaN);
+  __ LoadObject(V0, CastHandle<Object>(FalseObject()));  // Return false if either is NaN.
+  __ Ret();
+  __ Bind(&no_NaN);
+
+  switch (cond) {
+    case EQ:
+      __ ceqd(D0, D1);
+      break;
+    case LT:
+      __ coltd(D0, D1);
+      break;
+    case LE:
+      __ coled(D0, D1);
+      break;
+    case GT:
+      __ coltd(D1, D0);
+      break;
+    case GE:
+      __ coled(D1, D0);
+      break;
+    default: {
+      // Only passing the above conditions to this function.
+      UNREACHABLE();
+      break;
+    }
+  }
+
+  Label is_true;
+  __ bc1t(&is_true);
+  __ LoadObject(V0, CastHandle<Object>(FalseObject()));
+  __ Ret();
+  __ Bind(&is_true);
+  __ LoadObject(V0, CastHandle<Object>(TrueObject()));
+  __ Ret();
+
+
+  __ Bind(&is_smi);
+  __ SmiUntag(T0);
+  __ mtc1(T0, STMP1);
+  __ b(&double_op);
+  __ delay_slot()->cvtdw(D1, STMP1);
+
+
+  __ Bind(normal_ir_body);
+}
+
+void AsmIntrinsifier::Double_greaterThan(Assembler* assembler,
+                                         Label* normal_ir_body) {
+  CompareDoubles(assembler, normal_ir_body, GT);
+}
+
+void AsmIntrinsifier::Double_greaterEqualThan(Assembler* assembler,
+                                              Label* normal_ir_body) {
+  CompareDoubles(assembler, normal_ir_body, GE);
+}
+
+void AsmIntrinsifier::Double_lessThan(Assembler* assembler,
+                                      Label* normal_ir_body) {
+  CompareDoubles(assembler, normal_ir_body, LT);
+}
+
+void AsmIntrinsifier::Double_equal(Assembler* assembler,
+                                   Label* normal_ir_body) {
+  CompareDoubles(assembler, normal_ir_body, EQ);
+}
+
+void AsmIntrinsifier::Double_lessEqualThan(Assembler* assembler,
+                                           Label* normal_ir_body) {
+  CompareDoubles(assembler, normal_ir_body, LE);
+}
+
 // Expects left argument to be double (receiver). Right argument is unknown.
 // Both arguments are on stack.
 static void DoubleArithmeticOperations(Assembler* assembler,
