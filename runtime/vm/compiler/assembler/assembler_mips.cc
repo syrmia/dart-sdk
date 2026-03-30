@@ -457,6 +457,49 @@ void Assembler::BranchLinkWithEquivalence(const Code& target,
   delay_slot_available_ = false;  // CodePatcher expects a nop.
 }
 
+void Assembler::AddBranchOverflow(Register rd,
+                                  Register rs1,
+                                  Register rs2,
+                                  Label* overflow) {
+  ASSERT(rd != CMPRES1);
+  ASSERT(rd != CMPRES2);
+  ASSERT(rs1 != CMPRES1);
+  ASSERT(rs1 != CMPRES2);
+  ASSERT(rs2 != CMPRES1);
+  ASSERT(rs2 != CMPRES2);
+
+  if ((rd == rs1) && (rd == rs2)) {
+    ASSERT(rs1 == rs2);
+    mov(CMPRES1, rs1);
+    addu(rd, rs1, rs2);   // rs1, rs2 destroyed
+    xor_(CMPRES1, CMPRES1, rd);  // CMPRES1 negative if sign changed
+    bltz(CMPRES1, overflow);
+  } else if (rs1 == rs2) {
+    ASSERT(rd != rs1);
+    ASSERT(rd != rs2);
+    addu(rd, rs1, rs2);
+    xor_(CMPRES1, rd, rs1);  // CMPRES1 negative if sign changed
+    bltz(CMPRES1, overflow);
+  } else if (rd == rs1) {
+    ASSERT(rs1 != rs2);
+    slti(CMPRES1, rs1, Immediate(0));
+    addu(rd, rs1, rs2);  // rs1 destroyed
+    slt(CMPRES2, rd, rs2);
+    bne(CMPRES1, CMPRES2, overflow);
+  } else if (rd == rs2) {
+    ASSERT(rs1 != rs2);
+    slti(CMPRES1, rs2, Immediate(0));
+    addu(rd, rs1, rs2);  // rs2 destroyed
+    slt(CMPRES2, rd, rs1);
+    bne(CMPRES1, CMPRES2, overflow);
+  } else {
+    addu(rd, rs1, rs2);
+    slti(CMPRES1, rs2, Immediate(0));
+    slt(CMPRES2, rd, rs1);
+    bne(CMPRES1, CMPRES2, overflow);
+  }
+}
+
 void Assembler::Bind(Label* label) {
   UNIMPLEMENTED();
 }

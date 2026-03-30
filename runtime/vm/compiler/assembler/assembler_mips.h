@@ -1346,6 +1346,10 @@ class Assembler : public AssemblerBase {
     UNREACHABLE();
   }
 
+  void AddBranchOverflow(Register rd,
+                        Register rs1,
+                        Register rs2,
+                        Label* overflow);
 
  private:
   bool use_far_branches_;
