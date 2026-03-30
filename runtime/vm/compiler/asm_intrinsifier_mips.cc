@@ -182,6 +182,83 @@ static void CompareIntegers(Assembler* assembler,
   __ Bind(normal_ir_body);
 }
 
+void AsmIntrinsifier::Integer_lessThan(Assembler* assembler,
+                                       Label* normal_ir_body) {
+  CompareIntegers(assembler, normal_ir_body, LT);
+}
+
+void AsmIntrinsifier::Integer_greaterThan(Assembler* assembler,
+                                       Label* normal_ir_body) {
+  CompareIntegers(assembler, normal_ir_body, GT);
+}
+
+void AsmIntrinsifier::Integer_lessEqualThan(Assembler* assembler,
+                                           Label* normal_ir_body) {
+  CompareIntegers(assembler, normal_ir_body, LE);
+}
+
+void AsmIntrinsifier::Integer_greaterEqualThan(Assembler* assembler,
+                                              Label* normal_ir_body) {
+  CompareIntegers(assembler, normal_ir_body, GE);
+}
+
+// This is called for Smi, Mint and Bigint receivers. The right argument
+// can be Smi, Mint, Bigint or double.
+void AsmIntrinsifier::Integer_equalToInteger(Assembler* assembler,
+                                             Label* normal_ir_body) {
+  Label true_label, check_for_mint;
+  // For integer receiver '===' check first.
+  __ lw(T0, Address(SP, 0 * target::kWordSize));
+  __ lw(T1, Address(SP, 1 * target::kWordSize));
+  __ beq(T0, T1, &true_label);
+
+  __ or_(T2, T0, T1);
+  __ AndImmediate(CMPRES1, T2, kSmiTagMask);
+  // If T0 or T1 is not a smi do Mint checks.
+  __ bne(CMPRES1, ZR, &check_for_mint);
+
+  // Both arguments are smi, '===' is good enough.
+  __ LoadObject(V0, CastHandle<Object>(FalseObject()));
+  __ Ret();
+  __ Bind(&true_label);
+  __ LoadObject(V0, CastHandle<Object>(TrueObject()));
+  __ Ret();
+
+  // At least one of the arguments was not Smi.
+  Label receiver_not_smi;
+  __ Bind(&check_for_mint);
+
+  __ AndImmediate(CMPRES1, T1, kSmiTagMask);
+  __ bne(CMPRES1, ZR, &receiver_not_smi);  // Check receiver.
+
+  // Left (receiver) is Smi, return false if right is not Double.
+  // Note that an instance of Mint or Bigint never contains a value that can be
+  // represented by Smi.
+
+  __ LoadClassId(CMPRES1, T0);
+  __ BranchEqual(CMPRES1, Immediate(kDoubleCid), normal_ir_body);
+  __ LoadObject(V0, CastHandle<Object>(FalseObject()));  // Smi == Mint -> false.
+  __ Ret();
+
+  __ Bind(&receiver_not_smi);
+  // T1:: receiver.
+
+  __ LoadClassId(CMPRES1, T1);
+  __ BranchNotEqual(CMPRES1, Immediate(kMintCid), normal_ir_body);
+  // Receiver is Mint, return false if right is Smi.
+  __ AndImmediate(CMPRES1, T0, kSmiTagMask);
+  __ bne(CMPRES1, ZR, normal_ir_body);
+  __ LoadObject(V0, CastHandle<Object>(FalseObject()));
+  __ Ret();
+
+  __ Bind(normal_ir_body);
+}
+
+void AsmIntrinsifier::Integer_equal(Assembler* assembler,
+                                    Label* normal_ir_body) {
+  Integer_equalToInteger(assembler, normal_ir_body);
+}
+
 // Allocates one-byte string of length 'end - start'. The content is not
 // initialized.
 // 'length-reg' (T2) contains tagged length.
