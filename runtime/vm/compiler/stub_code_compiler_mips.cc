@@ -473,6 +473,37 @@ void StubCodeCompiler::GenerateSharedStub(
                             perform_runtime_call);
 }
 
+void StubCodeCompiler::GenerateRangeError(bool with_fpu_regs) {
+  auto perform_runtime_call = [&]() {
+    ASSERT(!GenericCheckBoundInstr::UseUnboxedRepresentation());
+    __ PushRegistersInOrder(
+        {RangeErrorABI::kLengthReg, RangeErrorABI::kIndexReg});
+    __ CallRuntime(kRangeErrorRuntimeEntry, /*argument_count=*/2);
+    __ Breakpoint();
+  };
+
+  GenerateSharedStubGeneric(
+      /*save_fpu_registers=*/with_fpu_regs,
+      with_fpu_regs
+          ? target::Thread::range_error_shared_with_fpu_regs_stub_offset()
+          : target::Thread::range_error_shared_without_fpu_regs_stub_offset(),
+      /*allow_return=*/false, perform_runtime_call);
+}
+
+void StubCodeCompiler::GenerateWriteError(bool with_fpu_regs) {
+  auto perform_runtime_call = [&]() {
+    __ CallRuntime(kWriteErrorRuntimeEntry, /*argument_count=*/2);
+    __ Breakpoint();
+  };
+
+  GenerateSharedStubGeneric(
+      /*save_fpu_registers=*/with_fpu_regs,
+      with_fpu_regs
+          ? target::Thread::write_error_shared_with_fpu_regs_stub_offset()
+          : target::Thread::write_error_shared_without_fpu_regs_stub_offset(),
+      /*allow_return=*/false, perform_runtime_call);
+}
+
 // Input parameters:
 //   RA : return address.
 //   SP : address of return value.
