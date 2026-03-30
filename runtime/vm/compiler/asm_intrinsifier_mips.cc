@@ -259,6 +259,48 @@ void AsmIntrinsifier::Integer_equal(Assembler* assembler,
   Integer_equalToInteger(assembler, normal_ir_body);
 }
 
+void AsmIntrinsifier::Smi_bitLength(Assembler* assembler,
+                                    Label* normal_ir_body) {
+  __ lw(V0, Address(SP, 0 * target::kWordSize));
+  __ SmiUntag(V0);
+  // XOR with sign bit to complement bits if value is negative.
+  __ sra(T0, V0, 31);
+  __ xor_(V0, V0, T0);
+  __ clz(V0, V0);
+  __ LoadImmediate(T0, 32);
+  __ subu(V0, T0, V0);
+  __ Ret();
+  __ delay_slot()->SmiTag(V0);
+}
+
+void AsmIntrinsifier::Montgomery_mulMod(Assembler* assembler,
+                                        Label* normal_ir_body) {
+  // T4 = args
+  __ lw(T4, Address(SP, 2 * target::kWordSize));  // args
+
+  // T3 = rho = args[2]
+  __ lw(T3, FieldAddress(
+                T4, target::TypedData::payload_offset() + 2 * kBytesPerBigIntDigit));
+
+  // T2 = d = digits[i >> 1]
+  __ lw(T0, Address(SP, 0 * target::kWordSize));  // T0 = i as Smi.
+  __ lw(T1, Address(SP, 1 * target::kWordSize));  // T1 = digits.
+  __ sll(T0, T0, 1);
+  __ addu(T1, T0, T1);
+  __ lw(T2, FieldAddress(T1, target::TypedData::payload_offset()));
+
+  // HI:LO = t = rho*d
+  __ multu(T2, T3);
+
+  // args[4] = t mod DIGIT_BASE = low32(t)
+  __ mflo(T0);
+  __ sw(T0, FieldAddress(
+                T4, target::TypedData::payload_offset() + 4 * kBytesPerBigIntDigit));
+
+  __ addiu(V0, ZR, Immediate(target::ToRawSmi(1)));  // One digit processed.
+  __ Ret();
+}
+
 // Check if the last argument is a double, jump to label 'is_smi' if smi
 // (easy to convert to double), otherwise jump to label 'not_double_smi',
 // Returns the last argument in T0.
