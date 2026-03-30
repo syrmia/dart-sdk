@@ -259,6 +259,20 @@ void AsmIntrinsifier::Integer_equal(Assembler* assembler,
   Integer_equalToInteger(assembler, normal_ir_body);
 }
 
+void AsmIntrinsifier::ObjectEquals(Assembler* assembler,
+                                   Label* normal_ir_body) {
+  Label is_true;
+
+  __ lw(T0, Address(SP, 0 * target::kWordSize));
+  __ lw(T1, Address(SP, 1 * target::kWordSize));
+  __ beq(T0, T1, &is_true);
+  __ LoadObject(V0, CastHandle<Object>(FalseObject()));
+  __ Ret();
+  __ Bind(&is_true);
+  __ LoadObject(V0, CastHandle<Object>(TrueObject()));
+  __ Ret();
+}
+
 static void JumpIfInteger(Assembler* assembler,
                           Register cid,
                           Register tmp,
@@ -315,6 +329,59 @@ static void JumpIfNotType(Assembler* assembler,
                  (kRecordTypeCid == kTypeCid + 2));
   assembler->RangeCheck(cid, tmp, kTypeCid, kRecordTypeCid,
                         Assembler::kIfNotInRange, target);
+}
+
+// Return type quickly for simple types (not parameterized and not signature).
+void AsmIntrinsifier::ObjectRuntimeType(Assembler* assembler,
+                                        Label* normal_ir_body) {
+  Label use_declaration_type, not_integer, not_double, not_string;
+  __ lw(T0, Address(SP, 0 * target::kWordSize));
+  __ LoadClassIdMayBeSmi(T1, T0);
+
+  // Instance is a closure.
+  __ BranchEqual(T1, Immediate(kClosureCid), normal_ir_body);
+
+  // Instance is a record.
+  __ BranchEqual(T1, Immediate(kRecordCid), normal_ir_body);
+
+  __ BranchUnsignedGreaterEqual(T1, Immediate(kNumPredefinedCids),
+                                &use_declaration_type);
+
+  __ LoadIsolateGroup(T2);
+  __ LoadFromOffset(T2, T2, target::IsolateGroup::object_store_offset());
+
+  __ BranchNotEqual(T1, Immediate(kDoubleCid), &not_double);
+
+  __ LoadFromOffset(V0, T2, target::ObjectStore::double_type_offset());
+  __ Ret();
+
+  __ Bind(&not_double);
+  JumpIfNotInteger(assembler, T1, V0, &not_integer);
+  // Object is an integer.
+  __ LoadFromOffset(V0, T2, target::ObjectStore::int_type_offset());
+  __ Ret();
+
+  __ Bind(&not_integer);
+  JumpIfNotString(assembler, T1, V0, &not_string);
+  // Object is a string.
+  __ LoadFromOffset(V0, T2, target::ObjectStore::string_type_offset());
+  __ Ret();
+
+  __ Bind(&not_string);
+  JumpIfNotType(assembler, T1, V0, &use_declaration_type);
+  __ LoadFromOffset(V0, T2, target::ObjectStore::type_type_offset());
+  __ Ret();
+
+  __ Bind(&use_declaration_type);
+  __ LoadClassById(T2, T1);
+  __ lhu(T3, FieldAddress(T2, target::Class::num_type_arguments_offset()));
+  __ BranchNotEqual(T3, Immediate(0), normal_ir_body);
+
+  __ lw(V0, FieldAddress(T2, target::Class::declaration_type_offset()));
+  __ BranchEqual(V0, NullObject(), normal_ir_body);
+  __ Ret();
+
+  __ Bind(normal_ir_body);
 }
 
 // Compares cid1 and cid2 to see if they're syntactically equivalent. If this
@@ -387,6 +454,51 @@ static void EquivalentClassIds(Assembler* assembler,
     // Type types are only equivalent to other Type types.
     __ b(not_equal);
   }
+}
+
+void AsmIntrinsifier::ObjectHaveSameRuntimeType(Assembler* assembler,
+                                                Label* normal_ir_body) {
+  __ lw(T0, Address(SP, 1 * target::kWordSize));
+  __ lw(T1, Address(SP, 0 * target::kWordSize));
+  __ LoadClassIdMayBeSmi(T2, T1);
+  __ LoadClassIdMayBeSmi(T1, T0);
+
+  Label equal_may_be_generic, equal, not_equal;
+  EquivalentClassIds(assembler, normal_ir_body, &equal_may_be_generic, &equal,
+                     &not_equal, T1, T2, TMP,
+                     /* testing_instance_cids = */ true);
+
+  __ Bind(&equal_may_be_generic);
+  // Classes are equivalent and neither is a closure class.
+  // Check if there are no type arguments. In this case we can return true.
+  // Otherwise fall through into the runtime to handle comparison.
+  __ LoadClassById(T0, T1);
+  __ lw(T3,
+        FieldAddress(
+            T0,
+            target::Class::host_type_arguments_field_offset_in_words_offset()));
+  __ BranchEqual(T3, Immediate(target::Class::kNoTypeArguments), &equal);
+
+  // Compare type arguments, host_type_arguments_field_offset_in_words in T0.
+  __ lw(T0, Address(SP, 1 * target::kWordSize));
+  __ lw(T1, Address(SP, 0 * target::kWordSize));
+  __ sll(T3, T3, target::kCompressedWordSizeLog2);
+  __ addu(T0, T0, T3);
+  __ addu(T1, T1, T3);
+  __ lw(T0, FieldAddress(T0, 0));
+  __ lw(T1, FieldAddress(T1, 0));
+  __ bne(T0, T1, normal_ir_body);
+  // Fall through to equal case if type arguments are equal.
+
+  __ Bind(&equal);
+  __ LoadObject(V0, CastHandle<Object>(TrueObject()));
+  __ Ret();
+
+  __ Bind(&not_equal);
+  __ LoadObject(V0, CastHandle<Object>(FalseObject()));
+  __ Ret();
+
+  __ Bind(normal_ir_body);
 }
 
 void AsmIntrinsifier::String_getHashCode(Assembler* assembler,
