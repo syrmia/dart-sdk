@@ -259,6 +259,187 @@ void AsmIntrinsifier::Integer_equal(Assembler* assembler,
   Integer_equalToInteger(assembler, normal_ir_body);
 }
 
+static void JumpIfInteger(Assembler* assembler,
+                          Register cid,
+                          Register tmp,
+                          Label* target) {
+  assembler->RangeCheck(cid, tmp, kSmiCid, kMintCid, Assembler::kIfInRange, target);
+}
+
+static void JumpIfNotInteger(Assembler* assembler,
+                             Register cid,
+                             Register tmp,
+                             Label* target) {
+  assembler->RangeCheck(cid, tmp, kSmiCid, kMintCid, Assembler::kIfNotInRange, target);
+}
+
+static void JumpIfString(Assembler* assembler,
+                         Register cid,
+                         Register tmp,
+                         Label* target) {
+  assembler->RangeCheck(cid, tmp, kOneByteStringCid, kTwoByteStringCid,
+             Assembler::kIfInRange, target);
+}
+
+static void JumpIfNotString(Assembler* assembler,
+                            Register cid,
+                            Register tmp,
+                            Label* target) {
+  assembler->RangeCheck(cid, tmp, kOneByteStringCid, kTwoByteStringCid,
+             Assembler::kIfNotInRange, target);
+}
+
+static void JumpIfNotList(Assembler* assembler,
+                          Register cid,
+                          Register tmp,
+                          Label* target) {
+  assembler->RangeCheck(cid, tmp, kArrayCid, kGrowableObjectArrayCid,
+                        Assembler::kIfNotInRange, target);
+}
+
+static void JumpIfType(Assembler* assembler,
+                       Register cid,
+                       Register tmp,
+                       Label* target) {
+  COMPILE_ASSERT((kFunctionTypeCid == kTypeCid + 1) &&
+                 (kRecordTypeCid == kTypeCid + 2));
+  assembler->RangeCheck(cid, tmp, kTypeCid, kRecordTypeCid,
+                        Assembler::kIfInRange, target);
+}
+
+static void JumpIfNotType(Assembler* assembler,
+                          Register cid,
+                          Register tmp,
+                          Label* target) {
+  COMPILE_ASSERT((kFunctionTypeCid == kTypeCid + 1) &&
+                 (kRecordTypeCid == kTypeCid + 2));
+  assembler->RangeCheck(cid, tmp, kTypeCid, kRecordTypeCid,
+                        Assembler::kIfNotInRange, target);
+}
+
+// Compares cid1 and cid2 to see if they're syntactically equivalent. If this
+// can be determined by this fast path, it jumps to either equal or not_equal,
+// otherwise it jumps to normal_ir_body. May clobber cid1, cid2, and scratch.
+static void EquivalentClassIds(Assembler* assembler,
+                               Label* normal_ir_body,
+                               Label* equal_may_be_generic,
+                               Label* equal_not_generic,
+                               Label* not_equal,
+                               Register cid1,
+                               Register cid2,
+                               Register scratch,
+                               bool testing_instance_cids) {
+  Label not_integer, not_integer_or_string, not_integer_or_string_or_list;
+
+  // Check if left hand side is a closure. Closures are handled in the runtime.
+  __ BranchEqual(cid1, Immediate(kClosureCid), normal_ir_body);
+
+  // Check if left hand side is a record. Records are handled in the runtime.
+  __ BranchEqual(cid1, Immediate(kRecordCid), normal_ir_body);
+
+  // Check whether class ids match. If class ids don't match types may still be
+  // considered equivalent (e.g. multiple string implementation classes map to a
+  // single String type).
+  __ beq(cid1, cid2, equal_may_be_generic);
+
+  // Class ids are different. Check if we are comparing two string types (with
+  // different representations), two integer types, two list types or two type
+  // types.
+  __ BranchUnsignedGreater(cid1, Immediate(kNumPredefinedCids), not_equal);
+
+  // Check if both are integers.
+  JumpIfNotInteger(assembler, cid1, scratch, &not_integer);
+
+  // First type is an integer. Check if the second is an integer too.
+  JumpIfInteger(assembler, cid2, scratch, equal_not_generic);
+  // Integer types are only equivalent to other integer types.
+  __ b(not_equal);
+
+  __ Bind(&not_integer);
+  // Check if both are String types.
+  JumpIfNotString(assembler, cid1, scratch,
+                  testing_instance_cids ? &not_integer_or_string : not_equal);
+
+  // First type is String. Check if the second is a string too.
+  JumpIfString(assembler, cid2, scratch, equal_not_generic);
+  // String types are only equivalent to other String types.
+  __ b(not_equal);
+
+  if (testing_instance_cids) {
+    __ Bind(&not_integer_or_string);
+    // Check if both are List types.
+    JumpIfNotList(assembler, cid1, scratch, &not_integer_or_string_or_list);
+
+    // First type is a List. Check if the second is a List too.
+    JumpIfNotList(assembler, cid2, scratch, not_equal);
+    ASSERT(compiler::target::Array::type_arguments_offset() ==
+           compiler::target::GrowableObjectArray::type_arguments_offset());
+    __ b(equal_may_be_generic);
+
+    __ Bind(&not_integer_or_string_or_list);
+    // Check if the first type is a Type. If it is not then types are not
+    // equivalent because they have different class ids and they are not String
+    // or integer or List or Type.
+    JumpIfNotType(assembler, cid1, scratch, not_equal);
+
+    // First type is a Type. Check if the second is a Type too.
+    JumpIfType(assembler, cid2, scratch, equal_not_generic);
+    // Type types are only equivalent to other Type types.
+    __ b(not_equal);
+  }
+}
+
+void AsmIntrinsifier::Type_equality(Assembler* assembler,
+                                    Label* normal_ir_body) {
+  Label equal, not_equal, equiv_cids_may_be_generic, equiv_cids;
+
+  __ lw(T0, Address(SP, 1 * target::kWordSize));
+  __ lw(T1, Address(SP, 0 * target::kWordSize));
+  __ beq(T0, T1, &equal);
+
+  // T1 might not be a Type object, so check that first (T0 should be though,
+  // since this is a method on the Type class).
+  __ LoadClassIdMayBeSmi(T3, T1);
+  __ BranchNotEqual(T3, compiler::Immediate(kTypeCid), normal_ir_body);
+
+  // Check if types are syntactically equal.
+  __ LoadTypeClassId(T3, T1);
+  __ LoadTypeClassId(T4, T0);
+  // We are not testing instance cids, but type class cids of Type instances.
+  EquivalentClassIds(assembler, normal_ir_body, &equiv_cids_may_be_generic,
+                     &equiv_cids, &not_equal, T3, T4, TMP,
+                     /* testing_instance_cids = */ false);
+
+  __ Bind(&equiv_cids_may_be_generic);
+  // Compare type arguments in Type instances.
+  __ lw(T3, FieldAddress(T1, target::Type::arguments_offset()));
+  __ lw(T4, FieldAddress(T0, target::Type::arguments_offset()));
+  __ BranchNotEqual(T3, T4, normal_ir_body);
+  // Fall through to check nullability if type arguments are equal.
+
+  // Check nullability.
+  __ Bind(&equiv_cids);
+  __ LoadAbstractTypeNullability(T0, T0);
+  __ LoadAbstractTypeNullability(T1, T1);
+  __ bne(T0, T1, &not_equal);
+  // Fall through to equal case if nullability is equal.
+
+  __ Bind(&equal);
+  __ LoadObject(V0, CastHandle<Object>(TrueObject()));
+  __ Ret();
+
+  __ Bind(&not_equal);
+  __ LoadObject(V0, CastHandle<Object>(FalseObject()));
+  __ Ret();
+
+  __ Bind(normal_ir_body);
+}
+
+void AsmIntrinsifier::Object_getHash(Assembler* assembler,
+                                     Label* normal_ir_body) {
+  UNREACHABLE();
+}
+
 // Allocates one-byte string of length 'end - start'. The content is not
 // initialized.
 // 'length-reg' (T2) contains tagged length.
