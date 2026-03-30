@@ -779,6 +779,75 @@ void BinaryDoubleOpInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   }
 }
 
+LocationSummary* DoubleTestOpInstr::MakeLocationSummary(Zone* zone,
+                                                        bool opt) const {
+  const intptr_t kNumInputs = 1;
+  const intptr_t kNumTemps = 0;
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  summary->set_in(0, Location::RequiresFpuRegister());
+  summary->set_out(0, Location::RequiresRegister());
+  return summary;
+}
+
+Condition DoubleTestOpInstr::EmitConditionCode(FlowGraphCompiler* compiler,
+                                                BranchLabels labels) {
+  ASSERT(compiler->is_optimizing());
+  const DRegister value = locs()->in(0).fpu_reg();
+  const bool is_negated = kind() != Token::kEQ;
+  if (op_kind() == MethodRecognizer::kDouble_getIsNaN) {
+    __ cund(value, value);
+    if (labels.fall_through == labels.true_label) {
+      if (is_negated) {
+        __ bc1t(labels.false_label);
+      } else {
+        __ bc1f(labels.false_label);
+      }
+    } else if (labels.fall_through == labels.false_label) {
+      if (is_negated) {
+        __ bc1f(labels.true_label);
+      } else {
+        __ bc1t(labels.true_label);
+      }
+    } else {
+      if (is_negated) {
+        __ bc1t(labels.false_label);
+      } else {
+        __ bc1f(labels.false_label);
+      }
+      __ b(labels.true_label);
+    }
+    return kInvalidCondition;  // Unused.
+  } else if(op_kind() == MethodRecognizer::kDouble_getIsInfinite){
+    __ mfc1(CMPRES1, EvenFRegisterOf(value));
+    // If the low word isn't zero, then it isn't infinity.
+    __ bne(CMPRES1, ZR, is_negated ? labels.true_label : labels.false_label);
+    __ mfc1(CMPRES1, OddFRegisterOf(value));
+    // Mask off the sign bit.
+    __ AndImmediate(CMPRES1, CMPRES1, 0x7FFFFFFF);
+    // Compare with +infinity.
+    __ LoadImmediate(CMPRES2, 0x7FF00000);
+    __ CompareRegisters(CMPRES1, CMPRES2);
+    return is_negated ? NE : EQ;
+  } else if(op_kind() == MethodRecognizer::kDouble_getIsNegative){
+    ASSERT(value!=FpuTMP);
+    compiler::Label oddIsNotZero;
+    __ cund(value, value);
+    // If it's NaN, it's not negative.
+    __ bc1t(is_negated ? labels.true_label : labels.false_label);
+
+    // Move the high 32 bits of the double into a general-purpose register.
+    __ mfc1(CMPRES1, OddFRegisterOf(value));
+
+    // High word has sign bit = 1 for negative doubles.
+    // Comparing with zero as int works because signed ints also use MSB as sign (two's complement).
+    __ CompareRegisters(CMPRES1, ZR);
+    return is_negated ? GE : LT;
+  } else {
+    UNREACHABLE();
+  }
+}
+
 }  // namespace dart
 
 #endif  // defined TARGET_ARCH_MIPS
