@@ -2101,6 +2101,18 @@ void StubCodeCompiler::GenerateAllocateObjectSlowStub() {
   __ LeaveDartFrameAndReturn();
 }
 
+//  S2: function object.
+void StubCodeCompiler::GenerateOptimizedUsageCounterIncrement() {
+  Register func_reg = S2;
+  if (FLAG_precompiled_mode) {
+    __ Breakpoint();
+    return;
+  }
+  __ lw(TMP, FieldAddress(func_reg, target::Function::usage_counter_offset()));
+  __ addiu(TMP, TMP, Immediate(1));
+  __ sw(TMP, FieldAddress(func_reg, target::Function::usage_counter_offset()));
+}
+
 // Loads function into 'temp_reg'.
 void StubCodeCompiler::GenerateUsageCounterIncrement(Register temp_reg) {
   if (FLAG_precompiled_mode) {
@@ -3514,7 +3526,7 @@ void StubCodeCompiler::GenerateAllocateTypedDataArrayStub(intptr_t cid) {
       __ b(&done);
 
       __ Bind(&skip_shift);
-      __ sll(T5, T3, target::UntaggedObject::kTagBitsSizeTagPos -
+      __ sll(T5, T3, target::UntaggedObject::kSizeTagPos -
                               target::ObjectAlignment::kObjectAlignmentLog2);
       __ Bind(&done);
 
