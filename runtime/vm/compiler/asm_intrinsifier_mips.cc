@@ -462,6 +462,46 @@ void AsmIntrinsifier::Object_getHash(Assembler* assembler,
   UNREACHABLE();
 }
 
+void AsmIntrinsifier::OneByteString_getHashCode(Assembler* assembler, Label* normal_ir_body) {
+  Label no_hash;
+
+  __ lw(T1, Address(SP, 0 * target::kWordSize));
+  __ lw(V0, FieldAddress(T1, target::String::hash_offset()));
+  __ beq(V0, ZR, &no_hash);
+  __ Ret();  // Return if already computed.
+  __ Bind(&no_hash);
+  __ lw(T2, FieldAddress(T1, target::String::length_offset()));
+  __ SmiUntag(T2);
+  __ mov(T3, ZR);
+  __ AddImmediate(T4, T1,
+                  target::OneByteString::data_offset() - kHeapObjectTag);
+
+  // V0: Hash code, untagged integer.
+  // T1: Instance of OneByteString.
+  // T2: String length, untagged integer.
+  // T3: Loop counter, untagged integer..
+  // T4: String data.
+
+  Label loop, done;
+  __ Bind(&loop);
+  __ BranchEqual(T3, T2, &done);
+  // Add to hash code: (hash_ is uint32)
+  // Get one characters (ch).
+  __ lbu(TMP, Address(T4, 0));
+  // TMP: ch.
+  __ addiu(T3, T3, compiler::Immediate(1));
+  __ addiu(T4, T4, compiler::Immediate(1));
+  //ovu funkciju implementirati
+  __ CombineHashes(V0, TMP);
+  __ b(&loop);
+
+  __ Bind(&done);
+  __ FinalizeHashForSize(target::String::kHashBits, V0);
+  __ SmiTag(V0);
+  __ sw(V0, FieldAddress(T1, target::String::hash_offset()));
+  __ Ret();
+}
+
 // Allocates one-byte string of length 'end - start'. The content is not
 // initialized.
 // 'length-reg' (T2) contains tagged length.
@@ -556,6 +596,64 @@ static void TryAllocateString(Assembler* assembler,
   __ b(ok);
 }
 
+// Arg0: OneByteString (receiver).
+// Arg1: Start index as Smi.
+// Arg2: End index as Smi.
+// The indexes must be valid.
+void AsmIntrinsifier::OneByteString_substringUnchecked(Assembler* assembler,
+                                                       Label* normal_ir_body) {
+  const intptr_t kStringOffset = 2 * target::kWordSize;
+  const intptr_t kStartIndexOffset = 1 * target::kWordSize;
+  const intptr_t kEndIndexOffset = 0 * target::kWordSize;
+  Label ok;
+
+  __ lw(T2, Address(SP, kEndIndexOffset));
+  __ lw(TMP, Address(SP, kStartIndexOffset));
+  __ or_(CMPRES1, T2, TMP);
+  __ AndImmediate(CMPRES1, CMPRES1, kSmiTagMask);
+  __ bne(CMPRES1, ZR, normal_ir_body);  // 'start', 'end' not Smi.
+
+  __ subu(T2, T2, TMP);
+  TryAllocateString(assembler, kOneByteStringCid,
+                    target::OneByteString::kMaxNewSpaceElements, &ok, normal_ir_body);
+  __ Bind(&ok);
+  // V0: new string as tagged pointer.
+  // Copy string.
+  __ lw(T3, Address(SP, kStringOffset));
+  __ lw(T1, Address(SP, kStartIndexOffset));
+  __ SmiUntag(T1);
+  __ addu(T3, T3, T1);
+
+  // T3: Start address to copy from (untagged).
+  // T1: Untagged start index.
+  __ lw(T2, Address(SP, kEndIndexOffset));
+  __ SmiUntag(T2);
+  __ subu(T2, T2, T1);
+
+  // T3: Start address to copy from (untagged).
+  // T2: Untagged number of bytes to copy.
+  // V0: Tagged result string.
+  // T6: Pointer into T3.
+  // T7: Pointer into T0.
+  // T1: Scratch register.
+  Label loop, done;
+  __ blez(T2, &done);
+  __ mov(T6, T3);
+  __ mov(T7, V0);
+
+  __ Bind(&loop);
+  __ AddImmediate(T2, T2, -1);
+  __ lbu(T1, FieldAddress(T6, target::OneByteString::data_offset()));
+  __ AddImmediate(T6, 1);
+  __ sb(T1, FieldAddress(T7, target::OneByteString::data_offset()));
+  __ addiu(T7, T7, Immediate(1));
+  __ bgtz(T2, &loop);
+
+  __ Bind(&done);
+  __ Ret();
+  __ Bind(normal_ir_body);
+}
+
 void AsmIntrinsifier::WriteIntoOneByteString(Assembler* assembler,
                                              Label* normal_ir_body) {
   __ lw(T2, Address(SP, 0 * target::kWordSize));  // Value.
@@ -604,6 +702,24 @@ void AsmIntrinsifier::AllocateTwoByteString(Assembler* assembler,
   __ Bind(&ok);
   __ Ret();
   __ Bind(normal_ir_body);
+}
+
+void AsmIntrinsifier::OneByteString_equality(Assembler* assembler,
+                                             Label* normal_ir_body) {
+  __ lw(T0, Address(SP, 1 * target::kWordSize));  // This.
+  __ lw(T1, Address(SP, 0 * target::kWordSize));  // Other.
+
+  StringEquality(assembler, T0, T1, T2, T3, V0, normal_ir_body,
+                 kOneByteStringCid);
+}
+
+void AsmIntrinsifier::TwoByteString_equality(Assembler* assembler,
+                                             Label* normal_ir_body) {
+  __ lw(T0, Address(SP, 1 * target::kWordSize));  // This.
+  __ lw(T1, Address(SP, 0 * target::kWordSize));  // Other.
+
+  StringEquality(assembler, T0, T1, T2, T3, V0, normal_ir_body,
+                 kTwoByteStringCid);
 }
 
 void AsmIntrinsifier::Timeline_getNextTaskId(Assembler* assembler,
