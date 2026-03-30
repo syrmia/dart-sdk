@@ -403,6 +403,24 @@ void AsmIntrinsifier::AllocateTwoByteString(Assembler* assembler,
   __ Bind(normal_ir_body);
 }
 
+void AsmIntrinsifier::Timeline_getNextTaskId(Assembler* assembler,
+                                             Label* normal_ir_body) {
+#if !defined(SUPPORT_TIMELINE)
+  __ LoadImmediate(V0, target::ToRawSmi(0));
+  __ Ret();
+#else
+  __ lw(T0, Address(THR, target::Thread::next_task_id_offset()));
+  __ lw(T1, Address(THR, target::Thread::next_task_id_offset() + 4));
+  __ SmiTag(V0, T0);  // Ignore loss of precision.
+  __ AddImmediate(T2, T0, 1);
+  __ sltu(T3, T2, T0);  // Carry.
+  __ addu(T1, T1, T3);
+  __ sw(T2, Address(THR, target::Thread::next_task_id_offset()));
+  __ sw(T1, Address(THR, target::Thread::next_task_id_offset() + 4));
+  __ Ret();
+#endif
+}
+
 }  // namespace compiler
 }  // namespace dart
 
