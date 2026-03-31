@@ -2101,6 +2101,95 @@ void SimdOpInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   UNIMPLEMENTED();
 }
 
+LocationSummary* MathMinMaxInstr::MakeLocationSummary(Zone* zone,
+                                                      bool opt) const {
+  if (representation() == kUnboxedDouble) {
+    const intptr_t kNumInputs = 2;
+    const intptr_t kNumTemps = 1;
+    LocationSummary* summary = new (zone)
+        LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+    summary->set_in(0, Location::RequiresFpuRegister());
+    summary->set_in(1, Location::RequiresFpuRegister());
+    // Reuse the left register so that code can be made shorter.
+    summary->set_out(0, Location::SameAsFirstInput());
+    summary->set_temp(0, Location::RequiresRegister());
+    return summary;
+  }
+  ASSERT(representation() == kTagged);
+  const intptr_t kNumInputs = 2;
+  const intptr_t kNumTemps = 0;
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  summary->set_in(0, Location::RequiresRegister());
+  summary->set_in(1, Location::RequiresRegister());
+  // Reuse the left register so that code can be made shorter.
+  summary->set_out(0, Location::SameAsFirstInput());
+  return summary;
+}
+
+void MathMinMaxInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  ASSERT((op_kind() == MethodRecognizer::kMathMin) ||
+         (op_kind() == MethodRecognizer::kMathMax));
+  const intptr_t is_min = (op_kind() == MethodRecognizer::kMathMin);
+  if (representation() == kUnboxedDouble) {
+    compiler::Label done, returns_nan, are_equal;
+    DRegister left = locs()->in(0).fpu_reg();
+    DRegister right = locs()->in(1).fpu_reg();
+    DRegister result = locs()->out(0).fpu_reg();
+    Register temp = locs()->temp(0).reg();
+    __ cund(left, right);
+    __ bc1t(&returns_nan);
+    __ ceqd(left, right);
+    __ bc1t(&are_equal);
+    if (is_min) {
+      __ coltd(left, right);
+    } else {
+      __ coltd(right, left);
+    }
+    ASSERT(left == result);
+    __ bc1t(&done);
+    __ movd(result, right);
+    __ b(&done);
+
+    __ Bind(&returns_nan);
+    __ LoadImmediate(result, NAN);
+    __ b(&done);
+
+    __ Bind(&are_equal);
+    compiler::Label left_is_negative;
+    // Check for negative zero: -0.0 is equal 0.0 but min or max must return
+    // -0.0 or 0.0 respectively.
+    // Check for negative left value (get the sign bit):
+    // - min -> left is negative ? left : right.
+    // - max -> left is negative ? right : left
+    // Check the sign bit.
+    __ mfc1(temp, OddFRegisterOf(left));  // Moves bits 32...63 of left to temp.
+    if (is_min) {
+      ASSERT(left == result);
+      __ bltz(temp, &done);  // Left is negative.
+    } else {
+      __ bgez(temp, &done);  // Left is positive.
+    }
+    __ movd(result, right);
+    __ Bind(&done);
+    return;
+  }
+
+  compiler::Label done;
+  ASSERT(representation() == kTagged);
+  Register left = locs()->in(0).reg();
+  Register right = locs()->in(1).reg();
+  Register result = locs()->out(0).reg();
+  ASSERT(result == left);
+  if (is_min) {
+    __ BranchSignedLessEqual(left, right, &done);
+  } else {
+    __ BranchSignedGreaterEqual(left, right, &done);
+  }
+  __ mov(result, right);
+  __ Bind(&done);
+}
+
 LocationSummary* UnarySmiOpInstr::MakeLocationSummary(Zone* zone,
                                                       bool opt) const {
   const intptr_t kNumInputs = 1;
@@ -2308,6 +2397,377 @@ LocationSummary* FloatCompareInstr::MakeLocationSummary(Zone* zone,
 
 void FloatCompareInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   UNREACHABLE();
+}
+
+LocationSummary* InvokeMathCFunctionInstr::MakeLocationSummary(Zone* zone,
+                                                               bool opt) const {
+  // Calling convention on MIPS uses D6 and D7 to pass the first two
+  // double arguments.
+  ASSERT((InputCount() == 1) || (InputCount() == 2));
+  const intptr_t kNumTemps = 0;
+  LocationSummary* result = new (zone)
+      LocationSummary(zone, InputCount(), kNumTemps, LocationSummary::kCall);
+  result->set_in(0, Location::FpuRegisterLocation(D6));
+  if (InputCount() == 2) {
+    result->set_in(1, Location::FpuRegisterLocation(D7));
+  }
+  result->set_out(0, Location::FpuRegisterLocation(D0));
+  return result;
+}
+
+// Pseudo code:
+// if (exponent == 0.0) return 1.0;
+// // Speed up simple cases.
+// if (exponent == 1.0) return base;
+// if (exponent == 2.0) return base * base;
+// if (exponent == 3.0) return base * base * base;
+// if (base == 1.0) return 1.0;
+// if (base.isNaN || exponent.isNaN) {
+//    return double.NAN;
+// }
+// if (base != -Infinity && exponent == 0.5) {
+//   if (base == 0.0) return 0.0;
+//   return sqrt(value);
+// }
+static void InvokeDoublePow(FlowGraphCompiler* compiler,
+                            InvokeMathCFunctionInstr* instr) {
+  ASSERT(instr->recognized_kind() == MethodRecognizer::kMathDoublePow);
+  const intptr_t kInputCount = 2;
+  ASSERT(instr->InputCount() == kInputCount);
+  LocationSummary* locs = instr->locs();
+
+  DRegister base = locs->in(0).fpu_reg();
+  DRegister exp = locs->in(1).fpu_reg();
+  DRegister result = locs->out(0).fpu_reg();
+
+  compiler::Label check_base, skip_call;
+  __ LoadImmediate(DTMP, 0.0);
+  __ LoadImmediate(result, 1.0);
+  // exponent == 0.0 -> return 1.0;
+  __ cund(exp, exp);
+  __ bc1t(&check_base);  // NaN -> check base.
+  __ ceqd(exp, DTMP);
+  __ bc1t(&skip_call);  // exp is 0.0, result is 1.0.
+
+  // exponent == 1.0 ?
+  __ ceqd(exp, result);
+  compiler::Label return_base;
+  __ bc1t(&return_base);
+  // exponent == 2.0 ?
+  __ LoadImmediate(DTMP, 2.0);
+  __ ceqd(exp, DTMP);
+  compiler::Label return_base_times_2;
+  __ bc1t(&return_base_times_2);
+  // exponent == 3.0 ?
+  __ LoadImmediate(DTMP, 3.0);
+  __ ceqd(exp, DTMP);
+  __ bc1f(&check_base);
+
+  // base_times_3.
+  __ muld(result, base, base);
+  __ muld(result, result, base);
+  __ b(&skip_call);
+
+  __ Bind(&return_base);
+  __ movd(result, base);
+  __ b(&skip_call);
+
+  __ Bind(&return_base_times_2);
+  __ muld(result, base, base);
+  __ b(&skip_call);
+
+  __ Bind(&check_base);
+  // Note: 'exp' could be NaN.
+  // base == 1.0 -> return 1.0;
+  __ cund(base, base);
+  compiler::Label return_nan;
+  __ bc1t(&return_nan);
+  __ ceqd(base, result);
+  __ bc1t(&skip_call);  // base and result are 1.0.
+
+  __ cund(exp, exp);
+  compiler::Label try_sqrt;
+  __ bc1f(&try_sqrt);  // Neither 'exp' nor 'base' are NaN.
+
+  __ Bind(&return_nan);
+  __ LoadImmediate(result, NAN);
+  __ b(&skip_call);
+
+  __ Bind(&try_sqrt);
+  // Before calling pow, check if we could use sqrt instead of pow.
+  __ LoadImmediate(result, kNegInfinity);
+  // base == -Infinity -> call pow;
+  __ ceqd(base, result);
+  compiler::Label do_pow;
+  __ bc1t(&do_pow);
+
+  // exponent == 0.5 ?
+  __ LoadImmediate(DTMP, 0.5);
+  __ ceqd(exp, DTMP);
+  __ bc1f(&do_pow);
+
+  // base > 0 check
+  __ LoadImmediate(DTMP, 0.0);
+  __ coled(base, DTMP);  // base <= 0.0?
+  __ bc1t(&do_pow);      // If base <= 0 → fallback to pow
+
+  __ sqrtd(result, base);
+  __ b(&skip_call);
+
+  __ Bind(&do_pow);
+  {
+    // double values are passed and returned in vfp registers.
+    compiler::LeafRuntimeScope rt(compiler->assembler(),
+                                  /*frame_size=*/0,
+                                  /*preserve_registers=*/false);
+    rt.Call(instr->TargetFunction(), kInputCount);
+  }
+  __ Bind(&skip_call);
+}
+
+void InvokeMathCFunctionInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  // For pow-function return NaN if exponent is NaN.
+  if (recognized_kind() == MethodRecognizer::kMathDoublePow) {
+    InvokeDoublePow(compiler, this);
+    return;
+  }
+  compiler::LeafRuntimeScope rt(compiler->assembler(),
+                                /*frame_size=*/0,
+                                /*preserve_registers=*/false);
+  rt.Call(TargetFunction(), TargetFunction().argument_count());
+}
+
+LocationSummary* TruncDivModInstr::MakeLocationSummary(Zone* zone,
+                                                       bool opt) const {
+  const intptr_t kNumInputs = 2;
+  const intptr_t kNumTemps = 1;
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  summary->set_in(0, Location::RequiresRegister());
+  summary->set_in(1, Location::RequiresRegister());
+  summary->set_temp(0, Location::RequiresRegister());
+  // Output is a pair of registers.
+  summary->set_out(0, Location::Pair(Location::RequiresRegister(),
+                                     Location::RequiresRegister()));
+  return summary;
+}
+
+void TruncDivModInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  ASSERT(CanDeoptimize());
+  compiler::Label* deopt = compiler->AddDeoptStub(deopt_id(), ICData::kDeoptBinarySmiOp);
+  Register left = locs()->in(0).reg();
+  Register right = locs()->in(1).reg();
+  Register temp = locs()->temp(0).reg();
+  ASSERT(locs()->out(0).IsPairLocation());
+  PairLocation* pair = locs()->out(0).AsPairLocation();
+  Register result_div = pair->At(0).reg();
+  Register result_mod = pair->At(1).reg();
+  if (RangeUtils::CanBeZero(divisor_range())) {
+    // Handle divide by zero in runtime.
+    __ beq(right, ZR, deopt);
+  }
+  __ SmiUntag(temp, left);
+  __ SmiUntag(TMP, right);
+  __ div(temp, TMP);
+  __ mflo(result_div);
+  __ mfhi(result_mod);
+  // Check the corner case of dividing the 'MIN_SMI' with -1, in which
+  // case we cannot tag the result.
+  __ BranchEqual(result_div, compiler::Immediate(0x40000000), deopt);
+  //  res = left % right;
+  //  if (res < 0) {
+  //    if (right < 0) {
+  //      res = res - right;
+  //    } else {
+  //      res = res + right;
+  //    }
+  //  }
+  compiler::Label done;
+  __ bgez(result_mod, &done);
+  if (RangeUtils::Overlaps(divisor_range(), -1, 1)) {
+    compiler::Label subtract;
+    __ bltz(right, &subtract);
+    __ addu(result_mod, result_mod, TMP);
+    __ b(&done);
+    __ Bind(&subtract);
+    __ subu(result_mod, result_mod, TMP);
+  } else if (divisor_range()->IsPositive()) {
+    // Right is positive.
+    __ addu(result_mod, result_mod, TMP);
+  } else {
+    // Right is negative.
+    __ subu(result_mod, result_mod, TMP);
+  }
+  __ Bind(&done);
+
+  __ SmiTag(result_div);
+  __ SmiTag(result_mod);
+}
+
+// Should be kept in sync with integers.cc Multiply64Hash
+static void EmitHashIntegerCodeSequence(FlowGraphCompiler* compiler,
+                                        const Register result,
+                                        const Register value_lo,
+                                        const Register value_hi) {
+// C=0x2d51 (multiplier constant)
+// x_lo​=value_lo
+// x_hi​=value_hi
+//
+// Product of the lower 32 bits:
+// P=x_lo​⋅C(mod 2^64)
+// P_lo​=P mod 2^32 (lower 32 bits)
+// P_hi​=[P/2^32] (upper 32 bits)
+//
+// Product of the upper 32 bits:
+// Q=x_hi​⋅C(mod 2^64)
+// Q_lo​=Q mod 2^32 (lower 32 bits)
+// Q_hi​=[Q/2^32] (upper 32 bits)
+//
+// Combining the products into the hash:
+// M1​=(Q_lo​+P_hi​) mod 2^32
+// M2​=Q_hi
+// M0​=P_lo
+//
+// hash=(M2 xor M1 xor M0​) and 0x3FFFFFFF
+
+  ASSERT(value_lo != TMP);
+  ASSERT(value_hi != TMP);
+  ASSERT(result != TMP);
+
+  __ LoadImmediate(TMP, 0x2d51);
+  __ multu(value_lo, TMP);
+  __ mflo(value_lo);
+  __ mfhi(result);
+  __ multu(value_hi, TMP);
+  __ mflo(value_hi);
+  __ mfhi(TMP);
+  __ addu(value_hi, value_hi, result);
+  __ xor_(result, value_hi, TMP);
+  __ xor_(result, result, value_lo);
+  __ AndImmediate(result, result, 0x3fffffff);
+}
+
+LocationSummary* HashDoubleOpInstr::MakeLocationSummary(Zone* zone,
+                                                        bool opt) const {
+  const intptr_t kNumInputs = 1;
+  const intptr_t kNumTemps = 3;
+  LocationSummary* summary = new (zone) LocationSummary(
+      zone, kNumInputs, kNumTemps, LocationSummary::kNativeLeafCall);
+
+  summary->set_in(0, Location::RequiresFpuRegister());
+  summary->set_temp(0, Location::RequiresRegister());
+  summary->set_temp(1, Location::RequiresRegister());
+  summary->set_temp(2, Location::RequiresFpuRegister());
+  summary->set_out(0, Location::Pair(Location::RequiresRegister(),
+                                     Location::RequiresRegister()));
+  return summary;
+}
+
+void HashDoubleOpInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  const FpuRegister value = locs()->in(0).fpu_reg();
+  const Register temp = locs()->temp(0).reg();
+  const Register temp1 = locs()->temp(1).reg();
+  const FpuRegister temp_double = locs()->temp(2).fpu_reg();
+  const PairLocation* out_pair = locs()->out(0).AsPairLocation();
+  Register result = out_pair->At(0).reg();
+  Register result_hi = out_pair->At(1).reg();
+
+  compiler::Label hash_double, hash_double_value, try_convert;
+
+  __ mfc1(temp, static_cast<FRegister>(value * 2 + 1));
+  __ AndImmediate(temp, temp, 0x7FF00000);
+  __ LoadImmediate(TMP, 0x7FF00000);
+  __ BranchEqual(temp, TMP, &hash_double_value);
+
+  compiler::Label slow_path;
+  __ Bind(&try_convert);
+  // value -> temp1 -> temp_double
+  __ truncwd(STMP1, value);
+  __ mfc1(temp1, STMP1);
+  // Checks whether temp1 is INT_MAX or INT_MIN which indicates failed truncwd
+  __ BranchEqual(temp1, compiler::Immediate(0x7fffffff), &slow_path);
+  __ BranchEqual(temp1, compiler::Immediate(0x80000000), &slow_path);
+
+  __ mtc1(temp1, STMP1);
+  __ cvtdw(temp_double, STMP1);
+
+  // value != temp_double, then go to hash_double_value
+  __ ceqd(value, temp_double);
+  __ bc1f(&hash_double_value);
+  // Sign-extend 32-bit [temp1] value to 64-bit pair of (temp:temp1), which
+  // is used by integer hash code sequence.
+  __ sra(temp, temp1, 31);
+
+  compiler::Label hash_integer, done;
+  {
+    __ Bind(&hash_integer);
+    // integer hash of (temp:temp1)
+    EmitHashIntegerCodeSequence(compiler, result, temp1, temp);
+    __ b(&done);
+  }
+
+  __ Bind(&slow_path);
+  // double value is potentially doesn't fit into Smi range, so
+  // do the double->int64->double via runtime call.
+  __ StoreDToOffset(value, THR,
+                    compiler::target::Thread::unboxed_runtime_arg_offset());
+  {
+    compiler::LeafRuntimeScope rt(compiler->assembler(), /*frame_size=*/0,
+                                  /*preserve_registers=*/true);
+    __ mov(A0, THR);
+    // Check if double can be represented as int64, load it into (temp:EAX) if
+    // it can.
+    rt.Call(kTryDoubleAsIntegerRuntimeEntry, 1);
+    __ mov(TMP, V0);
+  }
+  __ LoadFromOffset(temp1, THR,
+                    compiler::target::Thread::unboxed_runtime_arg_offset());
+  __ LoadFromOffset(temp, THR,
+                    compiler::target::Thread::unboxed_runtime_arg_offset() +
+                        compiler::target::kWordSize);
+  __ BranchNotEqual(TMP, compiler::Immediate(0), &hash_integer);
+  __ b(&hash_double);
+
+  __ Bind(&hash_double_value);
+  __ mfc1(temp, static_cast<FRegister>(value * 2));
+  __ mfc1(temp1, static_cast<FRegister>(value * 2 + 1));
+
+  __ Bind(&hash_double);
+  // Convert the double bits (temp:temp1) to a hash code that fits in a Smi.
+  __ xor_(result, temp1, temp);
+  __ AndImmediate(result, result, compiler::target::kSmiMax);
+
+  __ Bind(&done);
+  __ xor_(result_hi, result_hi, result_hi);
+}
+
+LocationSummary* HashIntegerOpInstr::MakeLocationSummary(Zone* zone,
+                                                         bool opt) const {
+  const intptr_t kNumInputs = 1;
+  const intptr_t kNumTemps = 1;
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  summary->set_in(0, Location::WritableRegister());
+  summary->set_out(0, Location::RequiresRegister());
+  summary->set_temp(0, Location::RequiresRegister());
+  return summary;
+}
+
+void HashIntegerOpInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  Register value = locs()->in(0).reg();
+  Register result = locs()->out(0).reg();
+  Register temp = locs()->temp(0).reg();
+
+  if (smi_) {
+    __ SmiUntag(value);
+    __ sra(temp, value, 31);
+  } else {
+    __ LoadFieldFromOffset(temp, value,
+                           Mint::value_offset() + compiler::target::kWordSize);
+    __ LoadFieldFromOffset(value, value, Mint::value_offset());
+  }
+  EmitHashIntegerCodeSequence(compiler, result, value, temp);
+  __ SmiTag(result);
 }
 
 LocationSummary* BranchInstr::MakeLocationSummary(Zone* zone, bool opt) const {
