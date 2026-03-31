@@ -273,9 +273,12 @@ void StubCodeCompiler::GenerateLoadFfiCallbackMetadataRuntimeFunction(
                     FfiCallbackMetadata::RuntimeFunctionOffset(function_index));
 }
 
+void StubCodeCompiler::GenerateFfiCallTrampolineStub() {
+  __ Breakpoint();  // Not implemented.
+}
+
 void StubCodeCompiler::GenerateFfiCallbackTrampolineStub() {
 #if defined(DART_INCLUDE_SIMULATOR) && !defined(DART_PRECOMPILER)
-  // TODO(37299): FFI is not supported in SIMMIPS.
   __ Breakpoint();
 #else
   Label body;
@@ -2978,7 +2981,6 @@ void StubCodeCompiler::GenerateSubtypeNTestCacheStub(Assembler* assembler,
   __ PushRegisters(saved_registers);
   __ LoadObject(kNullReg, NullObject());
 
-  Label not_found;
   GenerateSubtypeTestCacheSearch(
       assembler, n, kNullReg, kCacheArrayReg,
       STCInternalRegs::kInstanceCidOrSignatureReg,
@@ -3067,7 +3069,8 @@ void StubCodeCompiler::GenerateJumpToFrameStub() {
 // stub or from the simulator.
 // The arguments are stored in the Thread object.
 // Does not return.
-void StubCodeCompiler::GenerateRunExceptionHandlerStub() {
+static void GenerateRunExceptionHandler(Assembler* assembler,
+                                        bool unbox_exception) {
   __ lw(A0, Address(THR, Thread::resume_pc_offset()));
 
   word offset_from_thread = 0;
@@ -3075,19 +3078,37 @@ void StubCodeCompiler::GenerateRunExceptionHandlerStub() {
   ASSERT(ok);
   __ LoadFromOffset(A2, THR, offset_from_thread);
 
+  // Exception object.
   ASSERT(kExceptionObjectReg == V0);
-  // Load the exception from the current thread.
   Address exception_addr(THR, Thread::active_exception_offset());
   __ lw(V0, exception_addr);
   __ sw(A2, exception_addr);
+  if (unbox_exception) {
+    compiler::Label not_smi, done;
+    __ BranchIfNotSmi(V0, &not_smi);
+    __ SmiUntag(V0);
+    __ b(&done);
+    __ delay_slot()->nop();
+    __ Bind(&not_smi);
+    __ lw(V0, FieldAddress(V0, target::Mint::value_offset()));
+    __ Bind(&done);
+  }
 
+  // StackTrace object.
   ASSERT(kStackTraceObjectReg == V1);
-  // Load the stacktrace from the current thread.
   Address stacktrace_addr(THR, Thread::active_stacktrace_offset());
   __ lw(V1, stacktrace_addr);
 
-  __ jr(A0);  // Jump to continuation point.
+  __ jr(A0);
   __ delay_slot()->sw(A2, stacktrace_addr);
+}
+
+void StubCodeCompiler::GenerateRunExceptionHandlerStub() {
+  GenerateRunExceptionHandler(assembler, false);
+}
+
+void StubCodeCompiler::GenerateRunExceptionHandlerUnboxStub() {
+  GenerateRunExceptionHandler(assembler, true);
 }
 
 // Deoptimize a frame on the call stack before rewinding.
