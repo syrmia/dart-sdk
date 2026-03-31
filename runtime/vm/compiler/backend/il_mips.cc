@@ -10,6 +10,7 @@
 #include "vm/compiler/backend/flow_graph.h"
 #include "vm/compiler/backend/flow_graph_compiler.h"
 #include "vm/compiler/backend/locations.h"
+#include "vm/compiler/backend/range_analysis.h"
 #include "vm/object_store.h"
 
 #define __ compiler->assembler()->
@@ -1237,6 +1238,416 @@ void CheckStackOverflowInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   __ Bind(slow_path->exit_label());
 }
 
+LocationSummary* BinarySmiOpInstr::MakeLocationSummary(Zone* zone,
+                                                       bool opt) const {
+  const intptr_t kNumInputs = 2;
+  const intptr_t kNumTemps =
+      ((op_kind() == Token::kMOD) || (op_kind() == Token::kTRUNCDIV) ||
+       ((op_kind() == Token::kSHL) && can_overflow()) ||
+        (op_kind() == Token::kSHR) || (op_kind() == Token::kUSHR))
+          ? 1
+          : 0;
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  if (op_kind() == Token::kTRUNCDIV) {
+    summary->set_in(0, Location::RequiresRegister());
+    if (RightOperandIsPowerOfTwoConstant()) {
+      ConstantInstr* right_constant = right()->definition()->AsConstant();
+      summary->set_in(1, Location::Constant(right_constant));
+    } else {
+      summary->set_in(1, Location::RequiresRegister());
+    }
+    summary->set_temp(0, Location::RequiresRegister());
+    summary->set_out(0, Location::RequiresRegister());
+    return summary;
+  }
+  if (op_kind() == Token::kMOD) {
+    summary->set_in(0, Location::RequiresRegister());
+    summary->set_in(1, Location::RequiresRegister());
+    summary->set_temp(0, Location::RequiresRegister());
+    summary->set_out(0, Location::RequiresRegister());
+    return summary;
+  }
+  summary->set_in(0, Location::RequiresRegister());
+  summary->set_in(1, LocationRegisterOrSmiConstant(right()));
+  if (((op_kind() == Token::kSHL) && can_overflow()) ||
+      (op_kind() == Token::kSHR) || (op_kind() == Token::kUSHR)) {
+    summary->set_temp(0, Location::RequiresRegister());
+  }
+  // We make use of 3-operand instructions by not requiring result register
+  // to be identical to first input register as on Intel.
+  summary->set_out(0, Location::RequiresRegister());
+  return summary;
+}
+
+void BinarySmiOpInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  __ Comment("BinarySmiOpInstr");
+  if (op_kind() == Token::kSHL) {
+    EmitSmiShiftLeft(compiler, this);
+    return;
+  }
+
+  Register left = locs()->in(0).reg();
+  Register result = locs()->out(0).reg();
+  compiler::Label* deopt = nullptr;
+  if (CanDeoptimize()) {
+    deopt = compiler->AddDeoptStub(deopt_id(), ICData::kDeoptBinarySmiOp);
+  }
+
+  if (locs()->in(1).IsConstant()) {
+    const Object& constant = locs()->in(1).constant();
+    ASSERT(constant.IsSmi());
+    const int32_t imm = compiler::target::ToRawSmi(constant);
+    switch (op_kind()) {
+      case Token::kADD: {
+        if (deopt == nullptr) {
+          __ AddImmediate(result, left, imm);
+        } else {
+          __ AddImmediateBranchOverflow(result, left, imm, deopt);
+        }
+        break;
+      }
+      case Token::kSUB: {
+        __ Comment("kSUB imm");
+        if (deopt == nullptr) {
+          __ AddImmediate(result, left, -imm);
+        } else {
+          // Negating imm and using AddImmediateSetFlags would not detect the
+          // overflow when imm == kMinInt32.
+          __ SubtractImmediateBranchOverflow(result, left, imm, deopt);
+        }
+        break;
+      }
+      case Token::kMUL: {
+        // Keep left value tagged and untag right value.
+        const intptr_t value = Smi::Cast(constant).Value();
+        __ LoadImmediate(TMP, value);
+        __ mult(left, TMP);
+        __ mflo(result);
+        if (deopt != nullptr) {
+          __ mfhi(CMPRES2);
+          __ sra(CMPRES1, result, 31);
+          __ bne(CMPRES1, CMPRES2, deopt);
+        }
+        break;
+      }
+      case Token::kTRUNCDIV: {
+        const intptr_t value = Smi::Cast(constant).Value();
+        ASSERT(value != kIntptrMin);
+        ASSERT(Utils::IsPowerOfTwo(Utils::Abs(value)));
+        const intptr_t shift_count =
+            Utils::ShiftForPowerOfTwo(Utils::Abs(value)) + kSmiTagSize;
+        ASSERT(kSmiTagSize == 1);
+        __ sra(TMP, left, 31);
+        ASSERT(shift_count > 1);  // 1, -1 case handled above.
+        Register temp = locs()->temp(0).reg();
+        __ srl(TMP, TMP, 32 - shift_count);
+        __ addu(temp, left, TMP);
+        ASSERT(shift_count > 0);
+        __ sra(result, temp, shift_count);
+        if (value < 0) {
+          __ subu(result, ZR, result);
+        }
+        __ SmiTag(result);
+        break;
+      }
+      case Token::kBIT_AND: {
+        // No overflow check.
+        __ AndImmediate(result, left, imm);
+        break;
+      }
+      case Token::kBIT_OR: {
+        // No overflow check.
+        __ OrImmediate(result, left, imm);
+        break;
+      }
+      case Token::kBIT_XOR: {
+        // No overflow check.
+        __ XorImmediate(result, left, imm);
+        break;
+      }
+      case Token::kSHR: {
+        // sarl operation masks the count to 5 bits.
+        const intptr_t kCountLimit = 0x1F;
+        const intptr_t value = compiler::target::SmiValue(constant);
+        __ Comment("kSHR");
+        __ sra(result, left, Utils::Minimum(value + kSmiTagSize, kCountLimit));
+        __ SmiTag(result);
+        break;
+      }
+      case Token::kUSHR: {
+        __ Comment("kUSHR");
+        const intptr_t value = compiler::target::SmiValue(constant);
+        ASSERT((value > 0) && (value < 64));
+        COMPILE_ASSERT(compiler::target::kSmiBits < 32);
+        // 64-bit representation of left operand value:
+        //
+        //       ss...sssss  s  s  xxxxxxxxxxxxx
+        //       |        |  |  |  |           |
+        //       63      32  31 30 kSmiBits-1  0
+        //
+        // Where 's' is a sign bit.
+        //
+        // If left operand is negative (sign bit is set), then
+        // result will fit into Smi range if and only if
+        // the shift amount >= 64 - kSmiBits.
+        //
+        // If left operand is non-negative, the result always
+        // fits into Smi range.
+        //
+        if (value < (64 - compiler::target::kSmiBits)) {
+          if (deopt != nullptr) {
+            __ bltz(left, deopt);
+          } else {
+            // Operation cannot overflow only if left value is always
+            // non-negative.
+            ASSERT(!can_overflow());
+          }
+          // At this point left operand is non-negative, so unsigned shift
+          // can't overflow.
+          if (value >= compiler::target::kSmiBits) {
+            __ LoadImmediate(result, 0);
+          } else {
+            __ srl(result, left, value + kSmiTagSize);
+            __ SmiTag(result);
+          }
+        } else {
+          // Shift amount > 32, and the result is guaranteed to fit into Smi.
+          // Low (Smi) part of the left operand is shifted out.
+          // High part is filled with sign bits.
+          __ sra(result, left, 31);
+          __ srl(result, result, value - 32);
+          __ SmiTag(result);
+        }
+        break;
+      }
+      default:
+        UNREACHABLE();
+        break;
+    }
+    return;
+  }
+
+  Register right = locs()->in(1).reg();
+  switch (op_kind()) {
+    case Token::kADD: {
+      if (deopt == nullptr) {
+        __ addu(result, left, right);
+      } else if (RangeUtils::IsPositive(right_range())) {
+        ASSERT(result != left);
+        __ addu(result, left, right);
+        __ BranchSignedLess(result, left, deopt);
+      } else if (RangeUtils::IsNegative(right_range())) {
+        ASSERT(result != left);
+        __ addu(result, left, right);
+        __ BranchSignedGreater(result, left, deopt);
+      } else {
+        __ AddBranchOverflow(result, left, right, deopt);
+      }
+      break;
+    }
+    case Token::kSUB: {
+      __ Comment("kSUB");
+      if (deopt == nullptr) {
+        __ subu(result, left, right);
+      } else if (RangeUtils::IsPositive(right_range())) {
+        ASSERT(result != left);
+        __ subu(result, left, right);
+        __ BranchSignedGreater(result, left, deopt);
+      } else if (RangeUtils::IsNegative(right_range())) {
+        ASSERT(result != left);
+        __ subu(result, left, right);
+        __ BranchSignedLess(result, left, deopt);
+      } else {
+        __ SubtractBranchOverflow(result, left, right, deopt);
+      }
+      break;
+    }
+    case Token::kMUL: {
+      __ Comment("kMUL");
+      __ SmiUntag(TMP, left);
+      __ mult(TMP, right);
+      __ mflo(result);
+      if (deopt != nullptr) {
+        __ mfhi(CMPRES2);
+        __ sra(CMPRES1, result, 31);
+        __ bne(CMPRES1, CMPRES2, deopt);
+      }
+      break;
+    }
+    case Token::kBIT_AND: {
+      // No overflow check.
+      __ and_(result, left, right);
+      break;
+    }
+    case Token::kBIT_OR: {
+      // No overflow check.
+      __ or_(result, left, right);
+      break;
+    }
+    case Token::kBIT_XOR: {
+      // No overflow check.
+      __ xor_(result, left, right);
+      break;
+    }
+    case Token::kTRUNCDIV: {
+      if (RangeUtils::CanBeZero(right_range())) {
+        // Handle divide by zero in runtime.
+        __ beq(right, ZR, deopt);
+      }
+      Register temp = locs()->temp(0).reg();
+      __ SmiUntag(temp, left);
+      __ SmiUntag(TMP, right);
+      __ div(temp, TMP);
+      __ mflo(temp);
+      __ SmiTag(result, temp);
+
+      if (RangeUtils::Overlaps(right_range(), -1, -1)) {
+        // Check the corner case of dividing the 'MIN_SMI' with -1, in which
+        // case we cannot tag the result.
+        __ SmiUntag(TMP, result);
+        __ bne(temp, TMP, deopt);
+      }
+      break;
+    }
+    case Token::kMOD: {
+      if (RangeUtils::CanBeZero(right_range())) {
+        // Handle divide by zero in runtime.
+        __ beq(right, ZR, deopt);
+      }
+      Register temp = locs()->temp(0).reg();
+      __ SmiUntag(temp, left);
+      __ SmiUntag(TMP, right);
+      __ div(temp, TMP);
+      __ mfhi(result);
+      //  res = left % right;
+      //  if (res < 0) {
+      //    if (right < 0) {
+      //      res = res - right;
+      //    } else {
+      //      res = res + right;
+      //    }
+      //  }
+      compiler::Label done, adjust;
+      __ bgez(result, &done);
+      // Result is negative, adjust it.
+      __ bgez(right, &adjust);
+      __ subu(result, result, TMP);
+      __ b(&done);
+      __ Bind(&adjust);
+      __ addu(result, result, TMP);
+      __ Bind(&done);
+      __ SmiTag(result);
+      break;
+    }
+    case Token::kSHR: {
+      Register temp = locs()->temp(0).reg();
+      if (CanDeoptimize()) {
+        __ bltz(right, deopt);
+      }
+      __ SmiUntag(temp, right);
+      // sra operation masks the count to 5 bits.
+      const intptr_t kCountLimit = 0x1F;
+      if (!RangeUtils::OnlyLessThanOrEqualTo(right_range(), kCountLimit)) {
+        compiler::Label ok;
+        __ BranchSignedLessEqual(temp, compiler::Immediate(kCountLimit), &ok);
+        __ LoadImmediate(temp, kCountLimit);
+        __ Bind(&ok);
+      }
+      __ SmiUntag(CMPRES1, left);
+      __ srav(result, CMPRES1, temp);
+      __ SmiTag(result);
+      break;
+    }
+    case Token::kUSHR: {
+      compiler::Label done;
+      __ SmiUntag(TMP, right);
+      // 64-bit representation of left operand value:
+      //
+      //       ss...sssss  s  s  xxxxxxxxxxxxx
+      //       |        |  |  |  |           |
+      //       63      32  31 30 kSmiBits-1  0
+      //
+      // Where 's' is a sign bit.
+      //
+      // If left operand is negative (sign bit is set), then
+      // result will fit into Smi range if and only if
+      // the shift amount >= 64 - kSmiBits.
+      //
+      // If left operand is non-negative, the result always
+      // fits into Smi range.
+      //
+      if (!RangeUtils::OnlyLessThanOrEqualTo(
+              right_range(), 64 - compiler::target::kSmiBits - 1)) {
+        if (!RangeUtils::OnlyLessThanOrEqualTo(right_range(),
+                                                kBitsPerInt64 - 1)) {
+          ASSERT(result != left);
+          ASSERT(result != right);
+          __ LoadImmediate(result, 0);
+          // If shift amount >= 64, then result is 0.
+          __ BranchSignedGreaterEqual(TMP,
+                    compiler::Immediate(kBitsPerInt64), &done);
+        }
+        // Shift amount >= 64 - kSmiBits > 32, but < 64.
+        // Result is guaranteed to fit into Smi range.
+        // Low (Smi) part of the left operand is shifted out.
+        // High part is filled with sign bits.
+        compiler::Label next;
+        __ BranchSignedLess(TMP,
+              compiler::Immediate(64 - compiler::target::kSmiBits), &next);
+        __ addi(TMP, TMP, compiler::Immediate(-32));
+        __ sra(result, left, 31);
+        __ srlv(result, result, TMP);
+        __ SmiTag(result);
+        __ b(&done);
+        __ Bind(&next);
+      }
+      // Shift amount < 64 - kSmiBits.
+      // If left is negative, then result will not fit into Smi range.
+      // Also deopt in case of negative shift amount.
+      if (deopt != nullptr) {
+        __ bltz(left, deopt);
+        __ bltz(right, deopt);
+      } else {
+        ASSERT(!can_overflow());
+      }
+      // At this point left operand is non-negative, so unsigned shift
+      // can't overflow.
+      if (!RangeUtils::OnlyLessThanOrEqualTo(right_range(),
+                                              compiler::target::kSmiBits - 1)) {
+        ASSERT(result != left);
+        ASSERT(result != right);
+        __ LoadImmediate(result, 0);
+        // Left operand >= 0, shift amount >= kSmiBits. Result is 0.
+        __ BranchSignedGreaterEqual(TMP,
+                compiler::Immediate(compiler::target::kSmiBits), &done);
+      }
+      // Left operand >= 0, shift amount < kSmiBits < 32.
+      const Register temp = locs()->temp(0).reg();
+      __ SmiUntag(temp, left);
+      __ srlv(result, temp, TMP);
+      __ SmiTag(result);
+      __ Bind(&done);
+      break;
+    }
+    case Token::kDIV: {
+      // Dispatches to 'Double./'.
+      UNREACHABLE();
+      break;
+    }
+    case Token::kOR:
+    case Token::kAND: {
+      // Flow graph builder has dissected this operation to guarantee correct
+      // behavior (short-circuit evaluation).
+      UNREACHABLE();
+      break;
+    }
+    default:
+      UNREACHABLE();
+      break;
+  }
+}
+
 LocationSummary* CheckEitherNonSmiInstr::MakeLocationSummary(Zone* zone,
                                                              bool opt) const {
   intptr_t left_cid = left()->Type()->ToCid();
@@ -1690,6 +2101,67 @@ void SimdOpInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   UNIMPLEMENTED();
 }
 
+LocationSummary* UnarySmiOpInstr::MakeLocationSummary(Zone* zone,
+                                                      bool opt) const {
+  const intptr_t kNumInputs = 1;
+  const intptr_t kNumTemps = 0;
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  summary->set_in(0, Location::RequiresRegister());
+  // We make use of 3-operand instructions by not requiring result register
+  // to be identical to first input register as on Intel.
+  summary->set_out(0, Location::RequiresRegister());
+  return summary;
+}
+
+void UnarySmiOpInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  Register value = locs()->in(0).reg();
+  Register result = locs()->out(0).reg();
+  switch (op_kind()) {
+    case Token::kNEGATE: {
+      compiler::Label* deopt = compiler->AddDeoptStub(deopt_id(), ICData::kDeoptUnaryOp);
+      __ SubtractBranchOverflow(result, ZR, value, deopt);
+      break;
+    }
+    case Token::kBIT_NOT:
+      __ nor(result, value, ZR);
+      __ addiu(result, result, compiler::Immediate(-1));  // Remove inverted smi-tag.
+      break;
+    default:
+      UNREACHABLE();
+  }
+}
+
+LocationSummary* UnaryDoubleOpInstr::MakeLocationSummary(Zone* zone,
+                                                         bool opt) const {
+  const intptr_t kNumInputs = 1;
+  const intptr_t kNumTemps = 0;
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  summary->set_in(0, Location::RequiresFpuRegister());
+  summary->set_out(0, Location::RequiresFpuRegister());
+  return summary;
+}
+
+void UnaryDoubleOpInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  ASSERT(representation() == kUnboxedDouble);
+  FpuRegister result = locs()->out(0).fpu_reg();
+  FpuRegister value = locs()->in(0).fpu_reg();
+  switch (op_kind()) {
+    case Token::kNEGATE:
+      __ negd(result, value);
+      break;
+    case Token::kSQRT:
+      __ sqrtd(result, value);
+      break;
+    case Token::kSQUARE:
+      __ muld(result, value, value);
+      break;
+    default:
+      UNREACHABLE();
+  }
+}
+
 LocationSummary* Int32ToDoubleInstr::MakeLocationSummary(Zone* zone,
                                                          bool opt) const {
   const intptr_t kNumInputs = 1;
@@ -2063,6 +2535,386 @@ void CheckWritableInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
                   1 << compiler::target::UntaggedObject::kDeeplyImmutableBit |
                1 << compiler::target::UntaggedObject::kShallowImmutableBit);
   __ bne(TMP, ZR, slow_path->entry_label());
+}
+
+LocationSummary* BinaryInt64OpInstr::MakeLocationSummary(Zone* zone,
+                                                        bool opt) const {
+  const intptr_t kNumInputs = 2;
+  const intptr_t kNumTemps = (op_kind() == Token::kMUL || op_kind() == Token::kADD ||
+                              op_kind() == Token::kSUB) ? 1 : 0;
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  summary->set_in(0, Location::Pair(Location::RequiresRegister(),
+                                    Location::RequiresRegister()));
+  summary->set_in(1, Location::Pair(Location::RequiresRegister(),
+                                    Location::RequiresRegister()));
+  summary->set_out(0, Location::Pair(Location::RequiresRegister(),
+                                     Location::RequiresRegister()));
+
+  if (op_kind() == Token::kMUL || op_kind() == Token::kADD ||
+      op_kind() == Token::kSUB) {
+    summary->set_temp(0, Location::RequiresRegister());
+  }
+
+  return summary;
+}
+
+void BinaryInt64OpInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  PairLocation* left_pair = locs()->in(0).AsPairLocation();
+  Register left_lo = left_pair->At(0).reg();
+  Register left_hi = left_pair->At(1).reg();
+  PairLocation* right_pair = locs()->in(1).AsPairLocation();
+  Register right_lo = right_pair->At(0).reg();
+  Register right_hi = right_pair->At(1).reg();
+  PairLocation* out_pair = locs()->out(0).AsPairLocation();
+  Register out_lo = out_pair->At(0).reg();
+  Register out_hi = out_pair->At(1).reg();
+  ASSERT(!can_overflow());
+  ASSERT(!CanDeoptimize());
+
+  switch (op_kind()) {
+    case Token::kBIT_AND: {
+      __ and_(out_lo, left_lo, right_lo);
+      __ and_(out_hi, left_hi, right_hi);
+      break;
+    }
+    case Token::kBIT_OR: {
+      __ or_(out_lo, left_lo, right_lo);
+      __ or_(out_hi, left_hi, right_hi);
+      break;
+    }
+    case Token::kBIT_XOR: {
+      __ xor_(out_lo, left_lo, right_lo);
+      __ xor_(out_hi, left_hi, right_hi);
+      break;
+    }
+    case Token::kADD: {
+      Register temp = locs()->temp(0).reg();
+      __ addu(out_hi, left_hi, right_hi);
+      __ addu(out_lo, left_lo, right_lo);
+      __ sltu(temp, out_lo, right_lo);  // Carry
+      __ addu(out_hi, out_hi, temp);
+      break;
+    }
+    case Token::kSUB: {
+      Register temp = locs()->temp(0).reg();
+      __ sltu(temp, left_lo, right_lo);  // Borrow
+      __ subu(out_hi, left_hi, right_hi);
+      __ subu(out_hi, out_hi, temp);
+      __ subu(out_lo, left_lo, right_lo);
+      break;
+    }
+    case Token::kMUL: {
+      // Compute 64-bit a * b as:
+      //     a_l * b_l + (a_h * b_l + a_l * b_h) << 32
+      Register temp = locs()->temp(0).reg();
+
+      __ multu(left_lo, right_lo);
+      __ mflo(out_lo);
+      __ mfhi(temp);
+      __ mov(out_hi, temp);
+
+      __ multu(left_hi, right_lo);
+      __ mflo(temp);
+      __ addu(out_hi, out_hi, temp);
+
+      __ multu(left_lo, right_hi);
+      __ mflo(temp);
+      __ addu(out_hi, out_hi, temp);
+
+      break;
+    }
+    default:
+      UNREACHABLE();
+  }
+}
+
+LocationSummary* UnaryInt64OpInstr::MakeLocationSummary(Zone* zone,
+                                                       bool opt) const {
+  const intptr_t kNumInputs = 1;
+  const intptr_t kNumTemps = 0;
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  summary->set_in(0, Location::Pair(Location::RequiresRegister(),
+                                    Location::RequiresRegister()));
+  summary->set_out(0, Location::Pair(Location::RequiresRegister(),
+                                     Location::RequiresRegister()));
+  return summary;
+}
+
+void UnaryInt64OpInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  PairLocation* left_pair = locs()->in(0).AsPairLocation();
+  Register left_lo = left_pair->At(0).reg();
+  Register left_hi = left_pair->At(1).reg();
+
+  PairLocation* out_pair = locs()->out(0).AsPairLocation();
+  Register out_lo = out_pair->At(0).reg();
+  Register out_hi = out_pair->At(1).reg();
+
+  compiler::Label isZero, notZero;
+  switch (op_kind()){
+    case Token::kBIT_NOT:
+    __ nor(out_lo, ZR, left_lo);
+    __ nor(out_hi, ZR, left_hi);
+      break;
+    case Token::kNEGATE:
+      __ BranchEqual(left_lo, ZR, &isZero);
+      __ LoadImmediate(TMP, 1);
+      __ b(&notZero);
+      __ Bind(&isZero);
+      __ mov(TMP, ZR);
+      __ Bind(&notZero);
+      __ subu(out_lo, ZR, left_lo);
+      __ subu(out_hi, ZR, left_hi);
+      __ subu(out_hi, out_hi, TMP);
+      break;
+    default:
+      UNREACHABLE();
+  }
+}
+
+LocationSummary* BinaryUint32OpInstr::MakeLocationSummary(Zone* zone,
+                                                          bool opt) const {
+  const intptr_t kNumInputs = 2;
+  const intptr_t kNumTemps = 0;
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  summary->set_in(0, Location::RequiresRegister());
+  summary->set_in(1, LocationRegisterOrConstant(right()));
+  summary->set_out(0, Location::RequiresRegister());
+  return summary;
+}
+
+void BinaryUint32OpInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  Register left = locs()->in(0).reg();
+  Register out = locs()->out(0).reg();
+  ASSERT(out != left);
+  if (locs()->in(1).IsConstant()) {
+    int64_t right;
+    const bool ok = compiler::HasIntegerValue(locs()->in(1).constant(), &right);
+    RELEASE_ASSERT(ok);
+    switch (op_kind()) {
+      case Token::kBIT_AND:
+        __ AndImmediate(out, left, right);
+        break;
+      case Token::kBIT_OR:
+        __ OrImmediate(out, left, right);
+        break;
+      case Token::kBIT_XOR:
+        __ XorImmediate(out, left, right);
+        break;
+      case Token::kADD:
+        __ AddImmediate(out, left, right);
+        break;
+      case Token::kSUB:
+        __ AddImmediate(out, left, -right);
+        break;
+      case Token::kMUL:
+        __ mov(out, left);
+        __ MulImmediate(out, right);
+        break;
+      default:
+        UNREACHABLE();
+    }
+  } else {
+    Register right = locs()->in(1).reg();
+    switch (op_kind()) {
+      case Token::kBIT_AND:
+        __ and_(out, left, right);
+        break;
+      case Token::kBIT_OR:
+        __ or_(out, left, right);
+        break;
+      case Token::kBIT_XOR:
+        __ xor_(out, left, right);
+        break;
+      case Token::kADD:
+        __ addu(out, left, right);
+        break;
+      case Token::kSUB:
+        __ subu(out, left, right);
+        break;
+      case Token::kMUL:
+        __ multu(left, right);
+        __ mflo(out);
+        break;
+      default:
+        UNREACHABLE();
+    }
+  }
+}
+
+LocationSummary* UnaryUint32OpInstr::MakeLocationSummary(Zone* zone,
+                                                         bool opt) const {
+  const intptr_t kNumInputs = 1;
+  const intptr_t kNumTemps = 0;
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  summary->set_in(0, Location::RequiresRegister());
+  summary->set_out(0, Location::RequiresRegister());
+  return summary;
+}
+
+void UnaryUint32OpInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  Register left = locs()->in(0).reg();
+  Register out = locs()->out(0).reg();
+  ASSERT(left != out);
+
+  ASSERT(op_kind() == Token::kBIT_NOT);
+
+  __ nor(out, ZR, left);
+}
+
+LocationSummary* BinaryInt32OpInstr::MakeLocationSummary(Zone* zone,
+                                                         bool opt) const {
+  const intptr_t kNumInputs = 2;
+  // Calculate number of temporaries.
+  intptr_t num_temps = 0;
+  if (((op_kind() == Token::kSHL) && can_overflow()) ||
+      (op_kind() == Token::kSHR) || (op_kind() == Token::kUSHR) ||
+      (op_kind() == Token::kMUL)) {
+    num_temps = 1;
+  }
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, num_temps, LocationSummary::kNoCall);
+  summary->set_in(0, Location::RequiresRegister());
+  summary->set_in(1, LocationRegisterOrSmiConstant(right()));
+  if (num_temps == 1) {
+    summary->set_temp(0, Location::RequiresRegister());
+  }
+  // We make use of 3-operand instructions by not requiring result register
+  // to be identical to first input register as on Intel.
+  summary->set_out(0, Location::RequiresRegister());
+  return summary;
+}
+
+void BinaryInt32OpInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  if (op_kind() == Token::kSHL) {
+    EmitInt32ShiftLeft(compiler, this);
+    return;
+  }
+
+  const Register left = locs()->in(0).reg();
+  const Register result = locs()->out(0).reg();
+  compiler::Label* deopt = nullptr;
+  if (CanDeoptimize()) {
+    deopt = compiler->AddDeoptStub(deopt_id(), ICData::kDeoptBinarySmiOp);
+  }
+
+  if (locs()->in(1).IsConstant()) {
+    const Object& constant = locs()->in(1).constant();
+    ASSERT(compiler::target::IsSmi(constant));
+    const intptr_t value = compiler::target::SmiValue(constant);
+    switch (op_kind()) {
+      case Token::kADD: {
+        if (deopt == nullptr) {
+          __ AddImmediate(result, left, value);
+        } else {
+          __ AddImmediateBranchOverflow(result, left, value, deopt);
+        }
+        break;
+      }
+      case Token::kSUB: {
+        if (deopt == nullptr) {
+          __ AddImmediate(result, left, -value);
+        } else {
+          // Negating value and using AddImmediateSetFlags would not detect the
+          // overflow when value == kMinInt32.
+          __ SubtractImmediateBranchOverflow(result, left, value, deopt);
+        }
+        break;
+      }
+      case Token::kMUL: {
+        const Register right = locs()->temp(0).reg();
+        __ LoadImmediate(right, value);
+        __ mult(left, right);
+        __ mflo(result);
+        if (deopt != nullptr) {
+          __ mfhi(CMPRES2);
+          __ sra(CMPRES1, result, 31);
+          __ bne(CMPRES1, CMPRES2, deopt);
+        }
+        break;
+      }
+      case Token::kBIT_AND: {
+        // No overflow check.
+        __ AndImmediate(result, left, value);
+        break;
+      }
+      case Token::kBIT_OR: {
+        // No overflow check.
+        __ OrImmediate(result, left, value);
+        break;
+      }
+      case Token::kBIT_XOR: {
+        // No overflow check.
+        __ XorImmediate(result, left, value);
+        break;
+      }
+      case Token::kSHR: {
+        // sarl operation masks the count to 5 bits.
+        const intptr_t kCountLimit = 0x1F;
+        __ sra(result, left, Utils::Minimum(value, kCountLimit));
+        break;
+      }
+      case Token::kUSHR: {
+        UNIMPLEMENTED();
+        break;
+      }
+      default:
+        UNREACHABLE();
+        break;
+    }
+    return;
+  }
+
+  const Register right = locs()->in(1).reg();
+  switch (op_kind()) {
+    case Token::kADD: {
+      if (deopt == nullptr) {
+        __ addu(result, left, right);
+      } else {
+        __ AddBranchOverflow(result, left, right, deopt);
+      }
+      break;
+    }
+    case Token::kSUB: {
+      if (deopt == nullptr) {
+        __ subu(result, left, right);
+      } else {
+        __ SubtractBranchOverflow(result, left, right, deopt);
+      }
+      break;
+    }
+    case Token::kMUL: {
+        __ mult(left, right);
+        __ mflo(result);
+        if (deopt != nullptr) {
+          __ mfhi(CMPRES2);
+          __ sra(CMPRES1, result, 31);
+          __ bne(CMPRES1, CMPRES2, deopt);
+        }
+      break;
+    }
+    case Token::kBIT_AND: {
+      // No overflow check.
+      __ and_(result, left, right);
+      break;
+    }
+    case Token::kBIT_OR: {
+      // No overflow check.
+      __ or_(result, left, right);
+      break;
+    }
+    case Token::kBIT_XOR: {
+      // No overflow check.
+      __ xor_(result, left, right);
+      break;
+    }
+    default:
+      UNREACHABLE();
+      break;
+  }
 }
 
 LocationSummary* IntConverterInstr::MakeLocationSummary(Zone* zone,
