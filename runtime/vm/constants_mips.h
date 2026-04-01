@@ -215,6 +215,14 @@ enum DRegister {
   kNoDRegister = -1,
 };
 
+static inline FRegister EvenFRegisterOf(DRegister d) {
+  return static_cast<FRegister>(d * 2);
+}
+
+static inline FRegister OddFRegisterOf(DRegister d) {
+  return static_cast<FRegister>((d * 2) + 1);
+}
+
 const DRegister DTMP = D9;  // Double TMP
 const FRegister STMP1 = F18;  // Single-precision TMP1
 const FRegister STMP2 = F19;  // Single-precision TMP2

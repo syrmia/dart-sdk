@@ -919,6 +919,10 @@ class Assembler : public AssemblerBase {
     UNIMPLEMENTED();
   }
 
+  Register LoadConditionOperand(Register rd,
+                              const Object& operand,
+                              int16_t* imm);
+
   void BranchIf(Condition cond, Label* l, JumpDistance distance = kFarJump);
 
   void BranchIfZero(Register rn,
@@ -1215,6 +1219,11 @@ class Assembler : public AssemblerBase {
   void EnterDartFrame(intptr_t frame_size, bool load_pool_pointer = true);
   void LeaveDartFrame(RestorePP restore_pp = kRestoreCallerPP);
   void LeaveDartFrameAndReturn(Register ra = RA);
+
+  // Set up a Dart frame for a function compiled for on-stack replacement.
+  // The frame layout is a normal Dart frame, but the frame is partially set
+  // up on entry (it is the frame of the unoptimized code).
+  void EnterOsrFrame(intptr_t extra_size);
 
   void EnterFullSafepoint(Register scratch0, Register scratch1);
   void ExitFullSafepoint(Register scratch0,

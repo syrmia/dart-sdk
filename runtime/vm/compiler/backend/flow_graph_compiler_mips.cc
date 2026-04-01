@@ -7,10 +7,27 @@
 
 #include "vm/compiler/backend/flow_graph_compiler.h"
 
+#include "vm/compiler/api/type_check_mode.h"
 #include "vm/compiler/backend/il_printer.h"
+#include "vm/compiler/backend/locations.h"
+#include "vm/compiler/backend/parallel_move_resolver.h"
+#include "vm/compiler/jit/compiler.h"
+#include "vm/cpu.h"
+#include "vm/dart_entry.h"
 #include "vm/deopt_instructions.h"
+#include "vm/dispatch_table.h"
+#include "vm/instructions.h"
+#include "vm/object_store.h"
+#include "vm/parser.h"
+#include "vm/stack_frame.h"
+#include "vm/stub_code.h"
+#include "vm/symbols.h"
 
 namespace dart {
+
+DEFINE_FLAG(bool, trap_on_deoptimization, false, "Trap on deoptimization.");
+
+void FlowGraphCompiler::ArchSpecificInitialization() {}
 
 FlowGraphCompiler::~FlowGraphCompiler() {
   // BlockInfos are zone-allocated, so their destructors are not called.
@@ -124,7 +141,56 @@ TypedDataPtr CompilerDeoptInfo::CreateDeoptInfo(FlowGraphCompiler* compiler,
   return builder->CreateDeoptInfo(deopt_table);
 }
 
+void CompilerDeoptInfoWithStub::GenerateCode(FlowGraphCompiler* compiler,
+                                             intptr_t stub_ix) {
+  // Calls do not need stubs, they share a deoptimization trampoline.
+  ASSERT(reason() != ICData::kDeoptAtCall);
+  compiler::Assembler* assembler = compiler->assembler();
+#define __ assembler->
+  __ Comment("%s", Name());
+  __ Bind(entry_label());
+  if (FLAG_trap_on_deoptimization) {
+    __ break_(0);
+  }
+
+  ASSERT(deopt_env() != nullptr);
+  __ Call(compiler::Address(THR, Thread::deoptimize_entry_offset()));
+  set_pc_offset(assembler->CodeSize());
+#undef __
+}
+
+#define __ assembler->
+
+void FlowGraphCompiler::GenerateIndirectTTSCall(compiler::Assembler* assembler,
+                                                Register reg_to_call,
+                                                intptr_t sub_type_cache_index) {
+  __ LoadField(
+      TTSInternalRegs::kScratchReg,
+      compiler::FieldAddress(
+          reg_to_call,
+          compiler::target::AbstractType::type_test_stub_entry_point_offset()));
+  __ LoadWordFromPoolIndex(TypeTestABI::kSubtypeTestCacheReg,
+                           sub_type_cache_index);
+  __ jalr(TTSInternalRegs::kScratchReg);
+}
+#undef __
 #define __ assembler()->
+
+// Fall through if bool_register contains null.
+void FlowGraphCompiler::GenerateBoolToJump(Register bool_register,
+                                           compiler::Label* is_true,
+                                           compiler::Label* is_false) {
+  __ Comment("BoolToJump");
+  compiler::Label fall_through;
+  __ BranchEqual(bool_register, Object::null_object(), &fall_through);
+  BranchLabels labels = {is_true, is_false, &fall_through};
+  Condition true_condition =
+      EmitBoolTest(bool_register, labels, /*invert=*/false);
+  ASSERT(true_condition != kInvalidCondition);
+  __ BranchIf(true_condition, is_true);
+  __ b(is_false);
+  __ Bind(&fall_through);
+}
 
 void FlowGraphCompiler::EmitCallToStub(
     const Code& stub,
@@ -161,6 +227,190 @@ void FlowGraphCompiler::EmitTailCallToStub(const Code& stub) {
     __ jr(TMP);
     AddStubCallTarget(stub);
   }
+}
+
+void FlowGraphCompiler::GeneratePatchableCall(
+    const InstructionSource& source,
+    const Code& stub,
+    UntaggedPcDescriptors::Kind kind,
+    LocationSummary* locs,
+    ObjectPool::SnapshotBehavior snapshot_behavior) {
+  __ BranchLinkPatchable(stub, CodeEntryKind::kNormal, snapshot_behavior);
+  EmitCallsiteMetadata(source, DeoptId::kNone, kind, locs,
+                       pending_deoptimization_env_);
+}
+
+void FlowGraphCompiler::GenerateDartCall(intptr_t deopt_id,
+                                         const InstructionSource& source,
+                                         const Code& stub,
+                                         UntaggedPcDescriptors::Kind kind,
+                                         LocationSummary* locs,
+                                         Code::EntryKind entry_kind) {
+    ASSERT(CanCallDart());
+  __ BranchLinkPatchable(stub, entry_kind);
+  EmitCallsiteMetadata(source, deopt_id, kind, locs, pending_deoptimization_env_);
+}
+
+void FlowGraphCompiler::GenerateStaticDartCall(intptr_t deopt_id,
+                                               const InstructionSource& source,
+                                               UntaggedPcDescriptors::Kind kind,
+                                               LocationSummary* locs,
+                                               const Function& target,
+                                               Code::EntryKind entry_kind) {
+  ASSERT(CanCallDart());
+  if (CanPcRelativeCall(target)) {
+    __ GenerateUnRelocatedPcRelativeCall();
+    AddPcRelativeCallTarget(target, entry_kind);
+    EmitCallsiteMetadata(source, deopt_id, kind, locs,
+                            pending_deoptimization_env_);
+  } else {
+    // Call sites to the same target can share object pool entries. These
+    // call sites are never patched for breakpoints: the function is deoptimized
+    // and the unoptimized code with IC calls for static calls is patched instead.
+    ASSERT(is_optimizing());
+    const auto& stub = StubCode::CallStaticFunction();
+    __ BranchLinkWithEquivalence(stub, target, entry_kind);
+
+    EmitCallsiteMetadata(source, deopt_id, kind, locs,
+                        pending_deoptimization_env_);
+    AddStaticCallTarget(target, entry_kind);
+  }
+}
+
+void FlowGraphCompiler::EmitEdgeCounter(intptr_t edge_id) {
+  // We do not check for overflow when incrementing the edge counter.  The
+  // function should normally be optimized long before the counter can
+  // overflow; and though we do not reset the counters when we optimize or
+  // deoptimize, there is a bound on the number of
+  // optimization/deoptimization cycles we will attempt.
+  ASSERT(!edge_counters_array_.IsNull());
+  ASSERT(assembler_->constant_pool_allowed());
+  __ Comment("Edge counter");
+  __ LoadObject(T0, edge_counters_array_);
+#if defined(DEBUG)
+  bool old_use_far_branches = assembler_->use_far_branches();
+  assembler_->set_use_far_branches(true);
+#endif  // DEBUG
+  __ LoadFieldFromOffset(T1, T0, compiler::target::Array::element_offset(edge_id));
+  __ AddImmediate(T1, T1, Smi::RawValue(1));
+  __ StoreFieldToOffset(T1, T0, Array::element_offset(edge_id));
+#if defined(DEBUG)
+  assembler_->set_use_far_branches(old_use_far_branches);
+#endif  // DEBUG
+}
+
+void FlowGraphCompiler::EmitFrameEntry() {
+  const Function& function = parsed_function().function();
+  if (CanOptimizeFunction() && function.IsOptimizable() &&
+      (!is_optimizing() || may_reoptimize())) {
+    __ Comment("Invocation Count Check");
+    const Register function_reg = T0;
+
+    __ lw(function_reg, compiler::FieldAddress(CODE_REG, compiler::target::Code::owner_offset()));
+
+    __ lw(T1, compiler::FieldAddress(function_reg, Function::usage_counter_offset()));
+    // Reoptimization of an optimized function is triggered by counting in
+    // IC stubs, but not at the entry of the function.
+    if (!is_optimizing()) {
+      __ addiu(T1, T1, compiler::Immediate(1));
+      __ sw(T1, compiler::FieldAddress(function_reg, Function::usage_counter_offset()));
+    }
+
+    // Skip Branch if T1 is less than the threshold.
+    compiler::Label dont_branch;
+    __ BranchSignedLess(T1, compiler::Immediate(GetOptimizationThreshold()),
+                        &dont_branch);
+
+    ASSERT(function_reg == T0);
+    __ lw(TMP, compiler::Address(THR, Thread::optimize_entry_offset())); // Load value from memory into TMP
+    __ jr(TMP);                                                          // Jump to address in TMP
+
+    __ Bind(&dont_branch);
+  }
+  if (flow_graph().graph_entry()->NeedsFrame()) {
+    __ Comment("Enter frame");
+    if (flow_graph().IsCompiledForOsr()) {
+      const intptr_t extra_slots = ExtraStackSlotsOnOsrEntry();
+      ASSERT(extra_slots >= 0);
+      __ EnterOsrFrame(extra_slots * compiler::target::kWordSize);
+    } else {
+      ASSERT(StackSize() >= 0);
+      __ EnterDartFrame(StackSize() * compiler::target::kWordSize);
+    }
+  } else if (FLAG_precompiled_mode) {
+    assembler()->set_constant_pool_allowed(true);
+  }
+}
+
+const InstructionSource& PrologueSource() {
+  static InstructionSource prologue_source(TokenPosition::kDartCodePrologue,
+                                           /*inlining_id=*/0);
+  return prologue_source;
+}
+
+void FlowGraphCompiler::EmitPrologue() {
+  BeginCodeSourceRange(PrologueSource());
+
+  EmitFrameEntry();
+  ASSERT(assembler()->constant_pool_allowed());
+
+  // In unoptimized code, initialize (non-argument) stack allocated slots.
+  if (!is_optimizing()) {
+    const int num_locals = parsed_function().num_stack_locals();
+
+    intptr_t args_desc_slot = -1;
+    if (parsed_function().has_arg_desc_var()) {
+      args_desc_slot = compiler::target::frame_layout.FrameSlotForVariable(
+          parsed_function().arg_desc_var());
+    }
+
+    __ Comment("Initialize spill slots");
+    if (num_locals > 1 || (num_locals == 1 && args_desc_slot == -1)) {
+      __ LoadObject(T1, Object::null_object());
+    }
+    for (intptr_t i = 0; i < num_locals; ++i) {
+      const intptr_t slot_index =
+          compiler::target::frame_layout.FrameSlotForVariableIndex(-i);
+      Register value_reg = slot_index == args_desc_slot ? ARGS_DESC_REG : T1;
+      __ StoreToOffset(value_reg, FP, slot_index * compiler::target::kWordSize);
+    }
+  } else if (parsed_function().suspend_state_var() != nullptr &&
+             !flow_graph().IsCompiledForOsr()) {
+    // Initialize synthetic :suspend_state variable early
+    // as it may be accessed by GC and exception handling before
+    // InitSuspendableFunction stub is called.
+    const intptr_t slot_index =
+        compiler::target::frame_layout.FrameSlotForVariable(
+            parsed_function().suspend_state_var());
+    __ LoadObject(T7, Object::null_object());
+    __ StoreToOffset(T7, FP, slot_index * compiler::target::kWordSize);
+  }
+
+  EndCodeSourceRange(PrologueSource());
+}
+
+void FlowGraphCompiler::EmitOptimizedInstanceCall(
+    const Code& stub,
+    const ICData& ic_data,
+    intptr_t deopt_id,
+    const InstructionSource& source,
+    LocationSummary* locs,
+    Code::EntryKind entry_kind) {
+  ASSERT(CanCallDart());
+  ASSERT(Array::Handle(zone(), ic_data.arguments_descriptor()).Length() > 0);
+  // Each ICData propagated from unoptimized to optimized code contains the
+  // function that corresponds to the Dart function of that IC call. Due
+  // to inlining in optimized code, that function may not correspond to the
+  // top-level function (parsed_function().function()) which could be
+  // reoptimized and which counter needs to be incremented.
+  // Pass the function explicitly, it is used in IC stub.
+  __ Comment("OptimizedInstanceCall");
+  __ LoadObject(S2, parsed_function().function());
+  __ LoadFromOffset(A0, SP, (ic_data.SizeWithoutTypeArgs() - 1) * kWordSize);
+  __ LoadUniqueObject(S5, ic_data);
+  GenerateDartCall(deopt_id, source, stub, UntaggedPcDescriptors::kIcCall,
+                   locs, entry_kind);
+  EmitDropArguments(ic_data.SizeWithTypeArgs());
 }
 
 void FlowGraphCompiler::EmitInstanceCallJIT(const Code& stub,
@@ -224,6 +474,188 @@ void FlowGraphCompiler::EmitInstanceCallAOT(const ICData& ic_data,
   EmitDropArguments(ic_data.SizeWithTypeArgs());
 }
 
+void FlowGraphCompiler::EmitMegamorphicInstanceCall(
+    const String& name,
+    const Array& arguments_descriptor,
+    intptr_t deopt_id,
+    const InstructionSource& source,
+    LocationSummary* locs) {
+  ASSERT(CanCallDart());
+  ASSERT(!arguments_descriptor.IsNull() && (arguments_descriptor.Length() > 0));
+  ASSERT(!FLAG_precompiled_mode);
+  const ArgumentsDescriptor args_desc(arguments_descriptor);
+  const MegamorphicCache& cache = MegamorphicCache::ZoneHandle(
+      zone(),
+      MegamorphicCacheTable::Lookup(thread(), name, arguments_descriptor));
+
+  __ Comment("MegamorphicCall");
+  // Load receiver into A0,
+  __ LoadFromOffset(A0, SP,
+                    (args_desc.Count() - 1) * compiler::target::kWordSize);
+
+  // Use same code pattern as instance call so it can be parsed by code patcher.
+  __ LoadUniqueObject(S5, cache);
+  __ LoadUniqueObject(CODE_REG, StubCode::MegamorphicCall());
+  __ Call(compiler::FieldAddress(
+      CODE_REG, Code::entry_point_offset(Code::EntryKind::kMonomorphic)));
+
+  RecordSafepoint(locs);
+  AddCurrentDescriptor(UntaggedPcDescriptors::kOther, DeoptId::kNone, source);
+  const intptr_t deopt_id_after = DeoptId::ToDeoptAfter(deopt_id);
+  if (is_optimizing()) {
+    AddDeoptIndexAtCall(deopt_id_after, pending_deoptimization_env_);
+  } else {
+    // Add deoptimization continuation point after the call and before the
+    // arguments are removed.
+    AddCurrentDescriptor(UntaggedPcDescriptors::kDeopt, deopt_id_after, source);
+  }
+  RecordCatchEntryMoves(pending_deoptimization_env_);
+  EmitDropArguments(args_desc.SizeWithTypeArgs());
+}
+
+void FlowGraphCompiler::EmitUnoptimizedStaticCall(
+    intptr_t size_with_type_args,
+    intptr_t deopt_id,
+    const InstructionSource& source,
+    LocationSummary* locs,
+    const ICData& ic_data,
+    Code::EntryKind entry_kind) {
+  ASSERT(CanCallDart());
+  const Code& stub =
+      StubCode::UnoptimizedStaticCallEntry(ic_data.NumArgsTested());
+  __ LoadObject(S5, ic_data);
+  GenerateDartCall(deopt_id, source, stub,
+                   UntaggedPcDescriptors::kUnoptStaticCall, locs, entry_kind);
+  EmitDropArguments(size_with_type_args);
+}
+
+void FlowGraphCompiler::EmitOptimizedStaticCall(
+    const Function& function,
+    const Array& arguments_descriptor,
+    intptr_t size_with_type_args,
+    intptr_t deopt_id,
+    const InstructionSource& source,
+    LocationSummary* locs,
+    Code::EntryKind entry_kind) {
+  ASSERT(CanCallDart());
+  ASSERT(!function.IsClosureFunction());
+  if (function.PrologueNeedsArgumentsDescriptor()) {
+    __ LoadObject(ARGS_DESC_REG, arguments_descriptor);
+  } else {
+    if (!FLAG_precompiled_mode) {
+      __ LoadImmediate(ARGS_DESC_REG, 0);  // GC safe smi zero because of stub.
+    }
+  }
+  // Do not use the code from the function, but let the code be patched so that
+  // we can record the outgoing edges to other code.
+  GenerateStaticDartCall(deopt_id, source, UntaggedPcDescriptors::kOther, locs,
+                         function, entry_kind);
+  EmitDropArguments(size_with_type_args);
+}
+
+void FlowGraphCompiler::EmitDispatchTableCall(
+    int32_t selector_offset,
+    const Array& arguments_descriptor) {
+  const auto cid_reg = DispatchTableNullErrorABI::kClassIdReg;
+  ASSERT(CanCallDart());
+  const Register table_reg = T0;
+  ASSERT(cid_reg != table_reg);
+  ASSERT(cid_reg != ARGS_DESC_REG);
+  if (!arguments_descriptor.IsNull()) {
+    __ LoadObject(ARGS_DESC_REG, arguments_descriptor);
+  }
+  intptr_t offset = selector_offset - DispatchTable::kOriginElement;
+  __ lw(table_reg, compiler::Address(THR, compiler::target::Thread::dispatch_table_array_offset()));
+
+  // Would like cid_reg to be available on entry to the target function
+  // for checking purposes.
+  ASSERT(cid_reg != TMP);
+  __ AddShifted(T9, table_reg, cid_reg,
+                compiler::target::kWordSizeLog2);
+  __ LoadFromOffset(T9, T9, offset << compiler::target::kWordSizeLog2);
+  __ jalr(T9);
+}
+
+Condition FlowGraphCompiler::EmitEqualityRegConstCompare(
+    Register reg,
+    const Object& obj,
+    bool needs_number_check,
+    const InstructionSource& source,
+    intptr_t deopt_id) {
+  __ Comment("EqualityRegConstCompare");
+  if (needs_number_check) {
+    ASSERT(!obj.IsMint() && !obj.IsDouble());
+    __ addiu(SP, SP, compiler::Immediate(-2 * kWordSize));
+    __ sw(reg, compiler::Address(SP, 1 * kWordSize));
+    __ LoadObject(TMP, obj);
+    __ sw(TMP, compiler::Address(SP, 0 * kWordSize));
+    if (is_optimizing()) {
+      // No breakpoints in optimized code.
+      __ BranchLink(StubCode::OptimizedIdenticalWithNumberCheck());
+      AddCurrentDescriptor(UntaggedPcDescriptors::kOther, deopt_id, source);
+    } else {
+      // Patchable to support breakpoints.
+      __ BranchLinkPatchable(StubCode::UnoptimizedIdenticalWithNumberCheck());
+      AddCurrentDescriptor(UntaggedPcDescriptors::kRuntimeCall, deopt_id,
+                           source);
+    }
+    __ Comment("EqualityRegConstCompare return");
+    // Stub returns result in CMPRES1 (if it is 0, then reg and obj are equal).
+    __ lw(reg, compiler::Address(SP, 1 * kWordSize));      // Restore 'reg'.
+    __ addiu(SP, SP, compiler::Immediate(2 * kWordSize));  // Discard constant.
+    __ CompareRegisters(CMPRES1, ZR);
+  } else {
+    int16_t imm = 0;
+    const Register obj_reg = __ LoadConditionOperand(CMPRES1, obj, &imm);
+    __ CompareRegisters(reg, obj_reg);
+  }
+  return EQ;
+}
+
+Condition FlowGraphCompiler::EmitEqualityRegRegCompare(
+    Register left,
+    Register right,
+    bool needs_number_check,
+    const InstructionSource& source,
+    intptr_t deopt_id) {
+  __ Comment("EqualityRegRegCompare");
+  if (needs_number_check) {
+    __ addiu(SP, SP, compiler::Immediate(-2 * kWordSize));
+    __ sw(left, compiler::Address(SP, 1 * kWordSize));
+    __ sw(right, compiler::Address(SP, 0 * kWordSize));
+    if (is_optimizing()) {
+      __ BranchLink(
+          StubCode::OptimizedIdenticalWithNumberCheck());
+    } else {
+      __ BranchLinkPatchable(
+          StubCode::UnoptimizedIdenticalWithNumberCheck());
+    }
+    if (source.token_pos.IsReal()) {
+      AddCurrentDescriptor(UntaggedPcDescriptors::kRuntimeCall, deopt_id,
+                           source);
+    }
+    __ Comment("EqualityRegRegCompare return");
+    // Stub returns result in CMPRES1 (if it is 0, then left and right are
+    // equal).
+    __ lw(right, compiler::Address(SP, 0 * kWordSize));
+    __ lw(left, compiler::Address(SP, 1 * kWordSize));
+    __ addiu(SP, SP, compiler::Immediate(2 * kWordSize));
+    __ CompareRegisters(CMPRES1, ZR);
+  } else {
+    ASSERT(left < 32 && right < 32);
+    __ CompareRegisters(left, right);
+  }
+  return EQ;
+}
+
+Condition FlowGraphCompiler::EmitBoolTest(Register value,
+                                          BranchLabels labels,
+                                          bool invert) {
+  __ Comment("BoolTest");
+  __ TestImmediate(value, compiler::target::ObjectAlignment::kBoolValueMask);
+  return invert ? NE : EQ;
+}
+
 // This function must be in sync with FlowGraphCompiler::RecordSafepoint and
 // FlowGraphCompiler::SlowPathEnvironmentFor.
 void FlowGraphCompiler::SaveLiveRegisters(LocationSummary* locs) {
@@ -236,6 +668,482 @@ void FlowGraphCompiler::SaveLiveRegisters(LocationSummary* locs) {
 
 void FlowGraphCompiler::RestoreLiveRegisters(LocationSummary* locs) {
   __ PopRegisters(*locs->live_registers());
+}
+
+#if defined(DEBUG)
+void FlowGraphCompiler::ClobberDeadTempRegisters(LocationSummary* locs) {
+  // Clobber temporaries that have not been manually preserved.
+  for (intptr_t i = 0; i < locs->temp_count(); ++i) {
+    Location tmp = locs->temp(i);
+    if (tmp.IsRegister() &&
+        !locs->live_registers()->ContainsRegister(tmp.reg())) {
+      __ LoadImmediate(tmp.reg(), 0xf7);
+    }
+  }
+}
+#endif
+
+Register FlowGraphCompiler::EmitTestCidRegister() {
+  return A1;
+}
+
+void FlowGraphCompiler::EmitTestAndCallLoadReceiver(
+    intptr_t argument_count,
+    const Array& arguments_descriptor) {
+  __ Comment("EmitTestAndCall");
+  // Load receiver into T0.
+  __ LoadFromOffset(T0, SP, (argument_count - 1) * kWordSize);
+  __ LoadObject(S4, arguments_descriptor);
+}
+
+void FlowGraphCompiler::EmitTestAndCallSmiBranch(compiler::Label* label, bool if_smi) {
+  __ AndImmediate(CMPRES1, T0, kSmiTagMask);
+  if (if_smi) {
+    // Jump if receiver is Smi.
+    __ beq(CMPRES1, ZR, label);
+  } else {
+    // Jump if receiver is not Smi.
+    __ bne(CMPRES1, ZR, label);
+  }
+}
+
+void FlowGraphCompiler::EmitTestAndCallLoadCid(Register class_id_reg) {
+  ASSERT(class_id_reg != T0);
+  __ LoadClassId(class_id_reg, T0);
+}
+
+void FlowGraphCompiler::EmitMove(Location destination,
+                                 Location source,
+                                 TemporaryRegisterAllocator* allocator) {
+  if (destination.Equals(source)) return;
+
+  if (source.IsRegister()) {
+    if (destination.IsRegister()) {
+      __ mov(destination.reg(), source.reg());
+    } else {
+      ASSERT(destination.IsStackSlot());
+      const intptr_t dest_offset = destination.ToStackSlotOffset();
+      __ StoreToOffset(source.reg(), destination.base_reg(), dest_offset);
+    }
+  } else if (source.IsStackSlot()) {
+    if (destination.IsRegister()) {
+      const intptr_t source_offset = source.ToStackSlotOffset();
+      __ LoadFromOffset(destination.reg(), source.base_reg(), source_offset);
+    } else {
+      ASSERT(destination.IsStackSlot());
+      const intptr_t source_offset = source.ToStackSlotOffset();
+      const intptr_t dest_offset = destination.ToStackSlotOffset();
+      Register tmp = allocator->AllocateTemporary();
+      __ LoadFromOffset(tmp, source.base_reg(), source_offset);
+      __ StoreToOffset(tmp, destination.base_reg(), dest_offset);
+      allocator->ReleaseTemporary();
+    }
+  } else if (source.IsFpuRegister()) {
+    if (destination.IsFpuRegister()) {
+      DRegister dst = destination.fpu_reg();
+      DRegister src = source.fpu_reg();
+      __ movd(dst, src);
+    } else if (destination.IsStackSlot()) {
+      // 32-bit float
+      const intptr_t dest_offset = destination.ToStackSlotOffset();
+      const FRegister src = EvenFRegisterOf(source.fpu_reg());
+      __ swc1(src, compiler::Address(destination.base_reg(), dest_offset));
+    } else {
+      ASSERT(destination.IsDoubleStackSlot());
+      const intptr_t dest_offset = destination.ToStackSlotOffset();
+      DRegister src = source.fpu_reg();
+      __ StoreDToOffset(src, destination.base_reg(), dest_offset);
+    }
+  } else if (source.IsDoubleStackSlot()) {
+    if (destination.IsFpuRegister()) {
+      const intptr_t source_offset = source.ToStackSlotOffset();
+      DRegister dst = destination.fpu_reg();
+      __ LoadDFromOffset(dst, source.base_reg(), source_offset);
+    } else if (destination.IsStackSlot()) {
+      const intptr_t source_offset = source.ToStackSlotOffset();
+      const intptr_t dest_offset = destination.ToStackSlotOffset();
+      __ lwc1(EvenFRegisterOf(DTMP), compiler::Address(source.base_reg(), source_offset));
+      __ swc1(EvenFRegisterOf(DTMP), compiler::Address(destination.base_reg(), dest_offset));
+
+    } else {
+      ASSERT(destination.IsDoubleStackSlot());
+      const intptr_t source_offset = source.ToStackSlotOffset();
+      const intptr_t dest_offset = destination.ToStackSlotOffset();
+      __ LoadDFromOffset(DTMP, source.base_reg(), source_offset);
+      __ StoreDToOffset(DTMP, destination.base_reg(), dest_offset);
+    }
+  } else if (source.IsPairLocation()) {
+    ASSERT(destination.IsPairLocation());
+    for (intptr_t i : {0, 1}) {
+      EmitMove(destination.Component(i), source.Component(i), allocator);
+    }
+  } else {
+    ASSERT(source.IsConstant());
+    if (destination.IsFpuRegister() || destination.IsDoubleStackSlot() ||
+        destination.IsStackSlot()) {
+      Register tmp = allocator->AllocateTemporary();
+      source.constant_instruction()->EmitMoveToLocation(this, destination, tmp,
+                                                        source.pair_index());
+      allocator->ReleaseTemporary();
+    } else {
+      source.constant_instruction()->EmitMoveToLocation(
+          this, destination, kNoRegister, source.pair_index());
+    }
+  }
+}
+
+static compiler::OperandSize BytesToOperandSize(intptr_t bytes) {
+  switch (bytes) {
+    case 8:
+      return compiler::OperandSize::kEightBytes;
+    case 4:
+      return compiler::OperandSize::kFourBytes;
+    case 2:
+      return compiler::OperandSize::kTwoBytes;
+    case 1:
+      return compiler::OperandSize::kByte;
+    default:
+      UNIMPLEMENTED();
+  }
+}
+
+void FlowGraphCompiler::EmitNativeMoveArchitecture(
+    const compiler::ffi::NativeLocation& destination,
+    const compiler::ffi::NativeLocation& source) {
+  const auto& src_payload_type = source.payload_type();
+  const auto& dst_payload_type = destination.payload_type();
+  const auto& src_container_type = source.container_type();
+  const auto& dst_container_type = destination.container_type();
+  ASSERT(src_container_type.IsFloat() == dst_container_type.IsFloat());
+  ASSERT(src_container_type.IsInt() == dst_container_type.IsInt());
+  ASSERT(src_payload_type.IsSigned() == dst_payload_type.IsSigned());
+  ASSERT(src_payload_type.IsPrimitive());
+  ASSERT(dst_payload_type.IsPrimitive());
+  const intptr_t src_size = src_payload_type.SizeInBytes();
+  const intptr_t dst_size = dst_payload_type.SizeInBytes();
+  const bool sign_or_zero_extend = dst_size > src_size;
+
+  if (source.IsRegisters()) {
+    const auto& src = source.AsRegisters();
+
+    if (destination.IsRegisters()) {
+      ASSERT(src.num_regs() == 1);
+      ASSERT(src_size <= 4);
+      const auto src_reg = src.reg_at(0);
+      const auto& dst = destination.AsRegisters();
+      ASSERT(dst.num_regs() == 1);
+      const auto dst_reg = dst.reg_at(0);
+      ASSERT(destination.container_type().SizeInBytes() <=
+            compiler::target::kWordSize);
+      if (!sign_or_zero_extend) {
+        __ MoveRegister(dst_reg, src_reg);
+      } else {
+        switch (src_payload_type.AsPrimitive().representation()) {
+          case compiler::ffi::kInt8:  // Sign extend operand.
+            __ ExtendValue(dst_reg, src_reg, compiler::kByte);
+            return;
+          case compiler::ffi::kInt16:
+            __ ExtendValue(dst_reg, src_reg, compiler::kTwoBytes);
+            return;
+          case compiler::ffi::kInt24:
+            __ MoveRegister(dst_reg, src_reg);
+            __ sll(dst_reg, dst_reg, 8);
+            __ sra(dst_reg, dst_reg, 8);
+            return;
+          case compiler::ffi::kUint8:  // Zero extend operand.
+            __ ExtendValue(dst_reg, src_reg, compiler::kUnsignedByte);
+            return;
+          case compiler::ffi::kUint16:
+            __ ExtendValue(dst_reg, src_reg, compiler::kUnsignedTwoBytes);
+            return;
+          case compiler::ffi::kUint24:
+            __ AndImmediate(dst_reg, src_reg, 0xFFFFFF);
+            return;
+          default:
+            UNIMPLEMENTED();
+        }
+      }
+
+    } else if (destination.IsFpuRegisters()) {
+      const auto& dst = destination.AsFpuRegisters();
+      ASSERT(src_size == dst_size);
+      ASSERT(dst.fpu_reg_kind() == compiler::ffi::kSingleFpuReg ||
+             dst.fpu_reg_kind() == compiler::ffi::kDoubleFpuReg);
+      const DRegister dst_dreg = dst.fpu_reg();
+
+      if (src_size == 4) {
+        // Single float: move 1 int reg to even F-register
+        ASSERT(src.num_regs() == 1);
+        __ mtc1(src.reg_at(0), EvenFRegisterOf(dst_dreg));
+      } else if (src_size == 8) {
+        // Double: move 2 int regs to D-register (for varargs doubles passed in int regs)
+        // On little-endian MIPS, reg_at(0) has low word, reg_at(1) has high word
+        ASSERT(src.num_regs() == 2);
+        __ mtc1(src.reg_at(0), EvenFRegisterOf(dst_dreg));  // Low word to even F-reg
+        __ mtc1(src.reg_at(1), OddFRegisterOf(dst_dreg));   // High word to odd F-reg
+      } else {
+        UNREACHABLE();
+      }
+
+    } else {
+      ASSERT(destination.IsStack());
+      const auto& dst = destination.AsStack();
+      ASSERT(!sign_or_zero_extend);
+      auto const op_size =
+          BytesToOperandSize(destination.container_type().SizeInBytes());
+      __ StoreToOffset(src.reg_at(0), dst.base_register(),
+                       dst.offset_in_bytes(), op_size);
+    }
+
+  } else if (source.IsFpuRegisters()) {
+    const auto& src = source.AsFpuRegisters();
+    // We have not implemented conversions here, use IL convert instructions.
+    ASSERT(src_payload_type.Equals(dst_payload_type));
+
+    if (destination.IsRegisters()) {
+      const auto& dst = destination.AsRegisters();
+      ASSERT(src_size == dst_size);
+      ASSERT(src.fpu_reg_kind() == compiler::ffi::kSingleFpuReg ||
+             src.fpu_reg_kind() == compiler::ffi::kDoubleFpuReg);
+      const DRegister src_dreg = src.fpu_reg();
+
+      if (src_size == 4) {
+        // Single float: move even F-register to 1 int reg
+        ASSERT(dst.num_regs() == 1);
+        __ mfc1(dst.reg_at(0), EvenFRegisterOf(src_dreg));
+      } else if (src_size == 8) {
+        // Double: move D-register to 2 int regs (for varargs doubles passed in int regs)
+        // On little-endian MIPS, reg_at(0) gets low word, reg_at(1) gets high word
+        ASSERT(dst.num_regs() == 2);
+        __ mfc1(dst.reg_at(0), EvenFRegisterOf(src_dreg));  // Low word from even F-reg
+        __ mfc1(dst.reg_at(1), OddFRegisterOf(src_dreg));   // High word from odd F-reg
+      } else {
+        UNREACHABLE();
+      }
+
+    } else if (destination.IsFpuRegisters()) {
+      const auto& dst = destination.AsFpuRegisters();
+      // Get the D-register indices and convert to F-registers
+      ASSERT(src.fpu_reg_kind() == compiler::ffi::kSingleFpuReg ||
+             src.fpu_reg_kind() == compiler::ffi::kDoubleFpuReg);
+      ASSERT(dst.fpu_reg_kind() == compiler::ffi::kSingleFpuReg ||
+             dst.fpu_reg_kind() == compiler::ffi::kDoubleFpuReg);
+      switch (dst_size) {
+        case 8: {
+          const DRegister src_dreg = src.fpu_reg();
+          const DRegister dst_dreg = dst.fpu_reg();
+          __ movd(dst_dreg, src_dreg);
+          return;
+        }
+        case 4: {
+          const intptr_t src_dreg_index = static_cast<intptr_t>(src.fpu_reg());
+          const intptr_t dst_dreg_index = static_cast<intptr_t>(dst.fpu_reg());
+          __ movs(FRegister(dst_dreg_index*2), FRegister(src_dreg_index*2));
+          return;
+        }
+        default:
+          UNREACHABLE();
+      }
+
+    } else {
+      ASSERT(destination.IsStack());
+      ASSERT(src_payload_type.IsFloat());
+      const auto& dst = destination.AsStack();
+      const auto dst_addr = NativeLocationToStackSlotAddress(dst);
+      // Get the D-register index and convert to F-register.
+      ASSERT(src.fpu_reg_kind() == compiler::ffi::kSingleFpuReg ||
+             src.fpu_reg_kind() == compiler::ffi::kDoubleFpuReg);
+      switch (dst_size) {
+        case 8: {
+          const DRegister src_dreg = src.fpu_reg();
+          __ sdc1(src_dreg, dst_addr);
+          return;
+        }
+        case 4: {
+          const intptr_t src_dreg_index = static_cast<intptr_t>(src.fpu_reg());
+          __ swc1(FRegister(src_dreg_index*2), dst_addr);
+          return;
+        }
+        default:
+          UNREACHABLE();
+      }
+    }
+
+  } else {
+    ASSERT(source.IsStack());
+    const auto& src = source.AsStack();
+    const auto src_addr = NativeLocationToStackSlotAddress(src);
+    if (destination.IsRegisters()) {
+      const auto& dst = destination.AsRegisters();
+      ASSERT(dst.num_regs() == 1);
+      const auto dst_reg = dst.reg_at(0);
+      EmitNativeLoad(dst_reg, src.base_register(), src.offset_in_bytes(),
+                     src_payload_type.AsPrimitive().representation());
+    } else if (destination.IsFpuRegisters()) {
+      ASSERT(src_payload_type.Equals(dst_payload_type));
+      ASSERT(src_payload_type.IsFloat());
+      const auto& dst = destination.AsFpuRegisters();
+      // Get the D-register index and convert to F-register.
+      ASSERT(dst.fpu_reg_kind() == compiler::ffi::kSingleFpuReg ||
+             dst.fpu_reg_kind() == compiler::ffi::kDoubleFpuReg);
+      switch (src_size) {
+        case 8: {
+          const DRegister dst_dreg = dst.fpu_reg();
+          __ ldc1(dst_dreg, src_addr);
+          return;
+        }
+        case 4: {
+          const intptr_t dst_dreg_index = static_cast<intptr_t>(dst.fpu_reg());
+          __ lwc1(FRegister(dst_dreg_index*2), src_addr);
+          return;
+        }
+        default:
+          UNIMPLEMENTED();
+      }
+
+    } else {
+      ASSERT(destination.IsStack());
+      UNREACHABLE();
+    }
+  }
+}
+
+void FlowGraphCompiler::EmitNativeLoad(Register dst,
+                                       Register base,
+                                       intptr_t offset,
+                                       compiler::ffi::PrimitiveType type) {
+  switch (type) {
+    case compiler::ffi::kInt8:
+      __ lb(dst, compiler::Address(base, offset));
+      break;
+    case compiler::ffi::kUint8:
+      __ lbu(dst, compiler::Address(base, offset));
+      break;
+    case compiler::ffi::kInt16:
+      __ lh(dst, compiler::Address(base, offset));
+      break;
+    case compiler::ffi::kUint16:
+      __ lhu(dst, compiler::Address(base, offset));
+      break;
+    case compiler::ffi::kInt32:
+      __ lw(dst, compiler::Address(base, offset));
+      break;
+    case compiler::ffi::kUint32:
+    case compiler::ffi::kFloat:
+    case compiler::ffi::kHalfDouble:
+      __ lw (dst, compiler::Address(base, offset));
+      break;
+    case compiler::ffi::kInt24:
+      __ lhu(dst, compiler::Address(base, offset));
+      __ lb(TMP, compiler::Address(base, offset + 2));
+      __ sll(TMP, TMP, 16);
+      __ or_(dst, dst, TMP);
+      break;
+    case compiler::ffi::kUint24:
+      __ lhu(dst, compiler::Address(base, offset));
+      __ lbu(TMP, compiler::Address(base, offset + 2));
+      __ sll(TMP, TMP, 16);
+      __ or_(dst, dst, TMP);
+      break;
+    default:
+      UNREACHABLE();
+  }
+}
+#undef __
+#define __ compiler_->assembler()->
+
+void ParallelMoveEmitter::EmitSwap(const MoveOperands& move) {
+  const Location source = move.src();
+  const Location destination = move.dest();
+
+  if (source.IsRegister() && destination.IsRegister()) {
+    ASSERT(source.reg() != TMP);
+    ASSERT(destination.reg() != TMP);
+    __ mov(TMP, source.reg());
+    __ mov(source.reg(), destination.reg());
+    __ mov(destination.reg(), TMP);
+  } else if (source.IsRegister() && destination.IsStackSlot()) {
+    Exchange(source.reg(), destination.base_reg(),
+             destination.ToStackSlotOffset());
+  } else if (source.IsStackSlot() && destination.IsRegister()) {
+    Exchange(destination.reg(), source.base_reg(), source.ToStackSlotOffset());
+  } else if (source.IsStackSlot() && destination.IsStackSlot()) {
+    Exchange(source.base_reg(), source.ToStackSlotOffset(),
+             destination.base_reg(), destination.ToStackSlotOffset());
+  } else if (source.IsFpuRegister() && destination.IsFpuRegister()) {
+    DRegister dst = destination.fpu_reg();
+    DRegister src = source.fpu_reg();
+    __ movd(DTMP, src);
+    __ movd(src, dst);
+    __ movd(dst, DTMP);
+  } else if (source.IsFpuRegister() || destination.IsFpuRegister()) {
+    ASSERT(destination.IsDoubleStackSlot() || source.IsDoubleStackSlot());
+    DRegister reg =
+        source.IsFpuRegister() ? source.fpu_reg() : destination.fpu_reg();
+    Register base_reg =
+        source.IsFpuRegister() ? destination.base_reg() : source.base_reg();
+    const intptr_t slot_offset = source.IsFpuRegister()
+                                     ? destination.ToStackSlotOffset()
+                                     : source.ToStackSlotOffset();
+    __ LoadDFromOffset(DTMP, base_reg, slot_offset);
+    __ StoreDToOffset(reg, base_reg, slot_offset);
+    __ movd(reg, DTMP);
+  } else if (source.IsDoubleStackSlot() && destination.IsDoubleStackSlot()) {
+    const intptr_t source_offset = source.ToStackSlotOffset();
+    const intptr_t dest_offset = destination.ToStackSlotOffset();
+
+    ScratchFpuRegisterScope ensure_scratch(this, DTMP);
+    DRegister scratch = ensure_scratch.reg();
+    __ LoadDFromOffset(DTMP, source.base_reg(), source_offset);
+    __ LoadDFromOffset(scratch, destination.base_reg(), dest_offset);
+    __ StoreDToOffset(DTMP, destination.base_reg(), dest_offset);
+    __ StoreDToOffset(scratch, source.base_reg(), source_offset);
+  } else {
+    UNREACHABLE();
+  }
+}
+
+void ParallelMoveEmitter::Exchange(Register reg,
+                                    Register base_reg,
+                                    intptr_t stack_offset) {
+  ScratchRegisterScope tmp(this, reg);
+  __ mov(tmp.reg(), reg);
+  __ LoadFromOffset(reg, base_reg, stack_offset);
+  __ StoreToOffset(tmp.reg(), base_reg, stack_offset);
+}
+
+void ParallelMoveEmitter::Exchange(Register base_reg1,
+                                    intptr_t stack_offset1,
+                                    Register base_reg2,
+                                    intptr_t stack_offset2) {
+  ScratchRegisterScope tmp1(this, kNoRegister);
+  ScratchRegisterScope tmp2(this, tmp1.reg());
+  __ LoadFromOffset(tmp1.reg(), base_reg1, stack_offset1);
+  __ LoadFromOffset(tmp2.reg(), base_reg2, stack_offset2);
+  __ StoreToOffset(tmp1.reg(), base_reg2, stack_offset2);
+  __ StoreToOffset(tmp2.reg(), base_reg1, stack_offset1);
+}
+
+void ParallelMoveEmitter::SpillScratch(Register reg) {
+  __ Comment("ParallelMoveEmitter::SpillScratch");
+  __ Push(reg);
+}
+
+void ParallelMoveEmitter::RestoreScratch(Register reg) {
+  __ Comment("ParallelMoveEmitter::RestoreScratch");
+  __ Pop(reg);
+}
+
+void ParallelMoveEmitter::SpillFpuScratch(FpuRegister reg) {
+  __ Comment("ParallelMoveEmitter::SpillFpuScratch");
+  __ AddImmediate(SP, -kDoubleSize);
+  __ StoreDToOffset(reg, SP, 0);
+}
+
+void ParallelMoveEmitter::RestoreFpuScratch(FpuRegister reg) {
+  __ Comment("ParallelMoveEmitter::RestoreFpuScratch");
+  __ LoadDFromOffset(reg, SP, 0);
+  __ AddImmediate(SP, kDoubleSize);
 }
 
 #undef __

@@ -457,6 +457,19 @@ void Assembler::BranchLinkWithEquivalence(const Code& target,
   delay_slot_available_ = false;  // CodePatcher expects a nop.
 }
 
+Register Assembler::LoadConditionOperand(Register rd,
+                                const Object& operand,
+                                int16_t* imm) {
+  if (target::IsSmi(operand)) {
+    const int32_t val = target::ToRawSmi(operand);
+    if (val == 0) {
+      return ZR;
+    }
+  }
+  LoadObject(rd, operand);
+  return rd;
+}
+
 void Assembler::AddBranchOverflow(Register rd,
                                   Register rs1,
                                   Register rs2,
@@ -1093,6 +1106,27 @@ void Assembler::EnterDartFrame(intptr_t frame_size, bool load_pool_pointer) {
 
   // Reserve space for locals.
   AddImmediate(SP, -frame_size);
+}
+
+// On entry to a function compiled for OSR, the caller's frame pointer, the
+// stack locals, and any copied parameters are already in place.  The frame
+// pointer is already set up.  The PC marker is not correct for the
+// optimized function and there may be extra space for spill slots to
+// allocate. We must also set up the pool pointer for the function.
+void Assembler::EnterOsrFrame(intptr_t extra_size) {
+  ASSERT(!in_delay_slot_);
+  ASSERT(!constant_pool_allowed());
+  Comment("EnterOsrFrame");
+
+  // Restore return address.
+  lw(RA, Address(FP, 1 * target::kWordSize));
+
+  // Load the pool pointer. offset has already been subtracted from temp.
+  RestoreCodePointer();
+  LoadPoolPointer();
+
+  // Reserve space for locals.
+  AddImmediate(SP, -extra_size);
 }
 
 void Assembler::LeaveDartFrame(RestorePP restore_pp) {
