@@ -7,8 +7,10 @@
 
 #include "vm/compiler/backend/il.h"
 
+#include "vm/compiler/backend/flow_graph.h"
 #include "vm/compiler/backend/flow_graph_compiler.h"
 #include "vm/compiler/backend/locations.h"
+#include "vm/object_store.h"
 
 #define __ compiler->assembler()->
 #define Z (compiler->zone())
@@ -283,7 +285,7 @@ LocationSummary* EqualityCompareInstr::MakeLocationSummary(Zone* zone,
     locs->set_out(0, Location::RequiresRegister());
     return locs;
   }
-  if (operation_cid() == kMintCid) {
+  if (input_representation() == kUnboxedInt64) {
     LocationSummary* locs = new (zone)
         LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
     locs->set_in(0, Location::Pair(Location::RequiresRegister(),
@@ -293,7 +295,7 @@ LocationSummary* EqualityCompareInstr::MakeLocationSummary(Zone* zone,
     locs->set_out(0, Location::RequiresRegister());
     return locs;
   }
-  if (operation_cid() == kDoubleCid) {
+  if (input_representation() == kUnboxedDouble) {
     LocationSummary* locs = new (zone)
         LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
     locs->set_in(0, Location::RequiresFpuRegister());
@@ -301,8 +303,8 @@ LocationSummary* EqualityCompareInstr::MakeLocationSummary(Zone* zone,
     locs->set_out(0, Location::RequiresRegister());
     return locs;
   }
-  if (operation_cid() == kSmiCid || operation_cid() == kMintCid ||
-      operation_cid() == kIntegerCid) {
+  if (input_representation() == kTagged || input_representation() == kUnboxedInt64 ||
+      input_representation() == kUnboxedInt32 || input_representation() == kUnboxedUint32) {
     LocationSummary* locs = new (zone)
         LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
     if (is_null_aware()) {
@@ -324,21 +326,287 @@ LocationSummary* EqualityCompareInstr::MakeLocationSummary(Zone* zone,
   return nullptr;
 }
 
+static Condition TokenKindToIntRelOp(Token::Kind kind) {
+  switch (kind) {
+    case Token::kEQ:
+      return EQ;
+    case Token::kNE:
+      return NE;
+    case Token::kLT:
+      return LT;
+    case Token::kGT:
+      return GT;
+    case Token::kLTE:
+      return LE;
+    case Token::kGTE:
+      return GE;
+    default:
+      UNREACHABLE();
+      return NV;
+  }
+}
+
+static Condition TokenKindToUintRelOp(Token::Kind kind) {
+  switch (kind) {
+    case Token::kEQ:
+      return EQ;
+    case Token::kNE:
+      return NE;
+    case Token::kLT:
+      return ULT;
+    case Token::kGT:
+      return UGT;
+    case Token::kLTE:
+      return ULE;
+    case Token::kGTE:
+      return UGE;
+    default:
+      UNREACHABLE();
+      return NV;
+  }
+}
+
+static Condition FlipCondition(Condition condition) {
+  switch (condition) {
+    case EQ:
+      return EQ;
+    case NE:
+      return NE;
+    case LT:
+      return GT;
+    case LE:
+      return GE;
+    case GT:
+      return LT;
+    case GE:
+      return LE;
+    default:
+      UNREACHABLE();
+      return EQ;
+  }
+}
+
+static Condition EmitSmiComparisonOp(FlowGraphCompiler* compiler,
+                                     const LocationSummary& locs,
+                                     Token::Kind kind) {
+  __ Comment("EmitSmiComparisonOp");
+  const Location left = locs.in(0);
+  const Location right = locs.in(1);
+  ASSERT(!left.IsConstant() || !right.IsConstant());
+  ASSERT(left.IsRegister() || left.IsConstant());
+  ASSERT(right.IsRegister() || right.IsConstant());
+
+  int16_t imm = 0;
+  const Register left_reg =
+      left.IsRegister()
+          ? left.reg()
+          : __ LoadConditionOperand(CMPRES1, left.constant(), &imm);
+  const Register right_reg =
+      right.IsRegister()
+          ? right.reg()
+          : __ LoadConditionOperand(CMPRES2, right.constant(), &imm);
+  __ CompareRegisters(left_reg, right_reg);
+  return TokenKindToIntRelOp(kind);
+}
+
+static Condition EmitUnboxedInt64EqualityOp(FlowGraphCompiler* compiler,
+                                            const LocationSummary& locs,
+                                            Token::Kind kind,
+                                            BranchLabels labels) {
+  __ Comment("EmitUnboxedInt64EqualityOp");
+  ASSERT(Token::IsEqualityOperator(kind));
+  PairLocation* left_pair = locs.in(0).AsPairLocation();
+  Register left_lo = left_pair->At(0).reg();
+  Register left_hi = left_pair->At(1).reg();
+  PairLocation* right_pair = locs.in(1).AsPairLocation();
+  Register right_lo = right_pair->At(0).reg();
+  Register right_hi = right_pair->At(1).reg();
+
+  if (labels.false_label == NULL) {
+    // Generate branch-free code.
+    __ xor_(CMPRES1, left_lo, right_lo);
+    __ xor_(AT, left_hi, right_hi);
+    __ or_(CMPRES1, CMPRES1, AT);
+    __ CompareRegisters(CMPRES1, ZR);
+  } else {
+    if (kind == Token::kEQ) {
+      __ bne(left_hi, right_hi, labels.false_label);
+    } else {
+      ASSERT(kind == Token::kNE);
+      __ bne(left_hi, right_hi, labels.true_label);
+    }
+    __ CompareRegisters(left_lo, right_lo);
+  }
+  return TokenKindToUintRelOp(kind);
+}
+
+static Condition TokenKindToIntCondition(Token::Kind kind) {
+  switch (kind) {
+    case Token::kEQ:
+      return EQ;
+    case Token::kNE:
+      return NE;
+    case Token::kLT:
+      return LT;
+    case Token::kGT:
+      return GT;
+    case Token::kLTE:
+      return LE;
+    case Token::kGTE:
+      return GE;
+    default:
+      UNREACHABLE();
+      return INVALID_RELATION;
+  }
+}
+
+static Condition EmitUnboxedWordComparisonOp(FlowGraphCompiler* compiler,
+                                      const LocationSummary& locs,
+                                      Token::Kind kind) {
+  Location left = locs.in(0);
+  Location right = locs.in(1);
+  ASSERT(!left.IsConstant() || !right.IsConstant());
+
+  Condition true_condition = TokenKindToIntCondition(kind);
+
+  if (left.IsConstant()) {
+    __ CompareImmediate(right.reg(),
+                              static_cast<uword>(Integer::Cast(left.constant()).Value()));
+    true_condition = FlipCondition(true_condition);
+  } else if (right.IsConstant()) {
+    __ CompareImmediate(left.reg(),
+                               static_cast<uword>(Integer::Cast(right.constant()).Value()));
+  } else {
+    __ CompareRegisters(left.reg(), right.reg());
+  }
+  return true_condition;
+}
+
+static Condition EmitDoubleComparisonOp(FlowGraphCompiler* compiler,
+                                        const LocationSummary& locs,
+                                        Token::Kind kind,
+                                        BranchLabels labels) {
+  DRegister left = locs.in(0).fpu_reg();
+  DRegister right = locs.in(1).fpu_reg();
+
+  __ Comment("DoubleComparisonOp(left=%d, right=%d)", left, right);
+
+  __ cund(left, right);
+  compiler::Label* nan_label =
+      (kind == Token::kNE) ? labels.true_label : labels.false_label;
+  __ bc1t(nan_label);
+
+  switch (kind) {
+    case Token::kEQ:
+      __ ceqd(left, right);
+      break;
+    case Token::kNE:
+      __ ceqd(left, right);
+      break;
+    case Token::kLT:
+      __ coltd(left, right);
+      break;
+    case Token::kLTE:
+      __ coled(left, right);
+      break;
+    case Token::kGT:
+      __ coltd(right, left);
+      break;
+    case Token::kGTE:
+      __ coled(right, left);
+      break;
+    default: {
+      // We should only be passing the above conditions to this function.
+      UNREACHABLE();
+      break;
+    }
+  }
+
+  if (labels.false_label == NULL) {
+    // Generate branch-free code and return result in condition.
+    __ LoadImmediate(CMPRES1, 1);
+    if (kind == Token::kNE) {
+      __ movf(CMPRES1, ZR);
+    } else {
+      __ movt(CMPRES1, ZR);
+    }
+    __ CompareRegisters(CMPRES1, ZR);
+    return EQ;
+  } else {
+    if (labels.fall_through == labels.false_label) {
+      if (kind == Token::kNE) {
+        __ bc1f(labels.true_label);
+      } else {
+        __ bc1t(labels.true_label);
+      }
+      // Since we already branched on true, return the never true condition.
+      __ CompareRegisters(CMPRES1, CMPRES2);
+      return NV;
+    } else {
+      if (kind == Token::kNE) {
+        __ bc1t(labels.false_label);
+      } else {
+        __ bc1f(labels.false_label);
+      }
+      __ LoadImmediate(CMPRES1, 0);
+      // Since we already branched on false, return the always true condition.
+      __ CompareRegisters(CMPRES1, ZR);
+      return EQ;
+    }
+  }
+}
+
+static Condition EmitNullAwareInt64ComparisonOp(FlowGraphCompiler* compiler,
+                                                const LocationSummary& locs,
+                                                Token::Kind kind,
+                                                BranchLabels labels) {
+  ASSERT((kind == Token::kEQ) || (kind == Token::kNE));
+  const Register left = locs.in(0).reg();
+  const Register right = locs.in(1).reg();
+  const Condition true_condition = TokenKindToIntCondition(kind);
+  compiler::Label* equal_result =
+  (true_condition == EQ) ? labels.true_label : labels.false_label;
+  compiler::Label* not_equal_result =
+  (true_condition == EQ) ? labels.false_label : labels.true_label;
+
+  // Check if operands have the same value. If they don't, then they could
+  // be equal only if both of them are Mints with the same value.
+  __ BranchEqual(left, right, equal_result);
+  __ and_(TMP, left, right);
+  __ BranchIfSmi(TMP, not_equal_result);
+  __ LoadClassId(CMPRES1, left);
+  __ LoadImmediate(CMPRES2, kMintCid);
+  __ BranchNotEqual(CMPRES1, CMPRES2, not_equal_result);
+  __ LoadClassId(CMPRES1, right);
+  // In CMPRES2 is kMintCid
+  __ BranchNotEqual(CMPRES1, CMPRES2, not_equal_result);
+  __ LoadFieldFromOffset(CMPRES1, left, compiler::target::Mint::value_offset());
+  __ LoadFieldFromOffset(CMPRES2, right, compiler::target::Mint::value_offset());
+  __ bne(CMPRES1, CMPRES2, not_equal_result);
+  __ LoadFieldFromOffset(
+    CMPRES1, left,
+  compiler::target::Mint::value_offset() + compiler::target::kWordSize);
+  __ LoadFieldFromOffset(
+    CMPRES2, right,
+  compiler::target::Mint::value_offset() + compiler::target::kWordSize);
+  __ CompareRegisters(CMPRES1, CMPRES2);
+  return true_condition;
+}
+
 Condition EqualityCompareInstr::EmitConditionCode(
     FlowGraphCompiler* compiler,
     BranchLabels labels) {
   if (is_null_aware()) {
-    ASSERT(operation_cid() == kMintCid);
-    return EmitNullAwareInt64ComparisonOp(compiler, locs(), kind(), labels);
+    return EmitNullAwareInt64ComparisonOp(compiler, *locs(), kind(), labels);
   }
-  if (operation_cid() == kSmiCid) {
+  if (input_representation() == kTagged) {
     return EmitSmiComparisonOp(compiler, *locs(), kind());
-  } else if (operation_cid() == kIntegerCid) {
-    return EmitWordComparisonOp(compiler, locs(), kind());
-  } else if (operation_cid() == kMintCid) {
-    return EmitUnboxedMintEqualityOp(compiler, *locs(), kind(), labels);
+  } else if (input_representation() == kUnboxedInt32 || input_representation() == kUnboxedUint32) {
+    return EmitUnboxedWordComparisonOp(compiler, *locs(), kind());
+  } else if (input_representation() == kUnboxedInt64) {
+    return EmitUnboxedInt64EqualityOp(compiler, *locs(), kind(), labels);
   } else {
-    ASSERT(operation_cid() == kDoubleCid);
+    ASSERT(input_representation() == kUnboxedDouble);
     return EmitDoubleComparisonOp(compiler, *locs(), kind(), labels);
   }
 }
