@@ -3700,6 +3700,71 @@ void BitCastInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   }
 }
 
+LocationSummary* GotoInstr::MakeLocationSummary(Zone* zone, bool opt) const {
+  return new (zone) LocationSummary(zone, 0, 0, LocationSummary::kNoCall);
+}
+
+void GotoInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  __ Comment("GotoInstr");
+  if (!compiler->is_optimizing()) {
+    if (FLAG_reorder_basic_blocks) {
+      compiler->EmitEdgeCounter(block()->preorder_number());
+    }
+    // Add a deoptimization descriptor for deoptimizing instructions that
+    // may be inserted before this instruction.
+    compiler->AddCurrentDescriptor(UntaggedPcDescriptors::kDeopt, GetDeoptId(),
+                                   InstructionSource());
+  }
+  if (HasParallelMove()) {
+    parallel_move()->EmitNativeCode(compiler);
+  }
+
+  // We can fall through if the successor is the next block in the list.
+  // Otherwise, we need a jump.
+  if (!compiler->CanFallThroughTo(successor())) {
+    __ b(compiler->GetJumpLabel(successor()));
+  }
+}
+
+LocationSummary* IndirectGotoInstr::MakeLocationSummary(Zone* zone,
+                                                        bool opt) const {
+  const intptr_t kNumInputs = 1;
+  const intptr_t kNumTemps = 2;
+
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+
+  summary->set_in(0, Location::RequiresRegister());
+  summary->set_temp(0, Location::RequiresRegister());
+  summary->set_temp(1, Location::RequiresRegister());
+
+  return summary;
+}
+
+void IndirectGotoInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  Register index_reg = locs()->in(0).reg();
+  Register target_address_reg = locs()->temp(0).reg();
+  Register offset_reg = locs()->temp(1).reg();
+
+  ASSERT(RequiredInputRepresentation(0) == kTagged);
+  __ LoadObject(offset_reg, offsets_);
+  const auto element_address = __ ElementAddressForRegIndex(
+      /*is_load=*/true,
+      /*is_external=*/false, kTypedDataInt32ArrayCid,
+      /*index_scale=*/4,
+      /*index_unboxed=*/false, offset_reg, index_reg);
+  __ lw(offset_reg, element_address);
+
+  __ GetNextPC(target_address_reg, TMP);
+  const intptr_t entry_to_pc_offset = __ CodeSize();
+  __ AddImmediate(target_address_reg, -entry_to_pc_offset);
+
+  __ addu(target_address_reg, target_address_reg, offset_reg);
+
+  // Jump to the absolute address.
+  __ jr(target_address_reg);
+}
+
 LocationSummary* StrictCompareInstr::MakeLocationSummary(Zone* zone,
                                                          bool opt) const {
   const intptr_t kNumInputs = 2;
