@@ -12,6 +12,7 @@
 #include "vm/compiler/backend/locations.h"
 #include "vm/compiler/backend/range_analysis.h"
 #include "vm/object_store.h"
+#include "vm/type_testing_stubs.h"
 
 #define __ compiler->assembler()->
 #define Z (compiler->zone())
@@ -1109,6 +1110,127 @@ void StringToCharCodeInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   __ lbu(result, compiler::FieldAddress(str, OneByteString::data_offset()));
   __ SmiTag(result);
   __ Bind(&done);
+}
+
+LocationSummary* AllocateUninitializedContextInstr::MakeLocationSummary(
+    Zone* zone,
+    bool opt) const {
+  ASSERT(opt);
+  const intptr_t kNumInputs = 0;
+  const intptr_t kNumTemps = 3;
+  LocationSummary* locs = new (zone) LocationSummary(
+      zone, kNumInputs, kNumTemps, LocationSummary::kCallOnSlowPath);
+  locs->set_temp(0, Location::RegisterLocation(T1));
+  locs->set_temp(1, Location::RegisterLocation(T2));
+  locs->set_temp(2, Location::RegisterLocation(T3));
+  locs->set_out(0, Location::RegisterLocation(V0));
+  return locs;
+}
+
+class AllocateContextSlowPath
+    :  public TemplateSlowPathCode<AllocateUninitializedContextInstr> {
+ public:
+  explicit AllocateContextSlowPath(
+      AllocateUninitializedContextInstr* instruction)
+      : TemplateSlowPathCode(instruction) {}
+
+  virtual void EmitNativeCode(FlowGraphCompiler* compiler) {
+    __ Comment("AllocateContextSlowPath");
+    __ Bind(entry_label());
+
+    LocationSummary* locs = instruction()->locs();
+    locs->live_registers()->Remove(locs->out(0));
+
+    compiler->SaveLiveRegisters(locs);
+
+    auto slow_path_env = compiler->SlowPathEnvironmentFor(
+        instruction(), /*num_slow_path_args=*/0);
+    ASSERT(slow_path_env != nullptr);
+
+    auto object_store = compiler->isolate_group()->object_store();
+    const auto& allocate_context_stub = Code::ZoneHandle(
+        compiler->zone(), object_store->allocate_context_stub());
+    __ LoadImmediate(T1, instruction()->num_context_variables());
+    compiler->GenerateStubCall(instruction()->source(), allocate_context_stub,
+                               UntaggedPcDescriptors::kOther, locs,
+                               instruction()->deopt_id(), slow_path_env);
+    ASSERT(instruction()->locs()->out(0).reg() == V0);
+    compiler->RestoreLiveRegisters(instruction()->locs());
+    __ b(exit_label());
+  }
+};
+
+void AllocateUninitializedContextInstr::EmitNativeCode(
+    FlowGraphCompiler* compiler) {
+  Register temp0 = locs()->temp(0).reg();
+  Register temp1 = locs()->temp(1).reg();
+  Register temp2 = locs()->temp(2).reg();
+  Register result = locs()->out(0).reg();
+  // Try allocate the object.
+  AllocateContextSlowPath* slow_path = new AllocateContextSlowPath(this);
+  compiler->AddSlowPathCode(slow_path);
+  intptr_t instance_size = Context::InstanceSize(num_context_variables());
+  if (!FLAG_use_slow_path && FLAG_inline_alloc) {
+  __ TryAllocateArray(kContextCid, instance_size, slow_path->entry_label(),
+                      result,  // instance
+                      temp0, temp1, temp2);
+
+  // Setup up number of context variables field.
+  __ LoadImmediate(temp0, num_context_variables());
+  __ sw(temp0, compiler::FieldAddress(result, Context::num_variables_offset()));
+  } else {
+    __ Jump(slow_path->entry_label());
+  }
+
+  __ Bind(slow_path->exit_label());
+}
+
+LocationSummary* AllocateContextInstr::MakeLocationSummary(Zone* zone,
+                                                           bool opt) const {
+  const intptr_t kNumInputs = 0;
+  const intptr_t kNumTemps = 1;
+  LocationSummary* locs = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kCall);
+  locs->set_temp(0, Location::RegisterLocation(T1));
+  locs->set_out(0, Location::RegisterLocation(V0));
+  return locs;
+}
+
+void AllocateContextInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  ASSERT(locs()->temp(0).reg() == T1);
+  ASSERT(locs()->out(0).reg() == V0);
+
+  __ Comment("AllocateContextInstr");
+  __ LoadImmediate(T1, num_context_variables());
+  auto object_store = compiler->isolate_group()->object_store();
+  const auto& allocate_context_stub =
+      Code::ZoneHandle(compiler->zone(), object_store->allocate_context_stub());
+  compiler->GenerateStubCall(source(), allocate_context_stub,
+                             UntaggedPcDescriptors::kOther, locs(), deopt_id(),
+                             env());
+}
+
+LocationSummary* CloneContextInstr::MakeLocationSummary(Zone* zone,
+                                                        bool opt) const {
+  const intptr_t kNumInputs = 1;
+  const intptr_t kNumTemps = 0;
+  LocationSummary* locs = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kCall);
+  locs->set_in(0, Location::RegisterLocation(T5));
+  locs->set_out(0, Location::RegisterLocation(V0));
+  return locs;
+}
+
+void CloneContextInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  ASSERT(locs()->in(0).reg() == T5);
+  ASSERT(locs()->out(0).reg() == V0);
+
+  auto object_store = compiler->isolate_group()->object_store();
+  const auto& clone_context_stub =
+      Code::ZoneHandle(compiler->zone(), object_store->clone_context_stub());
+  compiler->GenerateStubCall(source(), clone_context_stub,
+                             /*kind=*/UntaggedPcDescriptors::kOther, locs(),
+                             deopt_id(), env());
 }
 
 LocationSummary* CheckStackOverflowInstr::MakeLocationSummary(Zone* zone,
@@ -3647,6 +3769,34 @@ LocationSummary* IntToBoolInstr::MakeLocationSummary(Zone* zone,
 
 void IntToBoolInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   UNREACHABLE();
+}
+
+LocationSummary* AllocateObjectInstr::MakeLocationSummary(Zone* zone,
+                                                          bool opt) const {
+  const intptr_t kNumInputs = (type_arguments() != nullptr) ? 1 : 0;
+  const intptr_t kNumTemps = 0;
+  LocationSummary* locs = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kCall);
+  if (type_arguments() != nullptr) {
+    locs->set_in(kTypeArgumentsPos, Location::RegisterLocation(
+                                        AllocateObjectABI::kTypeArgumentsReg));
+  }
+  locs->set_out(0, Location::RegisterLocation(AllocateObjectABI::kResultReg));
+  return locs;
+}
+
+void AllocateObjectInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  if (type_arguments() != nullptr) {
+    TypeUsageInfo* type_usage_info = compiler->thread()->type_usage_info();
+    if (type_usage_info != nullptr) {
+      RegisterTypeArgumentsUse(compiler->function(), type_usage_info, cls_,
+                               type_arguments()->definition());
+    }
+  }
+  const Code& stub = Code::ZoneHandle(
+      compiler->zone(), StubCode::GetAllocationStubForClass(cls()));
+  compiler->GenerateStubCall(source(), stub, UntaggedPcDescriptors::kOther,
+                             locs(), deopt_id(), env());
 }
 
 void DebugStepCheckInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
