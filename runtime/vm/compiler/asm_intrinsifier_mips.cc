@@ -1598,7 +1598,7 @@ void AsmIntrinsifier::OneByteString_getHashCode(Assembler* assembler, Label* nor
   // TMP: ch.
   __ addiu(T3, T3, compiler::Immediate(1));
   __ addiu(T4, T4, compiler::Immediate(1));
-  //ovu funkciju implementirati
+
   __ CombineHashes(V0, TMP);
   __ b(&loop);
 
@@ -1782,7 +1782,7 @@ void AsmIntrinsifier::WriteIntoTwoByteString(Assembler* assembler,
   __ SmiUntag(T2);
   __ addu(T3, T0, T1);
   __ Ret();
-  __ delay_slot() -> sh(T2,
+  __ delay_slot()->sh(T2,
                         FieldAddress(T3, target::TwoByteString::data_offset()));
 }
 
