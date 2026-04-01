@@ -11,6 +11,7 @@
 #include "vm/compiler/backend/flow_graph_compiler.h"
 #include "vm/compiler/backend/locations.h"
 #include "vm/compiler/backend/range_analysis.h"
+#include "vm/compiler/jit/compiler.h"
 #include "vm/object_store.h"
 #include "vm/type_testing_stubs.h"
 
@@ -374,6 +375,25 @@ LocationSummary* EqualityCompareInstr::MakeLocationSummary(Zone* zone,
   }
   UNREACHABLE();
   return nullptr;
+}
+
+static void LoadValueCid(FlowGraphCompiler* compiler,
+                         Register value_cid_reg,
+                         Register value_reg,
+                         compiler::Label* value_is_smi = NULL) {
+  __ Comment("LoadValueCid");
+  compiler::Label done;
+  if (value_is_smi == NULL) {
+    __ LoadImmediate(value_cid_reg, kSmiCid);
+  }
+  __ AndImmediate(CMPRES1, value_reg, kSmiTagMask);
+  if (value_is_smi == NULL) {
+    __ beq(CMPRES1, ZR, &done);
+  } else {
+    __ beq(CMPRES1, ZR, value_is_smi);
+  }
+  __ LoadClassId(value_cid_reg, value_reg);
+  __ Bind(&done);
 }
 
 static Condition TokenKindToIntRelOp(Token::Kind kind) {
@@ -1110,6 +1130,281 @@ void StringToCharCodeInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   __ lbu(result, compiler::FieldAddress(str, OneByteString::data_offset()));
   __ SmiTag(result);
   __ Bind(&done);
+}
+
+DEFINE_UNIMPLEMENTED_INSTRUCTION(GuardFieldTypeInstr)
+
+LocationSummary* GuardFieldClassInstr::MakeLocationSummary(Zone* zone,
+                                                           bool opt) const {
+  const intptr_t kNumInputs = 1;
+
+  const intptr_t value_cid = value()->Type()->ToCid();
+  const intptr_t field_cid = field().guarded_cid();
+
+  const bool emit_full_guard = !opt || (field_cid == kIllegalCid);
+  const bool needs_value_cid_temp_reg =
+        emit_full_guard || ((value_cid == kDynamicCid) && (field_cid != kSmiCid));
+  const bool needs_field_temp_reg = emit_full_guard;
+
+  intptr_t num_temps = 0;
+  if (needs_value_cid_temp_reg) {
+    num_temps++;
+  }
+  if (needs_field_temp_reg) {
+    num_temps++;
+  }
+
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, num_temps, LocationSummary::kNoCall);
+  summary->set_in(0, Location::RequiresRegister());
+
+  for (intptr_t i = 0; i < num_temps; i++) {
+    summary->set_temp(i, Location::RequiresRegister());
+  }
+
+  return summary;
+}
+
+void GuardFieldClassInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  ASSERT(compiler::target::UntaggedObject::kClassIdTagSize == 20);
+  ASSERT(sizeof(UntaggedField::guarded_cid_) == 4);
+  ASSERT(sizeof(UntaggedField::is_nullable_) == 4);
+  __ Comment("GuardFieldClassInstr");
+
+  const intptr_t value_cid = value()->Type()->ToCid();
+  const intptr_t field_cid = field().guarded_cid();
+  const intptr_t nullability = field().is_nullable() ? kNullCid : kIllegalCid;
+
+  if (field_cid == kDynamicCid) {
+    if (Compiler::IsBackgroundCompilation()) {
+      // Field state changed while compiling.
+      Compiler::AbortBackgroundCompilation(
+          deopt_id(),
+          "GuardFieldClassInstr: field state changed while compiling");
+    }
+    ASSERT(!compiler->is_optimizing());
+    return;  // Nothing to emit.
+  }
+
+  const bool emit_full_guard =
+      !compiler->is_optimizing() || (field_cid == kIllegalCid);
+
+  const bool needs_value_cid_temp_reg =
+      emit_full_guard || ((value_cid == kDynamicCid) && (field_cid != kSmiCid));
+
+  const bool needs_field_temp_reg = emit_full_guard;
+
+  const Register value_reg = locs()->in(0).reg();
+
+  const Register value_cid_reg =
+      needs_value_cid_temp_reg ? locs()->temp(0).reg() : kNoRegister;
+
+  const Register field_reg = needs_field_temp_reg
+                                 ? locs()->temp(locs()->temp_count() - 1).reg()
+                                 : kNoRegister;
+
+  compiler::Label ok, fail_label;
+
+  compiler::Label* deopt =
+      compiler->is_optimizing()
+          ? compiler->AddDeoptStub(deopt_id(), ICData::kDeoptGuardField)
+          : nullptr;
+
+  compiler::Label* fail = (deopt != nullptr) ? deopt : &fail_label;
+
+  if (emit_full_guard) {
+    __ LoadObject(field_reg, Field::ZoneHandle(field().Original()));
+
+    compiler::FieldAddress field_cid_operand(field_reg, compiler::target::Field::guarded_cid_offset());
+    compiler::FieldAddress field_nullability_operand(field_reg,
+                                          compiler::target::Field::is_nullable_offset());
+
+    if (value_cid == kDynamicCid) {
+      LoadValueCid(compiler, value_cid_reg, value_reg);
+
+      __ lw(CMPRES1, field_cid_operand);
+      __ beq(value_cid_reg, CMPRES1, &ok);
+      __ lw(TMP, field_nullability_operand);
+      __ subu(CMPRES1, value_cid_reg, TMP);
+    } else if (value_cid == kNullCid) {
+      __ lw(TMP, field_nullability_operand);
+      __ LoadImmediate(CMPRES1, value_cid);
+      __ subu(CMPRES1, TMP, CMPRES1);
+    } else {
+      __ lw(TMP, field_cid_operand);
+      __ LoadImmediate(CMPRES1, value_cid);
+      __ subu(CMPRES1, TMP, CMPRES1);
+    }
+    __ beq(CMPRES1, ZR, &ok);
+
+    // Check if the tracked state of the guarded field can be initialized
+    // inline. If the field needs length check we fall through to runtime
+    // which is responsible for computing offset of the length field
+    // based on the class id.
+    // Length guard will be emitted separately when needed via GuardFieldLength
+    // instruction after GuardFieldClass.
+    if (!field().needs_length_check()) {
+      // Uninitialized field can be handled inline. Check if the
+      // field is still unitialized.
+      __ lw(CMPRES1, field_cid_operand);
+      __ BranchNotEqual(CMPRES1, compiler::Immediate(kIllegalCid), fail);
+
+      if (value_cid == kDynamicCid) {
+        __ sw(value_cid_reg, field_cid_operand);
+        __ sw(value_cid_reg, field_nullability_operand);
+      } else {
+        __ LoadImmediate(TMP, value_cid);
+        __ sw(TMP, field_cid_operand);
+        __ sw(TMP, field_nullability_operand);
+      }
+
+      __ b(&ok);
+    }
+
+    if (deopt == nullptr) {
+      __ Bind(fail);
+
+      __ lw(CMPRES1,
+             compiler::FieldAddress(field_reg, Field::guarded_cid_offset()));
+      __ BranchEqual(CMPRES1, compiler::Immediate(kDynamicCid), &ok);
+
+      __ addiu(SP, SP, compiler::Immediate(-2 * kWordSize));
+      __ sw(field_reg, compiler::Address(SP, 1 * kWordSize));
+      __ sw(value_reg, compiler::Address(SP, 0 * kWordSize));
+      ASSERT(!compiler->is_optimizing());
+      __ CallRuntime(kUpdateFieldCidRuntimeEntry, 2);
+      __ Drop(2);  // Drop the field and the value.
+    } else {
+      __ b(fail);
+    }
+  } else {
+    ASSERT(compiler->is_optimizing());
+    ASSERT(deopt != nullptr);
+
+    // Field guard class has been initialized and is known.
+    if (value_cid == kDynamicCid) {
+      // Value's class id is not known.
+      __ AndImmediate(CMPRES1, value_reg, kSmiTagMask);
+
+      if (field_cid != kSmiCid) {
+        __ beq(CMPRES1, ZR, fail);
+        __ LoadClassId(value_cid_reg, value_reg);
+        __ LoadImmediate(TMP, field_cid);
+        __ subu(CMPRES1, value_cid_reg, TMP);
+      }
+
+      if (field().is_nullable() && (field_cid != kNullCid)) {
+        __ beq(CMPRES1, ZR, &ok);
+        if (field_cid != kSmiCid) {
+          __ LoadImmediate(TMP, kNullCid);
+          __ subu(CMPRES1, value_cid_reg, TMP);
+        } else {
+          __ LoadObject(TMP, Object::null_object());
+          __ subu(CMPRES1, value_reg, TMP);
+        }
+      }
+
+      __ bne(CMPRES1, ZR, fail);
+    } else if (value_cid == field_cid) {
+      // This would normally be caught by Canonicalize, but RemoveRedefinitions
+      // may sometimes produce the situation after the last Canonicalize pass.
+    } else {
+      // Both value's and field's class id is known.
+      ASSERT((value_cid != field_cid) && (value_cid != nullability));
+      __ b(fail);
+    }
+  }
+  __ Bind(&ok);
+}
+
+LocationSummary* GuardFieldLengthInstr::MakeLocationSummary(Zone* zone,
+                                                            bool opt) const {
+  const intptr_t kNumInputs = 1;
+
+  if (!opt || (field().guarded_list_length() == Field::kUnknownFixedLength)) {
+    const intptr_t kNumTemps = 1;
+    LocationSummary* summary = new (zone)
+        LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+    summary->set_in(0, Location::RequiresRegister());
+    // We need temporaries for field object.
+    summary->set_temp(0, Location::RequiresRegister());
+    return summary;
+  }
+  LocationSummary* summary =
+      new (zone) LocationSummary(zone, kNumInputs, 0, LocationSummary::kNoCall);
+  summary->set_in(0, Location::RequiresRegister());
+  return summary;
+}
+
+void GuardFieldLengthInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  if (field().guarded_list_length() == Field::kNoFixedLength) {
+    if (Compiler::IsBackgroundCompilation()) {
+      // Field state changed while compiling.
+      Compiler::AbortBackgroundCompilation(
+          deopt_id(),
+          "GuardFieldLengthInstr: field state changed while compiling");
+    }
+    ASSERT(!compiler->is_optimizing());
+    return;  // Nothing to emit.
+  }
+
+  compiler::Label* deopt =
+      compiler->is_optimizing()
+          ? compiler->AddDeoptStub(deopt_id(), ICData::kDeoptGuardField)
+          : nullptr;
+
+  const Register value_reg = locs()->in(0).reg();
+
+  if (!compiler->is_optimizing() ||
+      (field().guarded_list_length() == Field::kUnknownFixedLength)) {
+    const Register field_reg = locs()->temp(0).reg();
+
+    compiler::Label ok;
+
+    __ LoadObject(field_reg, Field::ZoneHandle(field().Original()));
+
+    __ lb(CMPRES1,
+          compiler::FieldAddress(field_reg,
+                       Field::guarded_list_length_in_object_offset_offset()));
+
+    __ lw(CMPRES2,
+          compiler::FieldAddress(field_reg, Field::guarded_list_length_offset()));
+
+    __ bltz(CMPRES1, &ok);
+
+    // Load the length from the value. GuardFieldClass already verified that
+    // value's class matches guarded class id of the field.
+    // CMPRES1 contains offset already corrected by -kHeapObjectTag that is
+    // why we can use Address instead of FieldAddress.
+    __ addu(TMP, value_reg, CMPRES1);
+    __ lw(TMP, compiler::Address(TMP));
+
+    if (deopt == nullptr) {
+      __ beq(CMPRES2, TMP, &ok);
+
+      __ addiu(SP, SP, compiler::Immediate(-2 * kWordSize));
+      __ sw(field_reg, compiler::Address(SP, 1 * kWordSize));
+      __ sw(value_reg, compiler::Address(SP, 0 * kWordSize));
+      ASSERT(!compiler->is_optimizing());  // No deopt info needed.
+      __ CallRuntime(kUpdateFieldCidRuntimeEntry, 2);
+      __ Drop(2);  // Drop the field and the value.
+    } else {
+      __ bne(CMPRES2, TMP, deopt);
+    }
+
+    __ Bind(&ok);
+  } else {
+    ASSERT(compiler->is_optimizing());
+    ASSERT(field().guarded_list_length() >= 0);
+    ASSERT(field().guarded_list_length_in_object_offset() !=
+           Field::kUnknownLengthOffset);
+
+    __ lw(CMPRES1,
+          compiler::FieldAddress(value_reg,
+                       field().guarded_list_length_in_object_offset()));
+    __ LoadImmediate(TMP, Smi::RawValue(field().guarded_list_length()));
+    __ bne(CMPRES1, TMP, deopt);
+  }
 }
 
 LocationSummary* AllocateUninitializedContextInstr::MakeLocationSummary(
