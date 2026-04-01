@@ -414,6 +414,25 @@ static Condition TokenKindToUintRelOp(Token::Kind kind) {
   }
 }
 
+// The comparison code to emit is specified by true_condition.
+static void EmitBranchOnCondition(FlowGraphCompiler* compiler,
+                                  Condition true_condition,
+                                  BranchLabels labels) {
+  __ Comment("ControlInstruction::EmitBranchOnCondition");
+  if (labels.fall_through == labels.false_label) {
+    // If the next block is the false successor, fall through to it.
+    __ BranchIf(true_condition, labels.true_label);
+  } else {
+    // If the next block is not the false successor, branch to it.
+    Condition false_condition = InvertCondition(true_condition);
+    __ BranchIf(false_condition, labels.false_label);
+    // Fall through or jump to the true successor.
+    if (labels.fall_through != labels.true_label) {
+      __ b(labels.true_label);
+    }
+  }
+}
+
 static Condition FlipCondition(Condition condition) {
   switch (condition) {
     case EQ:
@@ -482,6 +501,58 @@ static Condition EmitUnboxedInt64EqualityOp(FlowGraphCompiler* compiler,
     } else {
       ASSERT(kind == Token::kNE);
       __ bne(left_hi, right_hi, labels.true_label);
+    }
+    __ CompareRegisters(left_lo, right_lo);
+  }
+  return TokenKindToUintRelOp(kind);
+}
+
+static Condition EmitUnboxedInt64ComparisonOp(FlowGraphCompiler* compiler,
+                                              const LocationSummary& locs,
+                                              Token::Kind kind,
+                                              BranchLabels labels) {
+  __ Comment("EmitUnboxedInt64ComparisonOp");
+  PairLocation* left_pair = locs.in(0).AsPairLocation();
+  Register left_lo = left_pair->At(0).reg();
+  Register left_hi = left_pair->At(1).reg();
+  PairLocation* right_pair = locs.in(1).AsPairLocation();
+  Register right_lo = right_pair->At(0).reg();
+  Register right_hi = right_pair->At(1).reg();
+
+  if (labels.false_label == NULL) {
+    // Generate branch-free code (except for skipping the lower words compare).
+    // Result in CMPRES1, CMPRES2, so that CMPRES1 op CMPRES2 === left op right.
+    compiler::Label done;
+    // Compare upper halves first.
+    __ slt(CMPRES1, right_hi, left_hi);
+    __ slt(CMPRES2, left_hi, right_hi);
+    // If higher words aren't equal, skip comparing lower words.
+    __ bne(CMPRES1, CMPRES2, &done);
+
+    __ sltu(CMPRES1, right_lo, left_lo);
+    __ sltu(CMPRES2, left_lo, right_lo);
+    __ Bind(&done);
+    __ CompareRegisters(CMPRES1, CMPRES2);
+  } else {
+    switch (kind) {
+      case Token::kLT:
+      case Token::kLTE: {
+        __ slt(AT, left_hi, right_hi);
+        __ bne(AT, ZR, labels.true_label);
+        __ delay_slot()-> slt(AT, right_hi, left_hi);
+        __ bne(AT, ZR, labels.false_label);
+        break;
+      }
+      case Token::kGT:
+      case Token::kGTE: {
+        __ slt(AT, left_hi, right_hi);
+        __ bne(AT, ZR, labels.false_label);
+        __ delay_slot()-> slt(AT, right_hi, left_hi);
+        __ bne(AT, ZR, labels.true_label);
+        break;
+      }
+      default:
+        UNREACHABLE();
     }
     __ CompareRegisters(left_lo, right_lo);
   }
