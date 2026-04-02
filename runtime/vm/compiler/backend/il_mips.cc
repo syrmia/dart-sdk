@@ -328,6 +328,89 @@ void MemoryCopyInstr::EmitComputeStartPointer(FlowGraphCompiler* compiler,
   __ AddImmediate(payload_reg, offset);
 }
 
+LocationSummary* MoveArgumentInstr::MakeLocationSummary(Zone* zone,
+                                                        bool opt) const {
+  const intptr_t kNumInputs = 1;
+  const intptr_t kNumTemps = 0;
+  LocationSummary* locs = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  ConstantInstr* constant = value()->definition()->AsConstant();
+  if (constant != nullptr && constant->HasZeroRepresentation()) {
+    locs->set_in(0, Location::Constant(constant));
+  } else if (representation() == kUnboxedDouble) {
+    locs->set_in(0, Location::RequiresFpuRegister());
+  } else if (representation() == kUnboxedInt64) {
+    locs->set_in(0, Location::Pair(Location::RequiresRegister(),
+                                    Location::RequiresRegister()));
+  } else {
+    ASSERT(representation() == kTagged);
+    locs->set_in(0, LocationAnyOrConstant(value()));
+  }
+  return locs;
+}
+
+void MoveArgumentInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  __ Comment("PushArgumentInstr");
+  ASSERT(compiler->is_optimizing());
+
+  const Location value = locs()->in(0);
+
+  if (value.IsRegister()) {
+    __ StoreToOffset(value.reg(), SP,
+                     location().stack_index() * compiler::target::kWordSize);
+  } else if (value.IsPairLocation()) {
+    auto pair = location().AsPairLocation();
+    RELEASE_ASSERT(pair->At(0).IsStackSlot());
+    RELEASE_ASSERT(pair->At(1).IsStackSlot());
+    __ StoreToOffset(value.AsPairLocation()->At(1).reg(), SP,
+                     location().AsPairLocation()->At(1).stack_index() *
+                         compiler::target::kWordSize);
+    __ StoreToOffset(value.AsPairLocation()->At(0).reg(), SP,
+                     location().AsPairLocation()->At(0).stack_index() *
+                         compiler::target::kWordSize);
+  } else if (value.IsConstant()) {
+    if (representation() == kUnboxedDouble) {
+      ASSERT(value.constant_instruction()->HasZeroRepresentation());
+      intptr_t offset = location().stack_index() * compiler::target::kWordSize;
+      __ StoreToOffset(ZR, SP, offset + compiler::target::kWordSize);
+      __ StoreToOffset(ZR, SP, offset);
+    } else if (representation() == kUnboxedInt64) {
+      ASSERT(value.constant_instruction()->HasZeroRepresentation());
+      __ StoreToOffset(ZR, SP,
+                       location().AsPairLocation()->At(1).stack_index() *
+                           compiler::target::kWordSize);
+      __ StoreToOffset(ZR, SP,
+                       location().AsPairLocation()->At(0).stack_index() *
+                           compiler::target::kWordSize);
+    } else {
+      ASSERT(representation() == kTagged);
+      const Object& constant = value.constant();
+      Register reg;
+      if (constant.IsNull()) {
+        reg = TMP;
+        __ LoadObject(TMP, compiler::NullObject());
+      } else if (constant.IsSmi() && Smi::Cast(constant).Value() == 0) {
+        reg = ZR;
+      } else {
+        reg = TMP;
+        __ LoadObject(TMP, constant);
+      }
+      __ StoreToOffset(reg, SP,
+                       location().stack_index() * compiler::target::kWordSize);
+    }
+  } else if (value.IsFpuRegister()) {
+    __ StoreDToOffset(value.fpu_reg(), SP,
+                      location().stack_index() * compiler::target::kWordSize);
+  } else if (value.IsStackSlot()) {
+    const intptr_t value_offset = value.ToStackSlotOffset();
+    __ LoadFromOffset(TMP, value.base_reg(), value_offset);
+    __ StoreToOffset(TMP, SP,
+                     location().stack_index() * compiler::target::kWordSize);
+  } else {
+    UNREACHABLE();
+  }
+}
+
 LocationSummary* DartReturnInstr::MakeLocationSummary(Zone* zone, bool opt) const {
   const intptr_t kNumInputs = 1;
   const intptr_t kNumTemps = 0;
