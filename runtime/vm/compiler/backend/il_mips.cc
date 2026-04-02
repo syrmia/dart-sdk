@@ -1887,6 +1887,98 @@ void StringToCharCodeInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   __ Bind(&done);
 }
 
+LocationSummary* Utf8ScanInstr::MakeLocationSummary(Zone* zone,
+                                                    bool opt) const {
+  const intptr_t kNumInputs = 5;
+  const intptr_t kNumTemps = 0;
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  summary->set_in(0, Location::Any());               // decoder
+  summary->set_in(1, Location::WritableRegister());  // bytes
+  summary->set_in(2, Location::WritableRegister());  // start
+  summary->set_in(3, Location::WritableRegister());  // end
+  summary->set_in(4, Location::WritableRegister());  // table
+  summary->set_out(0, Location::RequiresRegister());
+  return summary;
+}
+
+void Utf8ScanInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  const Register bytes_reg = locs()->in(1).reg();
+  const Register start_reg = locs()->in(2).reg();
+  const Register end_reg = locs()->in(3).reg();
+  const Register table_reg = locs()->in(4).reg();
+  const Register size_reg = locs()->out(0).reg();
+
+  const Register bytes_ptr_reg = start_reg;
+  const Register bytes_end_reg = end_reg;
+  const Register flags_reg = bytes_reg;
+  const Register temp_reg = TMP;
+  const Register decoder_temp_reg = start_reg;
+  const Register flags_temp_reg = end_reg;
+
+  const intptr_t kSizeMask = 0x03;
+  const intptr_t kFlagsMask = 0x3C;
+
+  compiler::Label loop, loop_in;
+
+  // Address of input bytes.
+  __ LoadFromSlot(bytes_reg, bytes_reg, Slot::PointerBase_data());
+
+  // Table.
+  __ AddImmediate(
+      table_reg, table_reg,
+      compiler::target::OneByteString::data_offset() - kHeapObjectTag);
+
+  // Pointers to start and end.
+  __ addu(bytes_ptr_reg, bytes_reg, start_reg);
+  __ addu(bytes_end_reg, bytes_reg, end_reg);
+
+  // Initialize size and flags.
+  __ mov(size_reg, ZR);
+  __ mov(flags_reg, ZR);
+
+  __ b(&loop_in);
+  __ Bind(&loop);
+
+  // Read byte and increment pointer.
+  __ lbu(temp_reg, compiler::Address(bytes_ptr_reg, 0));
+  __ AddImmediate(bytes_ptr_reg, bytes_ptr_reg, 1);
+
+  // Update size and flags based on byte value.
+  __ addu(temp_reg, table_reg, temp_reg);
+  __ lbu(temp_reg, compiler::Address(temp_reg));
+  __ or_(flags_reg, flags_reg, temp_reg);
+  __ AndImmediate(temp_reg, temp_reg, kSizeMask);
+  __ addu(size_reg, size_reg, temp_reg);
+
+  // Stop if end is reached.
+  __ Bind(&loop_in);
+  __ BranchUnsignedLess(bytes_ptr_reg, bytes_end_reg, &loop);
+
+  // Write flags to field.
+  __ AndImmediate(flags_reg, flags_reg, kFlagsMask);
+  if (!IsScanFlagsUnboxed()) {
+    __ SmiTag(flags_reg);
+  }
+  Register decoder_reg;
+  const Location decoder_location = locs()->in(0);
+  if (decoder_location.IsStackSlot()) {
+    __ lw(decoder_temp_reg, LocationToStackSlotAddress(decoder_location));
+    decoder_reg = decoder_temp_reg;
+  } else {
+    decoder_reg = decoder_location.reg();
+  }
+  const auto scan_flags_field_offset = scan_flags_field_.offset_in_bytes();
+  if (scan_flags_field_.is_compressed() && !IsScanFlagsUnboxed()) {
+    UNIMPLEMENTED();
+  } else {
+    __ LoadFieldFromOffset(flags_temp_reg, decoder_reg,
+                           scan_flags_field_offset);
+    __ or_(flags_temp_reg, flags_temp_reg, flags_reg);
+    __ StoreFieldToOffset(flags_temp_reg, decoder_reg, scan_flags_field_offset);
+  }
+}
+
 LocationSummary* LoadIndexedInstr::MakeLocationSummary(Zone* zone,
                                                        bool opt) const {
   // The compiler must optimize any function that includes a LoadIndexed
