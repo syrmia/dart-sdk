@@ -59,6 +59,82 @@ LocationSummary* Instruction::MakeCallSummary(Zone* zone,
   return result;
 }
 
+LocationSummary* LoadIndexedUnsafeInstr::MakeLocationSummary(Zone* zone,
+                                                             bool opt) const {
+  const intptr_t kNumInputs = 1;
+  const intptr_t kNumTemps = (representation() == kUnboxedDouble)
+                               ? 1 : 0;
+  LocationSummary* locs = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+
+  locs->set_in(0, Location::RequiresRegister());
+  switch (representation()) {
+    case kTagged:
+      locs->set_out(0, Location::RequiresRegister());
+      break;
+    case kUnboxedInt64:
+      locs->set_out(0, Location::Pair(Location::RequiresRegister(),
+                                      Location::RequiresRegister()));
+      break;
+    case kUnboxedDouble:
+      locs->set_temp(0, Location::RequiresRegister());
+      locs->set_out(0, Location::RequiresFpuRegister());
+      break;
+    default:
+      UNREACHABLE();
+      break;
+  }
+  return locs;
+}
+
+void LoadIndexedUnsafeInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  ASSERT(RequiredInputRepresentation(0) == kTagged);  // It is a Smi.
+  ASSERT(kSmiTag == 0);
+  ASSERT(kSmiTagSize == 1);
+
+  const Register index = locs()->in(0).reg();
+
+  switch (representation()) {
+    case kTagged: {
+      const auto out = locs()->out(0).reg();
+      __ AddShifted(out, base_reg(), index, 1);
+      __ LoadFromOffset(out, out, offset());
+      break;
+    }
+    case kUnboxedInt64: {
+      const auto out_lo = locs()->out(0).AsPairLocation()->At(0).reg();
+      const auto out_hi = locs()->out(0).AsPairLocation()->At(1).reg();
+
+      __ AddShifted(out_hi, base_reg(), index, 1);
+      __ LoadFromOffset(out_lo, out_hi, offset());
+      __ LoadFromOffset(out_hi, out_hi, offset() + compiler::target::kWordSize);
+      break;
+    }
+    case kUnboxedDouble: {
+      const auto tmp = locs()->temp(0).reg();
+      const auto out = locs()->out(0).fpu_reg();
+      __ AddShifted(tmp, base_reg(), index, 1);
+      __ LoadDFromOffset(out, tmp, offset());
+      break;
+    }
+    default:
+      UNREACHABLE();
+      break;
+  }
+}
+
+DEFINE_BACKEND(StoreIndexedUnsafe,
+               (NoLocation, Register index, Register value)) {
+  ASSERT(instr->RequiredInputRepresentation(
+             StoreIndexedUnsafeInstr::kIndexPos) == kTagged);  // It is a Smi.
+  __ AddShifted(TMP, instr->base_reg(), index,
+                compiler::target::kWordSizeLog2 - kSmiTagSize);
+  __ sw(value, compiler::Address(TMP, instr->offset()));
+
+  ASSERT(kSmiTag == 0);
+  ASSERT(kSmiTagSize == 1);
+}
+
 DEFINE_BACKEND(TailCall,
                (NoLocation,
                 Fixed<Register, ARGS_DESC_REG>,
