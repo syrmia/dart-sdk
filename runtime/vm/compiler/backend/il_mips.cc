@@ -1651,7 +1651,7 @@ void FfiCallInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
 
     // Restore the global object pool after returning from runtime.
     if (FLAG_precompiled_mode) {
-    __ lw(PP, compiler::Address(THR, compiler::target::Thread::global_object_pool_offset()));
+      __ lw(PP, compiler::Address(THR, compiler::target::Thread::global_object_pool_offset()));
     }
   }
 
@@ -2711,6 +2711,29 @@ void GuardFieldLengthInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
     __ LoadImmediate(TMP, Smi::RawValue(field().guarded_list_length()));
     __ bne(CMPRES1, TMP, deopt);
   }
+}
+
+LocationSummary* InstanceOfInstr::MakeLocationSummary(Zone* zone,
+                                                      bool opt) const {
+  const intptr_t kNumInputs = 3;
+  const intptr_t kNumTemps = 0;
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kCall);
+  summary->set_in(0, Location::RegisterLocation(TypeTestABI::kInstanceReg));  // Instance.
+  summary->set_in(1, Location::RegisterLocation(TypeTestABI::kInstantiatorTypeArgumentsReg));  // Instant. type args.
+  summary->set_in(2, Location::RegisterLocation(TypeTestABI::kFunctionTypeArgumentsReg));  // Function type args.
+  summary->set_out(0, Location::RegisterLocation(V0));
+  return summary;
+}
+
+void InstanceOfInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  ASSERT(locs()->in(0).reg() == TypeTestABI::kInstanceReg);  // Value.
+  ASSERT(locs()->in(1).reg() == TypeTestABI::kInstantiatorTypeArgumentsReg);  // Instantiator type arguments.
+  ASSERT(locs()->in(2).reg() == TypeTestABI::kFunctionTypeArgumentsReg);  // Function type arguments.
+
+  __ Comment("InstanceOfInstr");
+  compiler->GenerateInstanceOf(source(), deopt_id(), env(), type(), locs());
+  ASSERT(locs()->out(0).reg() == V0);
 }
 
 LocationSummary* CreateArrayInstr::MakeLocationSummary(Zone* zone,
