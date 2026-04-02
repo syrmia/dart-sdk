@@ -2713,6 +2713,109 @@ void GuardFieldLengthInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   }
 }
 
+LocationSummary* CreateArrayInstr::MakeLocationSummary(Zone* zone,
+                                                       bool opt) const {
+  const intptr_t kNumInputs = 2;
+  const intptr_t kNumTemps = 0;
+  LocationSummary* locs = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kCall);
+  locs->set_in(kTypeArgumentsPos, Location::RegisterLocation(AllocateArrayABI::kTypeArgumentsReg));
+  locs->set_in(kLengthPos, Location::RegisterLocation(AllocateArrayABI::kLengthReg));
+  locs->set_out(0, Location::RegisterLocation(AllocateArrayABI::kResultReg));
+  return locs;
+}
+
+// Inlines array allocation for known constant values.
+static void InlineArrayAllocation(FlowGraphCompiler* compiler,
+                                  intptr_t num_elements,
+                                  compiler::Label* slow_path,
+                                  compiler::Label* done) {
+  const int kInlineArraySize = 12;  // Same as kInlineInstanceSize.
+  const intptr_t instance_size = Array::InstanceSize(num_elements);
+
+  __ TryAllocateArray(kArrayCid, instance_size, slow_path,
+                      AllocateArrayABI::kResultReg,  // instance
+                      T1,  // end address
+                      T2, T3);
+  // V0(AllocateArrayABI::kResultReg): new object start as a tagged pointer.
+  // T1: new object end address.
+
+  // Store the type argument field.
+  __ StoreIntoObjectNoBarrier(
+      AllocateArrayABI::kResultReg,
+      compiler::FieldAddress(AllocateArrayABI::kResultReg,
+                            compiler::target::Array::type_arguments_offset()),
+      AllocateArrayABI::kTypeArgumentsReg);
+
+  // Set the length field.
+  __ StoreIntoObjectNoBarrier(AllocateArrayABI::kResultReg,
+      compiler::FieldAddress(AllocateArrayABI::kResultReg,
+                            compiler::target::Array::length_offset()),
+      AllocateArrayABI::kLengthReg);
+
+  // Initialize all array elements to raw_null.
+  // V0(AllocateArrayABI::kResultReg): new object start as a tagged pointer.
+  // T1: new object end address.
+  // T2: iterator which initially points to the start of the variable
+  // data area to be initialized.
+  // T7: null.
+  if (num_elements > 0) {
+    const intptr_t array_size = instance_size - sizeof(UntaggedArray);
+    __ LoadObject(T7, Object::null_object());
+    __ AddImmediate(T2, AllocateArrayABI::kResultReg, sizeof(UntaggedArray) - kHeapObjectTag);
+    if (array_size < (kInlineArraySize * kWordSize)) {
+      intptr_t current_offset = 0;
+      while (current_offset < array_size) {
+        __ StoreIntoObjectNoBarrier(
+            AllocateArrayABI::kResultReg, compiler::Address(T2, current_offset),
+            T7);
+        current_offset += kWordSize;
+      }
+    } else {
+      compiler::Label init_loop;
+      __ Bind(&init_loop);
+      __ StoreIntoObjectNoBarrier(AllocateArrayABI::kResultReg,
+                                            compiler::Address(T2, 0), T7);
+      __ AddImmediate(T2, kWordSize);
+      __ BranchUnsignedLess(T2, T1, &init_loop);
+    }
+  }
+  __ b(done);
+}
+
+void CreateArrayInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  __ Comment("CreateArrayInstr");
+  TypeUsageInfo* type_usage_info = compiler->thread()->type_usage_info();
+  if (type_usage_info != nullptr) {
+    const Class& list_class = Class::Handle(
+        compiler->isolate_group()->class_table()->At(kArrayCid));
+    RegisterTypeArgumentsUse(compiler->function(), type_usage_info, list_class,
+                             type_arguments()->definition());
+  }
+
+  compiler::Label slow_path, done;
+  if (!FLAG_use_slow_path && FLAG_inline_alloc) {
+    if (compiler->is_optimizing() && !FLAG_precompiled_mode &&
+        num_elements()->BindsToConstant() &&
+        num_elements()->BoundConstant().IsSmi()) {
+      const intptr_t length =
+          Smi::Cast(num_elements()->BoundConstant()).Value();
+      if (Array::IsValidLength(length)) {
+        InlineArrayAllocation(compiler, length, &slow_path, &done);
+      }
+    }
+  }
+
+  __ Bind(&slow_path);
+  auto object_store = compiler->isolate_group()->object_store();
+  const auto& allocate_array_stub =
+      Code::ZoneHandle(compiler->zone(), object_store->allocate_array_stub());
+  compiler->GenerateStubCall(source(), allocate_array_stub,
+                             UntaggedPcDescriptors::kOther, locs(), deopt_id(),
+                             env());
+  __ Bind(&done);
+}
+
 LocationSummary* AllocateUninitializedContextInstr::MakeLocationSummary(
     Zone* zone,
     bool opt) const {
