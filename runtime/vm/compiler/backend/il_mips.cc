@@ -10,6 +10,7 @@
 #include "vm/compiler/backend/flow_graph.h"
 #include "vm/compiler/backend/flow_graph_compiler.h"
 #include "vm/compiler/backend/locations.h"
+#include "vm/compiler/backend/locations_helpers.h"
 #include "vm/compiler/backend/range_analysis.h"
 #include "vm/compiler/jit/compiler.h"
 #include "vm/object_store.h"
@@ -19,6 +20,57 @@
 #define Z (compiler->zone())
 
 namespace dart {
+
+// Generic summary for call instructions that have all arguments pushed
+// on the stack and return the result in a fixed register V0.
+LocationSummary* Instruction::MakeCallSummary(Zone* zone,
+                                              const Instruction* instr,
+                                              LocationSummary* locs) {
+  ASSERT(locs == nullptr || locs->always_calls());
+  LocationSummary* result =
+      ((locs == nullptr)
+           ? (new (zone) LocationSummary(zone, 0, 0, LocationSummary::kCall))
+           : locs);
+  const auto representation = instr->representation();
+  switch (representation) {
+    case kTagged:
+    case kUntagged:
+    case kUnboxedUint32:
+    case kUnboxedInt32:
+      result->set_out(
+          0, Location::RegisterLocation(CallingConventions::kReturnReg));
+      break;
+    case kPairOfTagged:
+    case kUnboxedInt64:
+      result->set_out(
+          0, Location::Pair(
+                 Location::RegisterLocation(CallingConventions::kReturnReg),
+                 Location::RegisterLocation(
+                     CallingConventions::kSecondReturnReg)));
+      break;
+    case kUnboxedDouble:
+      result->set_out(
+          0, Location::FpuRegisterLocation(CallingConventions::kReturnFpuReg));
+      break;
+    default:
+      UNREACHABLE();
+      break;
+  }
+  return result;
+}
+
+DEFINE_BACKEND(TailCall,
+               (NoLocation,
+                Fixed<Register, ARGS_DESC_REG>,
+                Temp<Register> temp)) {
+  compiler->EmitTailCallToStub(instr->code());
+
+  // Even though the TailCallInstr will be the last instruction in a basic
+  // block, the flow graph compiler will emit native code for other blocks after
+  // the one containing this instruction and needs to be able to use the pool.
+  // (The `LeaveDartFrame` above disables usages of the pool.)
+  __ set_constant_pool_allowed(true);
+}
 
 LocationSummary* MemoryCopyInstr::MakeLocationSummary(Zone* zone,
                                                       bool opt) const {
@@ -276,6 +328,86 @@ void MemoryCopyInstr::EmitComputeStartPointer(FlowGraphCompiler* compiler,
   __ AddImmediate(payload_reg, offset);
 }
 
+LocationSummary* DartReturnInstr::MakeLocationSummary(Zone* zone, bool opt) const {
+  const intptr_t kNumInputs = 1;
+  const intptr_t kNumTemps = 0;
+  LocationSummary* locs = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  switch (representation()) {
+    case kTagged:
+      locs->set_in(0,
+                   Location::RegisterLocation(CallingConventions::kReturnReg));
+      break;
+    case kPairOfTagged:
+    case kUnboxedInt64:
+      locs->set_in(
+          0, Location::Pair(
+                 Location::RegisterLocation(CallingConventions::kReturnReg),
+                 Location::RegisterLocation(
+                     CallingConventions::kSecondReturnReg)));
+      break;
+    case kUnboxedDouble:
+      locs->set_in(
+          0, Location::FpuRegisterLocation(CallingConventions::kReturnFpuReg));
+      break;
+    default:
+      UNREACHABLE();
+      break;
+  }
+  return locs;
+}
+
+// Attempt optimized compilation at return instruction instead of at the entry.
+// The entry needs to be patchable, no inlined objects are allowed in the area
+// that will be overwritten by the patch instructions: a branch macro sequence.
+void DartReturnInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  if (locs()->in(0).IsRegister()) {
+    const Register result = locs()->in(0).reg();
+    ASSERT(result == CallingConventions::kReturnReg);
+  } else if (locs()->in(0).IsPairLocation()) {
+    const Register result_lo = locs()->in(0).AsPairLocation()->At(0).reg();
+    const Register result_hi = locs()->in(0).AsPairLocation()->At(1).reg();
+    ASSERT(result_lo == CallingConventions::kReturnReg);
+    ASSERT(result_hi == CallingConventions::kSecondReturnReg);
+  } else {
+    ASSERT(locs()->in(0).IsFpuRegister());
+    const FpuRegister result = locs()->in(0).fpu_reg();
+    ASSERT(result == CallingConventions::kReturnFpuReg);
+  }
+
+  if (compiler->parsed_function().function().IsAsyncFunction() ||
+      compiler->parsed_function().function().IsAsyncGenerator()) {
+    ASSERT(compiler->flow_graph().graph_entry()->NeedsFrame());
+    const Code& stub = GetReturnStub(compiler);
+    compiler->EmitJumpToStub(stub);
+    return;
+  }
+
+  if (!compiler->flow_graph().graph_entry()->NeedsFrame()) {
+    __ Ret();
+    return;
+  }
+
+#if defined(DEBUG)
+  compiler::Label stack_ok;
+  __ Comment("Stack Check");
+  const intptr_t fp_sp_dist =
+      (compiler::target::frame_layout.first_local_from_fp + 1 -
+       compiler->StackSize()) *
+      compiler::target::kWordSize;
+  ASSERT(fp_sp_dist <= 0);
+  __ subu(CMPRES1, SP, FP);
+  __ BranchEqual(CMPRES1, compiler::Immediate(fp_sp_dist), &stack_ok);
+  __ Breakpoint();
+  __ Bind(&stack_ok);
+#endif
+  ASSERT(__ constant_pool_allowed());
+  __ LeaveDartFrameAndReturn();  // Disallows constant pool use.
+  // This DartReturnInstr may be emitted out of order by the optimizer. The next
+  // block may be a target expecting a properly set constant pool pointer.
+  __ set_constant_pool_allowed(true);
+}
+
 LocationSummary* IfThenElseInstr::MakeLocationSummary(Zone* zone,
                                                       bool opt) const {
   condition()->InitializeLocationSummary(zone, opt);
@@ -322,6 +454,53 @@ void IfThenElseInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
     false_value_reg = CMPRES2;
   }
   __ movz(result, false_value_reg, CMPRES1);
+}
+
+LocationSummary* ClosureCallInstr::MakeLocationSummary(Zone* zone,
+                                                       bool opt) const {
+  const intptr_t kNumInputs = 1;
+  const intptr_t kNumTemps = 0;
+  LocationSummary* summary = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kCall);
+  summary->set_in(0,
+                  Location::RegisterLocation(
+                      FLAG_precompiled_mode ? T0 : FUNCTION_REG));  // Function.
+  return MakeCallSummary(zone, this, summary);
+}
+
+
+void ClosureCallInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  // Load arguments descriptor in S4.
+  const intptr_t argument_count = ArgumentCount();  // Includes type args.
+  const Array& arguments_descriptor =
+      Array::ZoneHandle(Z, GetArgumentsDescriptor());
+  __ LoadObject(S4, arguments_descriptor);
+
+  if (FLAG_precompiled_mode) {
+    ASSERT(locs()->in(0).reg() == T0);
+    // T0: Closure with a cached entry point.
+    __ LoadFieldFromOffset(T2, T0,
+                           compiler::target::Closure::entry_point_offset());
+#if defined(DART_DYNAMIC_MODULES)
+    ASSERT(FUNCTION_REG != T2);
+    __ LoadFieldFromOffset(
+        FUNCTION_REG, T0, compiler::target::Closure::function_offset());
+#endif
+  } else {
+    // Load closure function code in T2.
+    // S4: arguments descriptor array.
+    // S5: Smi 0 (no IC data; the lazy-compile stub expects a GC-safe value).
+    ASSERT(locs()->in(0).reg() == FUNCTION_REG);
+    __ LoadImmediate(S5, 0);
+    __ lw(T2, compiler::FieldAddress(FUNCTION_REG, compiler::target::Function::entry_point_offset()));
+    __ lw(CODE_REG, compiler::FieldAddress(FUNCTION_REG, compiler::target::Function::code_offset()));
+  }
+  __ mov(T9, T2);
+  __ jalr(T9);
+
+  compiler->EmitCallsiteMetadata(source(), deopt_id(),
+                                 UntaggedPcDescriptors::kOther, locs(), env());
+  compiler->EmitDropArguments(argument_count);
 }
 
 LocationSummary* EqualityCompareInstr::MakeLocationSummary(Zone* zone,
