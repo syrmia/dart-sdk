@@ -586,6 +586,112 @@ void ClosureCallInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   compiler->EmitDropArguments(argument_count);
 }
 
+LocationSummary* ConstantInstr::MakeLocationSummary(Zone* zone,
+                                                    bool opt) const {
+  return LocationSummary::Make(zone, 0, Location::RequiresRegister(),
+                               LocationSummary::kNoCall);
+}
+
+void ConstantInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  // The register allocator drops constant definitions that have no uses.
+  if (!locs()->out(0).IsInvalid()) {
+    __ Comment("ConstantInstr");
+    const Register result = locs()->out(0).reg();
+    __ LoadObject(result, value());
+  }
+}
+
+void ConstantInstr::EmitMoveToLocation(FlowGraphCompiler* compiler,
+                                       const Location& destination,
+                                       Register tmp,
+                                       intptr_t pair_index) {
+  if (destination.IsRegister()) {
+    if (RepresentationUtils::IsUnboxedInteger(representation())) {
+      int64_t v;
+      const bool ok = compiler::HasIntegerValue(value_, &v);
+      RELEASE_ASSERT(ok);
+      if (value_.IsSmi() &&
+          RepresentationUtils::IsUnsignedInteger(representation())) {
+        // If the value is negative, then the sign bit was preserved during
+        // Smi untagging, which means the resulting value may be unexpected.
+        ASSERT(v >= 0);
+      }
+      __ LoadImmediate(destination.reg(), pair_index == 0
+                                              ? Utils::Low32Bits(v)
+                                              : Utils::High32Bits(v));
+    } else {
+      ASSERT(representation() == kTagged);
+      __ LoadObject(destination.reg(), value_);
+    }
+  } else if (destination.IsFpuRegister()) {
+    const DRegister dst = destination.fpu_reg();
+    if (representation() == kUnboxedFloat) {
+      __ LoadSImmediate(dst, Double::Cast(value_).value());
+    } else {
+      ASSERT(representation() == kUnboxedDouble);
+      ASSERT(tmp != kNoRegister);
+      __ LoadDImmediate(dst, Double::Cast(value_).value(), tmp);
+    }
+  } else if (destination.IsDoubleStackSlot()) {
+    ASSERT(tmp != kNoRegister);
+    const intptr_t dest_offset = destination.ToStackSlotOffset();
+    __ LoadDImmediate(DTMP, Double::Cast(value_).value(), tmp);
+    __ StoreDToOffset(DTMP, destination.base_reg(), dest_offset);
+  } else {
+    ASSERT(destination.IsStackSlot());
+    ASSERT(tmp != kNoRegister);
+    const intptr_t dest_offset = destination.ToStackSlotOffset();
+    if (RepresentationUtils::IsUnboxedInteger(representation())) {
+      int64_t v;
+      const bool ok = compiler::HasIntegerValue(value_, &v);
+      RELEASE_ASSERT(ok);
+      __ LoadImmediate(
+          tmp, pair_index == 0 ? Utils::Low32Bits(v) : Utils::High32Bits(v));
+    } else if (representation() == kUnboxedFloat) {
+      int32_t float_bits =
+          bit_cast<int32_t, float>(Double::Cast(value_).value());
+      __ LoadImmediate(tmp, float_bits);
+    } else {
+      ASSERT(representation() == kTagged);
+      __ LoadObject(tmp, value_);
+    }
+    __ StoreToOffset(tmp, destination.base_reg(), dest_offset);
+  }
+}
+
+LocationSummary* UnboxedConstantInstr::MakeLocationSummary(Zone* zone,
+                                                           bool opt) const {
+  const bool is_unboxed_int =
+      RepresentationUtils::IsUnboxedInteger(representation());
+  ASSERT(!is_unboxed_int || RepresentationUtils::ValueSize(representation()) <=
+                                compiler::target::kWordSize);
+  const intptr_t kNumInputs = 0;
+  const intptr_t kNumTemps = is_unboxed_int ? 0 : 1;
+  LocationSummary* locs = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  if (is_unboxed_int) {
+    locs->set_out(0, Location::RequiresRegister());
+  } else {
+    ASSERT(representation_ == kUnboxedDouble);
+    locs->set_out(0, Location::RequiresFpuRegister());
+  }
+  if (kNumTemps > 0) {
+    locs->set_temp(0, Location::RequiresRegister());
+  }
+  return locs;
+}
+
+void UnboxedConstantInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  // The register allocator drops constant definitions that have no uses.
+  if (!locs()->out(0).IsInvalid()) {
+    const Register scratch =
+        locs()->temp_count() == 0
+            ? kNoRegister
+            : locs()->temp(0).reg();
+    EmitMoveToLocation(compiler, locs()->out(0), scratch);
+  }
+}
+
 LocationSummary* EqualityCompareInstr::MakeLocationSummary(Zone* zone,
                                                            bool opt) const {
   const intptr_t kNumInputs = 2;
