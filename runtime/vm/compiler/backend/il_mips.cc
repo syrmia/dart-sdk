@@ -586,6 +586,34 @@ void ClosureCallInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   compiler->EmitDropArguments(argument_count);
 }
 
+LocationSummary* LoadLocalInstr::MakeLocationSummary(Zone* zone,
+                                                     bool opt) const {
+  return LocationSummary::Make(zone, 0, Location::RequiresRegister(),
+                               LocationSummary::kNoCall);
+}
+
+void LoadLocalInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  __ Comment("LoadLocalInstr");
+  const Register result = locs()->out(0).reg();
+  __ LoadFromOffset(result, FP,
+                    compiler::target::FrameOffsetInBytesForVariable(&local()));
+}
+
+LocationSummary* StoreLocalInstr::MakeLocationSummary(Zone* zone,
+                                                      bool opt) const {
+  return LocationSummary::Make(zone, 1, Location::SameAsFirstInput(),
+                               LocationSummary::kNoCall);
+}
+
+void StoreLocalInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  __ Comment("StoreLocalInstr");
+  Register value = locs()->in(0).reg();
+  Register result = locs()->out(0).reg();
+  ASSERT(result == value);  // Assert that register assignment is correct.
+  __ StoreToOffset(value, FP,
+                  compiler::target::FrameOffsetInBytesForVariable(&local()));
+}
+
 LocationSummary* ConstantInstr::MakeLocationSummary(Zone* zone,
                                                     bool opt) const {
   return LocationSummary::Make(zone, 0, Location::RequiresRegister(),
