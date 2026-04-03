@@ -843,11 +843,21 @@ class Assembler : public AssemblerBase {
   void BranchEqual(Register rd, Register rn, Label* l) { beq(rd, rn, l); }
 
   void BranchEqual(Register rd, const Immediate& imm, Label* l) {
-    UNIMPLEMENTED();
+    ASSERT(!in_delay_slot_);
+    if (imm.value() == 0) {
+      beq(rd, ZR, l);
+    } else {
+      ASSERT(rd != CMPRES2);
+      LoadImmediate(CMPRES2, imm.value());
+      beq(rd, CMPRES2, l);
+    }
   }
 
   void BranchEqual(Register rd, const Object& object, Label* l) {
-    UNIMPLEMENTED();
+    ASSERT(!in_delay_slot_);
+    ASSERT(rd != CMPRES2);
+    LoadObject(CMPRES2, object);
+    beq(rd, CMPRES2, l);
   }
 
   void BranchNotEqual(Register rd, Register rn, Label* l) { bne(rd, rn, l); }
