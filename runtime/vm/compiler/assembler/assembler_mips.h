@@ -881,11 +881,25 @@ class Assembler : public AssemblerBase {
   }
 
   void BranchSignedGreater(Register rd, Register rs, Label* l) {
-    UNIMPLEMENTED();
+    ASSERT(!in_delay_slot_);
+    slt(CMPRES2, rs, rd);  // CMPRES2 = rd > rs ? 1 : 0.
+    bne(CMPRES2, ZR, l);
   }
 
   void BranchSignedGreater(Register rd, const Immediate& imm, Label* l) {
-    UNIMPLEMENTED();
+    ASSERT(!in_delay_slot_);
+    if (imm.value() == 0) {
+      bgtz(rd, l);
+    } else {
+      if (Utils::IsInt(kImmBits, imm.value() + 1)) {
+        slti(CMPRES2, rd, Immediate(imm.value() + 1));
+        beq(CMPRES2, ZR, l);
+      } else {
+        ASSERT(rd != CMPRES2);
+        LoadImmediate(CMPRES2, imm.value());
+        BranchSignedGreater(rd, CMPRES2, l);
+      }
+    }
   }
 
   void BranchUnsignedGreater(Register rd, Register rs, Label* l) {
