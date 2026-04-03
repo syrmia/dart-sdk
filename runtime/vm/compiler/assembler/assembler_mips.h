@@ -947,11 +947,25 @@ class Assembler : public AssemblerBase {
   }
 
   void BranchUnsignedGreaterEqual(Register rd, Register rs, Label* l) {
-    UNIMPLEMENTED();
+    ASSERT(!in_delay_slot_);
+    sltu(CMPRES2, rd, rs);  // CMPRES2 = rd < rs ? 1 : 0.
+    beq(CMPRES2, ZR, l);
   }
 
   void BranchUnsignedGreaterEqual(Register rd, const Immediate& imm, Label* l) {
-    UNIMPLEMENTED();
+    ASSERT(!in_delay_slot_);
+    if (imm.value() == 0) {
+      b(l);
+    } else {
+      if (Utils::IsInt(kImmBits, imm.value())) {
+        sltiu(CMPRES2, rd, imm);
+        beq(CMPRES2, ZR, l);
+      } else {
+        ASSERT(rd != CMPRES2);
+        LoadImmediate(CMPRES2, imm.value());
+        BranchUnsignedGreaterEqual(rd, CMPRES2, l);
+      }
+    }
   }
 
   void BranchSignedLess(Register rd, Register rs, Label* l) {
