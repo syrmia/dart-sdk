@@ -1042,6 +1042,7 @@ class Assembler : public AssemblerBase {
 
   void LoadClassId(Register result, Register object);
   void LoadClassById(Register result, Register class_id);
+  void LoadClass(Register result, Register object);
   void CompareClassId(Register object,
                     intptr_t class_id,
                     Register scratch = kNoRegister);

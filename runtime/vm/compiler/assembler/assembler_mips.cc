@@ -883,17 +883,36 @@ void Assembler::RangeCheck(Register value,
 }
 
 void Assembler::LoadClassId(Register result, Register object) {
-  UNIMPLEMENTED();
+  ASSERT_EQUAL(target::UntaggedObject::kClassIdTagPos, 12);
+  ASSERT_EQUAL(target::UntaggedObject::kClassIdTagSize, 20);
+  lw(result, FieldAddress(object, target::Object::tags_offset()));
+  ExtractClassIdFromTags(result, result);
 }
 
 void Assembler::LoadClassById(Register result, Register class_id) {
-  UNIMPLEMENTED();
+  ASSERT(!in_delay_slot_);
+  ASSERT(result != class_id);
+  LoadIsolateGroup(result);
+  const intptr_t offset = target::IsolateGroup::cached_class_table_table_offset();
+  LoadFromOffset(result, result, offset);
+  sll(TMP, class_id, 2);
+  addu(result, result, TMP);
+  lw(result, Address(result));
+}
+
+void Assembler::LoadClass(Register result, Register object) {
+  ASSERT(!in_delay_slot_);
+  ASSERT(TMP != result);
+  LoadClassId(TMP, object);
+  LoadClassById(result, TMP);
 }
 
 void Assembler::CompareClassId(Register object,
                                intptr_t class_id,
                                Register scratch) {
-  UNIMPLEMENTED();
+  ASSERT(scratch != kNoRegister);
+  LoadClassId(scratch, object);
+  CompareImmediate(scratch, class_id);
 }
 
 void Assembler::LoadClassIdMayBeSmi(Register result, Register object) {
