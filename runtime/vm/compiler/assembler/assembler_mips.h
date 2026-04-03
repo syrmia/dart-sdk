@@ -767,11 +767,20 @@ class Assembler : public AssemblerBase {
   }
 
   void AddImmediate(Register rd, Register rs, int32_t value) {
-    UNIMPLEMENTED();
+    ASSERT(!in_delay_slot_);
+    if ((value == 0) && (rd == rs)) return;
+    // If value is 0, we still want to move rs to rd if they aren't the same.
+    if (Utils::IsInt(kImmBits, value)) {
+      addiu(rd, rs, Immediate(value));
+    } else {
+      LoadImmediate(TMP, value);
+      addu(rd, rs, TMP);
+    }
   }
 
   void AddImmediate(Register rd, int32_t value) {
-    UNIMPLEMENTED();
+    ASSERT(!in_delay_slot_);
+    AddImmediate(rd, rd, value);
   }
 
   void AddRegisters(Register rd, Register rs) { addu(rd, rd, rs); }
