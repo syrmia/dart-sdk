@@ -990,11 +990,24 @@ class Assembler : public AssemblerBase {
   }
 
   void BranchUnsignedLess(Register rd, Register rs, Label* l) {
-    UNIMPLEMENTED();
+    ASSERT(!in_delay_slot_);
+    BranchUnsignedGreater(rs, rd, l);
   }
 
   void BranchUnsignedLess(Register rd, const Immediate& imm, Label* l) {
-    UNIMPLEMENTED();
+    ASSERT(!in_delay_slot_);
+    if (imm.value() == 0) {
+      // Never branch. Fall through.
+    } else {
+      if (Utils::IsInt(kImmBits, imm.value())) {
+        sltiu(CMPRES2, rd, imm);
+        bne(CMPRES2, ZR, l);
+      } else {
+        ASSERT(rd != CMPRES2);
+        LoadImmediate(CMPRES2, imm.value());
+        BranchUnsignedGreater(CMPRES2, rd, l);
+      }
+    }
   }
 
   void BranchSignedLessEqual(Register rd, Register rs, Label* l) {
