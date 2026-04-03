@@ -147,6 +147,14 @@ void Assembler::EmitFarRegImmBranch(RtRegImm b, Register rs, int32_t offset) {
   EmitFarJump(offset, (b == BLTZAL) || (b == BGEZAL));
 }
 
+void Assembler::EmitFarFpuBranch(bool kind, int32_t offset) {
+  ASSERT(!in_delay_slot_);
+  const uint32_t b16 = kind ? (1 << 16) : 0;
+  Emit(COP1 << kOpcodeShift | COP1_BC << kCop1SubShift | b16 | 4);
+  nop();
+  EmitFarJump(offset, false);
+}
+
 void Assembler::EmitBranch(Opcode b, Register rs, Register rt, Label* label) {
   ASSERT(!in_delay_slot_);
   if (label->IsBound()) {
@@ -209,7 +217,31 @@ void Assembler::EmitRegImmBranch(RtRegImm b, Register rs, Label* label) {
 }
 
 void Assembler::EmitFpuBranch(bool kind, Label* label) {
-  UNIMPLEMENTED();
+  ASSERT(!in_delay_slot_);
+  const int32_t b16 = kind ? (1 << 16) : 0;  // Bit 16 set for branch on true.
+  if (label->IsBound()) {
+    // Relative destination from an instruction after the branch.
+    const int32_t dest =
+        label->Position() - (buffer_.Size() + Instr::kInstrSize);
+    if (use_far_branches() && !CanEncodeBranchOffset(dest)) {
+      EmitFarFpuBranch(kind, label->Position());
+    } else {
+      BailoutIfInvalidBranchOffset(dest);
+      const uint16_t dest_off = EncodeBranchOffset(dest, 0);
+      Emit(COP1 << kOpcodeShift | COP1_BC << kCop1SubShift | b16 | dest_off);
+    }
+  } else {
+    const intptr_t position = buffer_.Size();
+    if (use_far_branches()) {
+      const uint32_t dest_off = label->position_;
+      EmitFarFpuBranch(kind, dest_off);
+    } else {
+      BailoutIfInvalidBranchOffset(label->position_);
+      const uint16_t dest_off = EncodeBranchOffset(label->position_, 0);
+      Emit(COP1 << kOpcodeShift | COP1_BC << kCop1SubShift | b16 | dest_off);
+    }
+    label->LinkTo(position);
+  }
 }
 
 void Assembler::PushRegisters(const RegisterSet& registers) {
