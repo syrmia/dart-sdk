@@ -903,11 +903,25 @@ class Assembler : public AssemblerBase {
   }
 
   void BranchUnsignedGreater(Register rd, Register rs, Label* l) {
-    UNIMPLEMENTED();
+    ASSERT(!in_delay_slot_);
+    sltu(CMPRES2, rs, rd);
+    bne(CMPRES2, ZR, l);
   }
 
   void BranchUnsignedGreater(Register rd, const Immediate& imm, Label* l) {
-    UNIMPLEMENTED();
+    ASSERT(!in_delay_slot_);
+    if (imm.value() == 0) {
+      BranchNotEqual(rd, Immediate(0), l);
+    } else {
+      if ((imm.value() != -1) && Utils::IsInt(kImmBits, imm.value() + 1)) {
+        sltiu(CMPRES2, rd, Immediate(imm.value() + 1));
+        beq(CMPRES2, ZR, l);
+      } else {
+        ASSERT(rd != CMPRES2);
+        LoadImmediate(CMPRES2, imm.value());
+        BranchUnsignedGreater(rd, CMPRES2, l);
+      }
+    }
   }
 
   void BranchSignedGreaterEqual(Register rd, Register rs, Label* l) {
