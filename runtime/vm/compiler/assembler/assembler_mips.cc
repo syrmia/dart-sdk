@@ -244,6 +244,20 @@ void Assembler::EmitFpuBranch(bool kind, Label* label) {
   }
 }
 
+static int32_t FlipBranchInstruction(int32_t instr) {
+  Instr* i = Instr::At(reinterpret_cast<uword>(&instr));
+  if (i->OpcodeField() == REGIMM) {
+    RtRegImm b = OppositeBranchNoLink(i->RegImmFnField());
+    i->SetRegImmFnField(b);
+    return i->InstructionBits();
+  } else if (i->OpcodeField() == COP1) {
+    return instr ^ (1 << 16);
+  }
+  Opcode b = OppositeBranchOpcode(i->OpcodeField());
+  i->SetOpcodeField(b);
+  return i->InstructionBits();
+}
+
 void Assembler::PushRegisters(const RegisterSet& registers) {
   UNIMPLEMENTED();
 }
@@ -731,7 +745,72 @@ void Assembler::AddBranchOverflow(Register rd,
 }
 
 void Assembler::Bind(Label* label) {
-  UNIMPLEMENTED();
+  ASSERT(!label->IsBound());
+  intptr_t bound_pc = buffer_.Size();
+
+  while (label->IsLinked()) {
+    int32_t position = label->Position();
+    int32_t dest = bound_pc - (position + Instr::kInstrSize);
+
+    if (use_far_branches() && !CanEncodeBranchOffset(dest)) {
+      // Far branches are enabled and we can't encode the branch offset.
+
+      // Grab the branch instruction. We'll need to flip it later.
+      const int32_t branch = buffer_.Load<int32_t>(position);
+
+      // Grab instructions that load the offset.
+      const int32_t high =
+          buffer_.Load<int32_t>(position + 2 * Instr::kInstrSize);
+      const int32_t low =
+          buffer_.Load<int32_t>(position + 3 * Instr::kInstrSize);
+
+      // Change from relative to the branch to relative to the assembler buffer.
+      dest = buffer_.Size();
+      const int32_t encoded_low =
+          EncodeLoadImmediate(dest & kBranchOffsetMask, low);
+      const int32_t encoded_high = EncodeLoadImmediate(dest >> 16, high);
+
+      // Skip the unconditional far jump if the test fails by flipping the
+      // sense of the branch instruction.
+      buffer_.Store<int32_t>(position, FlipBranchInstruction(branch));
+      buffer_.Store<int32_t>(position + 2 * Instr::kInstrSize, encoded_high);
+      buffer_.Store<int32_t>(position + 3 * Instr::kInstrSize, encoded_low);
+      label->position_ = DecodeLoadImmediate(low, high);
+    } else if (use_far_branches() && CanEncodeBranchOffset(dest)) {
+      // We assembled a far branch, but we don't need it. Replace with a near
+      // branch.
+
+      // Grab the link to the next branch.
+      const int32_t high =
+          buffer_.Load<int32_t>(position + 2 * Instr::kInstrSize);
+      const int32_t low =
+          buffer_.Load<int32_t>(position + 3 * Instr::kInstrSize);
+
+      // Grab the original branch instruction.
+      int32_t branch = buffer_.Load<int32_t>(position);
+
+      // Clear out the old (far) branch.
+      for (int i = 0; i < 5; i++) {
+        buffer_.Store<int32_t>(position + i * Instr::kInstrSize,
+                               Instr::kNopInstruction);
+      }
+
+      // Calculate the new offset.
+      dest = dest - 4 * Instr::kInstrSize;
+      BailoutIfInvalidBranchOffset(dest);
+      const int32_t encoded = EncodeBranchOffset(dest, branch);
+      buffer_.Store<int32_t>(position + 4 * Instr::kInstrSize, encoded);
+      label->position_ = DecodeLoadImmediate(low, high);
+    } else {
+      const int32_t next = buffer_.Load<int32_t>(position);
+      BailoutIfInvalidBranchOffset(dest);
+      const int32_t encoded = EncodeBranchOffset(dest, next);
+      buffer_.Store<int32_t>(position, encoded);
+      label->position_ = DecodeBranchOffset(next);
+    }
+  }
+  label->BindTo(bound_pc);
+  delay_slot_available_ = false;
 }
 
 Address Assembler::PrepareLargeOffset(Register base, int32_t offset) {
