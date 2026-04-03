@@ -721,15 +721,49 @@ class Assembler : public AssemblerBase {
   void RestoreCodePointer();
 
   void LoadImmediate(Register rd, int32_t value) override{
-    UNIMPLEMENTED();
+    ASSERT(!in_delay_slot_);
+    if (Utils::IsInt(kImmBits, value)) {
+      addiu(rd, ZR, Immediate(value));
+    } else {
+      const uint16_t low = Utils::Low16Bits(value);
+      const uint16_t high = Utils::High16Bits(value);
+      lui(rd, Immediate(high));
+      if (low != 0) {
+        ori(rd, rd, Immediate(low));
+      }
+    }
   }
 
   void LoadImmediate(DRegister rd, double value) {
-    UNIMPLEMENTED();
+    ASSERT(!in_delay_slot_);
+    FRegister frd = static_cast<FRegister>(rd * 2);
+    const int64_t ival = bit_cast<uint64_t, double>(value);
+    const int32_t low = Utils::Low32Bits(ival);
+    const int32_t high = Utils::High32Bits(ival);
+    if (low != 0) {
+      LoadImmediate(TMP, low);
+      mtc1(TMP, frd);
+    } else {
+      mtc1(ZR, frd);
+    }
+
+    if (high != 0) {
+      LoadImmediate(TMP, high);
+      mtc1(TMP, static_cast<FRegister>(frd + 1));
+    } else {
+      mtc1(ZR, static_cast<FRegister>(frd + 1));
+    }
   }
 
   void LoadImmediate(FRegister rd, float value) {
-    UNIMPLEMENTED();
+    ASSERT(!in_delay_slot_);
+    const int32_t ival = bit_cast<int32_t, float>(value);
+    if (ival == 0) {
+      mtc1(ZR, rd);
+    } else {
+      LoadImmediate(TMP, ival);
+      mtc1(TMP, rd);
+    }
   }
 
   void AddImmediate(Register rd, Register rs, int32_t value) {
