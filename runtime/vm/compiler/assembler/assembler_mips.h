@@ -789,13 +789,24 @@ class Assembler : public AssemblerBase {
                     Register rs,
                     target::word imm,
                     OperandSize sz = kWordBytes) override {
-    UNIMPLEMENTED();
+    ASSERT(!in_delay_slot_);
+    if (imm == 0) {
+      mov(rd, ZR);
+      return;
+    }
+
+    if (Utils::IsUint(kImmBits, imm)) {
+      andi(rd, rs, Immediate(imm));
+    } else {
+      LoadImmediate(TMP, imm);
+      and_(rd, rs, TMP);
+    }
   }
 
   void AndImmediate(Register reg,
                     target::word imm,
                     OperandSize sz = kWordBytes) override {
-    UNIMPLEMENTED();
+    AndImmediate(reg, reg, imm, sz);
   }
 
   void OrImmediate(Register rd, Register rs, int32_t imm) {
