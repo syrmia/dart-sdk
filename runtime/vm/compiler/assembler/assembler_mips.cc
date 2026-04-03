@@ -123,6 +123,30 @@ void Assembler::EmitFarBranch(Opcode b,
   EmitFarJump(offset, false);
 }
 
+static RtRegImm OppositeBranchNoLink(RtRegImm b) {
+  switch (b) {
+    case BLTZ:
+      return BGEZ;
+    case BGEZ:
+      return BLTZ;
+    case BLTZAL:
+      return BGEZ;
+    case BGEZAL:
+      return BLTZ;
+    default:
+      UNREACHABLE();
+      break;
+  }
+  return BLTZ;
+}
+
+void Assembler::EmitFarRegImmBranch(RtRegImm b, Register rs, int32_t offset) {
+  ASSERT(!in_delay_slot_);
+  EmitRegImmType(REGIMM, rs, b, 4);
+  nop();
+  EmitFarJump(offset, (b == BLTZAL) || (b == BGEZAL));
+}
+
 void Assembler::EmitBranch(Opcode b, Register rs, Register rt, Label* label) {
   ASSERT(!in_delay_slot_);
   if (label->IsBound()) {
@@ -158,7 +182,30 @@ void Assembler::BailoutIfInvalidBranchOffset(int32_t offset) {
 }
 
 void Assembler::EmitRegImmBranch(RtRegImm b, Register rs, Label* label) {
-  UNIMPLEMENTED();
+  ASSERT(!in_delay_slot_);
+  if (label->IsBound()) {
+    // Relative destination from an instruction after the branch.
+    const int32_t dest =
+        label->Position() - (buffer_.Size() + Instr::kInstrSize);
+    if (use_far_branches() && !CanEncodeBranchOffset(dest)) {
+      EmitFarRegImmBranch(OppositeBranchNoLink(b), rs, label->Position());
+    } else {
+      BailoutIfInvalidBranchOffset(dest);
+      const uint16_t dest_off = EncodeBranchOffset(dest, 0);
+      EmitRegImmType(REGIMM, rs, b, dest_off);
+    }
+  } else {
+    const intptr_t position = buffer_.Size();
+    if (use_far_branches()) {
+      const uint32_t dest_off = label->position_;
+      EmitFarRegImmBranch(b, rs, dest_off);
+    } else {
+      BailoutIfInvalidBranchOffset(label->position_);
+      const uint16_t dest_off = EncodeBranchOffset(label->position_, 0);
+      EmitRegImmType(REGIMM, rs, b, dest_off);
+    }
+    label->LinkTo(position);
+  }
 }
 
 void Assembler::EmitFpuBranch(bool kind, Label* label) {

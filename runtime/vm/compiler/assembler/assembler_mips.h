@@ -1442,6 +1442,7 @@ class Assembler : public AssemblerBase {
 
   void EmitFarJump(int32_t offset, bool link);
   void EmitFarBranch(Opcode b, Register rs, Register rt, int32_t offset);
+  void EmitFarRegImmBranch(RtRegImm b, Register rs, int32_t offset);
   void EmitBranch(Opcode b, Register rs, Register rt, Label* label);
   void BailoutIfInvalidBranchOffset(int32_t offset);
   void EmitRegImmBranch(RtRegImm b, Register rs, Label* label);
