@@ -810,21 +810,41 @@ class Assembler : public AssemblerBase {
   }
 
   void OrImmediate(Register rd, Register rs, int32_t imm) {
-    UNIMPLEMENTED();
+    ASSERT(!in_delay_slot_);
+    if (imm == 0) {
+      mov(rd, rs);
+      return;
+    }
+
+    if (Utils::IsUint(kImmBits, imm)) {
+      ori(rd, rs, Immediate(imm));
+    } else {
+      LoadImmediate(TMP, imm);
+      or_(rd, rs, TMP);
+    }
   }
 
   void OrImmediate(Register rd, int32_t imm) {
-    UNIMPLEMENTED();
+    OrImmediate(rd, rd, imm);
   }
 
   void AndRegisters(Register dst,
                     Register src1,
-                    Register src2 = kNoRegister) override{
-    UNIMPLEMENTED();
-  }
+                    Register src2 = kNoRegister) override;
 
   void XorImmediate(Register rd, Register rs, int32_t imm) {
-    UNIMPLEMENTED();
+    ASSERT(!in_delay_slot_);
+    if (imm == 0) {
+      mov(rd, rs);
+      return;
+    }
+
+    if (Utils::IsUint(kImmBits, imm)) {
+      xori(rd, rs, Immediate(imm));
+    } else {
+      LoadImmediate(TMP, imm);
+      xor_(rd, rs, TMP);
+    }
   }
 
   void LslImmediate(Register rd,
