@@ -1032,11 +1032,24 @@ class Assembler : public AssemblerBase {
   }
 
   void BranchUnsignedLessEqual(Register rd, Register rs, Label* l) {
-    UNIMPLEMENTED();
+    ASSERT(!in_delay_slot_);
+    BranchUnsignedGreaterEqual(rs, rd, l);
   }
 
   void BranchUnsignedLessEqual(Register rd, const Immediate& imm, Label* l) {
-    UNIMPLEMENTED();
+    ASSERT(!in_delay_slot_);
+    if (imm.value() == 0) {
+      beq(rd, ZR, l);
+    } else {
+      if ((imm.value() != -1) && Utils::IsInt(kImmBits, imm.value() + 1)) {
+        sltiu(CMPRES2, rd, Immediate(imm.value() + 1));
+        bne(CMPRES2, ZR, l);
+      } else {
+        ASSERT(rd != CMPRES2);
+        LoadImmediate(CMPRES2, imm.value());
+        BranchUnsignedGreaterEqual(CMPRES2, rd, l);
+      }
+    }
   }
 
   Register LoadConditionOperand(Register rd,
