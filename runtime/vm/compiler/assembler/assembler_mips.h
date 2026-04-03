@@ -1360,6 +1360,9 @@ class Assembler : public AssemblerBase {
     UNREACHABLE();
   }
 
+  static int32_t EncodeBranchOffset(int32_t offset, int32_t inst);
+  static int32_t DecodeBranchOffset(int32_t inst);
+
   void AddBranchOverflow(Register rd,
                         Register rs1,
                         Register rs2,
@@ -1437,7 +1440,10 @@ class Assembler : public AssemblerBase {
          fs << kFsShift | fd << kFdShift | func << kCop1FnShift);
   }
 
+  void EmitFarJump(int32_t offset, bool link);
+  void EmitFarBranch(Opcode b, Register rs, Register rt, int32_t offset);
   void EmitBranch(Opcode b, Register rs, Register rt, Label* label);
+  void BailoutIfInvalidBranchOffset(int32_t offset);
   void EmitRegImmBranch(RtRegImm b, Register rs, Label* label);
   void EmitFpuBranch(bool kind, Label* label);
 

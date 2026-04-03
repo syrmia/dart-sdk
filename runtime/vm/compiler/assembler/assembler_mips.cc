@@ -15,8 +15,146 @@ DECLARE_FLAG(bool, check_code_pointer);
 
 namespace compiler{
 
+static bool CanEncodeBranchOffset(int32_t offset) {
+  ASSERT(Utils::IsAligned(offset, 4));
+  return Utils::IsInt(18, offset);
+}
+
+int32_t Assembler::EncodeBranchOffset(int32_t offset, int32_t instr) {
+  ASSERT(Utils::IsAligned(offset, 4));
+  ASSERT(Utils::IsInt(18, offset));
+
+  // Properly preserve only the bits supported in the instruction.
+  offset >>= 2;
+  offset &= kBranchOffsetMask;
+  return (instr & ~kBranchOffsetMask) | offset;
+}
+
+int32_t Assembler::DecodeBranchOffset(int32_t instr) {
+  // Sign-extend, left-shift by 2.
+  return (((instr & kBranchOffsetMask) << 16) >> 14);
+}
+
+static int32_t DecodeLoadImmediate(int32_t ori_instr, int32_t lui_instr) {
+  return (((lui_instr & kBranchOffsetMask) << 16) |
+          (ori_instr & kBranchOffsetMask));
+}
+
+static int32_t EncodeLoadImmediate(int32_t dest, int32_t instr) {
+  return ((instr & ~kBranchOffsetMask) | (dest & kBranchOffsetMask));
+}
+
+class PatchFarJump : public AssemblerFixup {
+ public:
+  PatchFarJump() {}
+
+  void Process(const MemoryRegion& region, intptr_t position) {
+    const int32_t high = region.Load<int32_t>(position);
+    const int32_t low = region.Load<int32_t>(position + Instr::kInstrSize);
+    const int32_t offset = DecodeLoadImmediate(low, high);
+    const int32_t dest = region.start() + offset;
+
+    if ((Instr::At(reinterpret_cast<uword>(&high))->OpcodeField() == LUI) &&
+        (Instr::At(reinterpret_cast<uword>(&low))->OpcodeField() == ORI)) {
+      // Change the offset to the absolute value.
+      const int32_t encoded_low =
+          EncodeLoadImmediate(dest & kBranchOffsetMask, low);
+      const int32_t encoded_high = EncodeLoadImmediate(dest >> 16, high);
+
+      region.Store<int32_t>(position, encoded_high);
+      region.Store<int32_t>(position + Instr::kInstrSize, encoded_low);
+      return;
+    }
+    // If the offset loading instructions aren't there, we must have replaced
+    // the far branch with a near one, and so these instructions should be NOPs.
+    ASSERT((high == Instr::kNopInstruction) && (low == Instr::kNopInstruction));
+  }
+
+  virtual bool IsPointerOffset() const { return false; }
+};
+
+void Assembler::EmitFarJump(int32_t offset, bool link) {
+  ASSERT(!in_delay_slot_);
+  ASSERT(use_far_branches());
+  const uint16_t low = Utils::Low16Bits(offset);
+  const uint16_t high = Utils::High16Bits(offset);
+  buffer_.EmitFixup(new PatchFarJump());
+  lui(T9, Immediate(high));
+  ori(T9, T9, Immediate(low));
+  if (link) {
+    EmitRType(SPECIAL, T9, R0, RA, 0, JALR);
+  } else {
+    EmitRType(SPECIAL, T9, R0, R0, 0, JR);
+  }
+}
+
+static Opcode OppositeBranchOpcode(Opcode b) {
+  switch (b) {
+    case BEQ:
+      return BNE;
+    case BNE:
+      return BEQ;
+    case BGTZ:
+      return BLEZ;
+    case BLEZ:
+      return BGTZ;
+    case BEQL:
+      return BNEL;
+    case BNEL:
+      return BEQL;
+    case BGTZL:
+      return BLEZL;
+    case BLEZL:
+      return BGTZL;
+    default:
+      UNREACHABLE();
+      break;
+  }
+  return BNE;
+}
+
+void Assembler::EmitFarBranch(Opcode b,
+                              Register rs,
+                              Register rt,
+                              int32_t offset) {
+  ASSERT(!in_delay_slot_);
+  EmitIType(b, rs, rt, 4);
+  nop();
+  EmitFarJump(offset, false);
+}
+
 void Assembler::EmitBranch(Opcode b, Register rs, Register rt, Label* label) {
-  UNIMPLEMENTED();
+  ASSERT(!in_delay_slot_);
+  if (label->IsBound()) {
+    // Relative destination from an instruction after the branch.
+    const int32_t dest =
+        label->Position() - (buffer_.Size() + Instr::kInstrSize);
+    if (use_far_branches() && !CanEncodeBranchOffset(dest)) {
+      EmitFarBranch(OppositeBranchOpcode(b), rs, rt, label->Position());
+    } else {
+      BailoutIfInvalidBranchOffset(dest);
+      const uint16_t dest_off = EncodeBranchOffset(dest, 0);
+      EmitIType(b, rs, rt, dest_off);
+    }
+  } else {
+    const intptr_t position = buffer_.Size();
+    if (use_far_branches()) {
+      const uint32_t dest_off = label->position_;
+      EmitFarBranch(b, rs, rt, dest_off);
+    } else {
+      BailoutIfInvalidBranchOffset(label->position_);
+      const uint16_t dest_off = EncodeBranchOffset(label->position_, 0);
+      EmitIType(b, rs, rt, dest_off);
+    }
+    label->LinkTo(position);
+  }
+}
+
+void Assembler::BailoutIfInvalidBranchOffset(int32_t offset) {
+  if (!CanEncodeBranchOffset(offset)) {
+    ASSERT(!use_far_branches());
+    BailoutWithBranchOffsetError();
+  }
 }
 
 void Assembler::EmitRegImmBranch(RtRegImm b, Register rs, Label* label) {
