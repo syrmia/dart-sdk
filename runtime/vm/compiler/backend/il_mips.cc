@@ -2989,6 +2989,39 @@ void CloneContextInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
                              deopt_id(), env());
 }
 
+LocationSummary* CatchBlockEntryInstr::MakeLocationSummary(Zone* zone,
+                                                           bool opt) const {
+  return new (zone) LocationSummary(zone, 0, 0, LocationSummary::kCall);
+}
+
+void CatchBlockEntryInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  __ Bind(compiler->GetJumpLabel(this));
+  compiler->AddExceptionHandler(this);
+  if (HasParallelMove()) {
+    parallel_move()->EmitNativeCode(compiler);
+  }
+  // Restore SP from FP as we are coming from a throw and the code for
+  // popping arguments has not been run.
+  const intptr_t fp_sp_dist =
+      (compiler::target::frame_layout.first_local_from_fp + 1 -
+      compiler->StackSize()) * compiler::target::kWordSize;
+  ASSERT(fp_sp_dist <= 0);
+  __ AddImmediate(SP, FP, fp_sp_dist);
+
+  if (!compiler->is_optimizing()) {
+    if (raw_exception_var_ != nullptr) {
+      __ StoreToOffset(
+          kExceptionObjectReg, FP,
+          compiler::target::FrameOffsetInBytesForVariable(raw_exception_var_));
+    }
+    if (raw_stacktrace_var_ != nullptr) {
+      __ StoreToOffset(
+          kStackTraceObjectReg, FP,
+          compiler::target::FrameOffsetInBytesForVariable(raw_stacktrace_var_));
+    }
+  }
+}
+
 LocationSummary* CheckStackOverflowInstr::MakeLocationSummary(Zone* zone,
                                                               bool opt) const {
   const intptr_t kNumInputs = 0;
