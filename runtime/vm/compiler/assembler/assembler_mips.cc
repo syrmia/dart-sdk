@@ -813,6 +813,52 @@ void Assembler::Bind(Label* label) {
   delay_slot_available_ = false;
 }
 
+void Assembler::PushNativeCalleeSavedRegisters() {
+  RegisterSet regs(kAbiPreservedCpuRegs, kAbiPreservedFpuRegs);
+  intptr_t size = (regs.CpuRegisterCount() * target::kWordSize) +
+                  (regs.FpuRegisterCount() * sizeof(double));
+  AddImmediate(SP, SP, -size);
+  intptr_t offset = 0;
+  for (intptr_t i = 0; i < kNumberOfFpuRegisters; i++) {
+    FpuRegister reg = static_cast<FpuRegister>(i);
+    if (regs.ContainsFpuRegister(reg)) {
+      sdc1(reg, Address(SP, offset));
+      offset += sizeof(double);
+    }
+  }
+  for (intptr_t i = 0; i < kNumberOfCpuRegisters; i++) {
+    Register reg = static_cast<Register>(i);
+    if (regs.ContainsRegister(reg)) {
+      sw(reg, Address(SP, offset));
+      offset += target::kWordSize;
+    }
+  }
+  ASSERT(offset == size);
+}
+
+void Assembler::PopNativeCalleeSavedRegisters() {
+  RegisterSet regs(kAbiPreservedCpuRegs, kAbiPreservedFpuRegs);
+  intptr_t size = (regs.CpuRegisterCount() * target::kWordSize) +
+                  (regs.FpuRegisterCount() * sizeof(double));
+  intptr_t offset = 0;
+  for (intptr_t i = 0; i < kNumberOfFpuRegisters; i++) {
+    FpuRegister reg = static_cast<FpuRegister>(i);
+    if (regs.ContainsFpuRegister(reg)) {
+      ldc1(reg, Address(SP, offset));
+      offset += sizeof(double);
+    }
+  }
+  for (intptr_t i = 0; i < kNumberOfCpuRegisters; i++) {
+    Register reg = static_cast<Register>(i);
+    if (regs.ContainsRegister(reg)) {
+      lw(reg, Address(SP, offset));
+      offset += target::kWordSize;
+    }
+  }
+  ASSERT(offset == size);
+  AddImmediate(SP, SP, size);
+}
+
 Address Assembler::PrepareLargeOffset(Register base, int32_t offset) {
   ASSERT(!in_delay_slot_);
   if (Utils::IsInt(kImmBits, offset)) {

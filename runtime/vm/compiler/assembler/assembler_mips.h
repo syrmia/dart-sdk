@@ -156,6 +156,12 @@ class Assembler : public AssemblerBase {
     addiu(SP, SP, Immediate(target::kWordSize));
   }
 
+  // Push all registers which are callee-saved according to the ARM ABI.
+  void PushNativeCalleeSavedRegisters();
+
+  // Pop all registers which are callee-saved according to the ARM ABI.
+  void PopNativeCalleeSavedRegisters();
+
   void Ret() { jr(RA); }
 
   void SetReturnAddress(Register value) { mov(RA, value); }
