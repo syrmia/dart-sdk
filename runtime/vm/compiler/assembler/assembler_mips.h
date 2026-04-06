@@ -1501,6 +1501,12 @@ class Assembler : public AssemblerBase {
                               Register scratch,
                               bool is_shared);
 
+  void LoadHalfWordUnaligned(Register dst, Register addr, Register tmp);
+  void LoadHalfWordUnsignedUnaligned(Register dst, Register addr, Register tmp);
+  void StoreHalfWordUnaligned(Register src, Register addr, Register tmp);
+  void LoadWordUnaligned(Register dst, Register addr, Register tmp);
+  void StoreWordUnaligned(Register src, Register addr, Register tmp);
+
   void MaybeTraceAllocation(intptr_t cid,
                             Label* trace,
                             Register temp_reg,

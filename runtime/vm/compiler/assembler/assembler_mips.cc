@@ -622,6 +622,58 @@ void Assembler::LoadElementAddressForRegIndex(Register address,
   }
 }
 
+void Assembler::LoadHalfWordUnaligned(Register dst,
+                                      Register addr,
+                                      Register tmp) {
+  ASSERT(dst != addr);
+  lbu(dst, Address(addr, 0));
+  lb(tmp, Address(addr, 1));
+  sll(tmp, tmp, 8);
+  or_(dst, dst, tmp);
+}
+
+void Assembler::LoadHalfWordUnsignedUnaligned(Register dst,
+                                              Register addr,
+                                              Register tmp) {
+  ASSERT(dst != addr);
+  lbu(dst, Address(addr, 0));
+  lbu(tmp, Address(addr, 1));
+  sll(tmp, tmp, 8);
+  or_(dst, dst, tmp);
+}
+
+void Assembler::StoreHalfWordUnaligned(Register src,
+                                       Register addr,
+                                       Register tmp) {
+  sb(src, Address(addr, 0));
+  srl(tmp, src, 8);
+  sb(tmp, Address(addr, 1));
+}
+
+void Assembler::LoadWordUnaligned(Register dst, Register addr, Register tmp) {
+  ASSERT(dst != addr);
+  lbu(dst, Address(addr, 0));
+  lbu(tmp, Address(addr, 1));
+  sll(tmp, tmp, 8);
+  or_(dst, dst, tmp);
+  lbu(tmp, Address(addr, 2));
+  sll(tmp, tmp, 16);
+  or_(dst, dst, tmp);
+  lbu(tmp, Address(addr, 3));
+  sll(tmp, tmp, 24);
+  or_(dst, dst, tmp);
+}
+
+void Assembler::StoreWordUnaligned(Register src, Register addr, Register tmp) {
+  sb(src, Address(addr, 0));
+  srl(tmp, src, 8);
+  sb(tmp, Address(addr, 1));
+  srl(tmp, src, 16);
+  sb(tmp, Address(addr, 2));
+  srl(tmp, src, 24);
+  sb(tmp, Address(addr, 3));
+}
+
 void Assembler::SetIf(Condition condition, Register rd) {
   ASSERT(deferred_compare_ != kNone);
 
