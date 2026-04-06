@@ -4470,6 +4470,54 @@ void InvokeMathCFunctionInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   rt.Call(TargetFunction(), TargetFunction().argument_count());
 }
 
+LocationSummary* ExtractNthOutputInstr::MakeLocationSummary(Zone* zone,
+                                                            bool opt) const {
+  // Only use this instruction in optimized code.
+  ASSERT(opt);
+  const intptr_t kNumInputs = 1;
+  LocationSummary* summary =
+      new (zone) LocationSummary(zone, kNumInputs, 0, LocationSummary::kNoCall);
+  if (representation() == kUnboxedDouble) {
+    if (index() == 0) {
+      summary->set_in(
+          0, Location::Pair(Location::RequiresFpuRegister(), Location::Any()));
+    } else {
+      ASSERT(index() == 1);
+      summary->set_in(
+          0, Location::Pair(Location::Any(), Location::RequiresFpuRegister()));
+    }
+    summary->set_out(0, Location::RequiresFpuRegister());
+  } else {
+    ASSERT(representation() == kTagged);
+    if (index() == 0) {
+      summary->set_in(
+          0, Location::Pair(Location::RequiresRegister(), Location::Any()));
+    } else {
+      ASSERT(index() == 1);
+      summary->set_in(
+          0, Location::Pair(Location::Any(), Location::RequiresRegister()));
+    }
+    summary->set_out(0, Location::RequiresRegister());
+  }
+  return summary;
+}
+
+void ExtractNthOutputInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  ASSERT(locs()->in(0).IsPairLocation());
+  PairLocation* pair = locs()->in(0).AsPairLocation();
+  Location in_loc = pair->At(index());
+  if (representation() == kUnboxedDouble) {
+    DRegister out = locs()->out(0).fpu_reg();
+    DRegister in = in_loc.fpu_reg();
+    __ movd(out, in);
+  } else {
+    ASSERT(representation() == kTagged);
+    Register out = locs()->out(0).reg();
+    Register in = in_loc.reg();
+    __ mov(out, in);
+  }
+}
+
 LocationSummary* UnboxLaneInstr::MakeLocationSummary(Zone* zone,
                                                      bool opt) const {
   UNREACHABLE();
