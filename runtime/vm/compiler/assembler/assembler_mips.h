@@ -1455,6 +1455,33 @@ class Assembler : public AssemblerBase {
   // up on entry (it is the frame of the unoptimized code).
   void EnterOsrFrame(intptr_t extra_size);
 
+  Address ElementAddressForIntIndex(bool is_external,
+                                    intptr_t cid,
+                                    intptr_t index_scale,
+                                    Register array,
+                                    intptr_t index) const;
+  void LoadElementAddressForIntIndex(Register address,
+                                     bool is_external,
+                                     intptr_t cid,
+                                     intptr_t index_scale,
+                                     Register array,
+                                     intptr_t index);
+  Address ElementAddressForRegIndex(bool is_load,
+                                    bool is_external,
+                                    intptr_t cid,
+                                    intptr_t index_scale,
+                                    bool index_unboxed,
+                                    Register array,
+                                    Register index);
+  void LoadElementAddressForRegIndex(Register address,
+                                     bool is_load,
+                                     bool is_external,
+                                     intptr_t cid,
+                                     intptr_t index_scale,
+                                     bool index_unboxed,
+                                     Register array,
+                                     Register index);
+
   void EnterFullSafepoint(Register scratch0, Register scratch1);
   void ExitFullSafepoint(Register scratch0,
                          Register scratch1);

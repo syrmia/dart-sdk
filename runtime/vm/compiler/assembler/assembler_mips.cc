@@ -539,6 +539,89 @@ void Assembler::BranchIfBit(Register rn,
   }
 }
 
+Address Assembler::ElementAddressForIntIndex(bool is_external,
+                                            intptr_t cid,
+                                            intptr_t index_scale,
+                                            Register array,
+                                            intptr_t index) const {
+  const int64_t offset =
+      static_cast<int64_t>(index) * index_scale +
+      (is_external ? 0 : (target::Instance::DataOffsetFor(cid) - kHeapObjectTag));
+  ASSERT(Utils::IsInt(32, offset));
+  ASSERT(Address::CanHoldOffset(offset));
+  return Address(array, static_cast<int32_t>(offset));
+}
+
+void Assembler::LoadElementAddressForIntIndex(Register address,
+                                              bool is_external,
+                                              intptr_t cid,
+                                              intptr_t index_scale,
+                                              Register array,
+                                              intptr_t index) {
+  const int64_t offset =
+      static_cast<int64_t>(index) * index_scale +
+      (is_external ? 0 : (target::Instance::DataOffsetFor(cid) - kHeapObjectTag));
+  ASSERT(Utils::IsInt(32, offset));
+  AddImmediate(address, array, offset);
+}
+
+Address Assembler::ElementAddressForRegIndex(bool is_load,
+                                            bool is_external,
+                                            intptr_t cid,
+                                            intptr_t index_scale,
+                                            bool index_unboxed,
+                                            Register array,
+                                            Register index) {
+  // Note that index is expected smi-tagged, (i.e, LSL 1) for all arrays.
+  const intptr_t boxing_shift = index_unboxed ? 0 : -kSmiTagShift;
+  const intptr_t shift = Utils::ShiftForPowerOfTwo(index_scale) + boxing_shift;
+  const int32_t offset =
+      is_external ? 0 : (target::Instance::DataOffsetFor(cid) - kHeapObjectTag);
+  ASSERT(array != TMP);
+  ASSERT(index != TMP);
+  const Register base = is_load ? TMP : index;
+  if (shift < 0) {
+    ASSERT(shift == -1);
+    sra(TMP, index, 1);
+    addu(base, array, TMP);
+  } else if (shift == 0) {
+    addu(base, array, index);
+  } else {
+    sll(TMP, index, shift);
+    addu(base, array, TMP);
+  }
+  ASSERT(Address::CanHoldOffset(offset));
+  return Address(base, offset);
+}
+
+void Assembler::LoadElementAddressForRegIndex(Register address,
+                                              bool is_load,
+                                              bool is_external,
+                                              intptr_t cid,
+                                              intptr_t index_scale,
+                                              bool index_unboxed,
+                                              Register array,
+                                              Register index) {
+  // Note that index is expected smi-tagged, (i.e, LSL 1) for all arrays.
+  const intptr_t boxing_shift = index_unboxed ? 0 : -kSmiTagShift;
+  const intptr_t shift = Utils::ShiftForPowerOfTwo(index_scale) + boxing_shift;
+  const int32_t offset =
+      is_external ? 0 : (target::Instance::DataOffsetFor(cid) - kHeapObjectTag);
+  if (shift < 0) {
+    ASSERT(shift == -1);
+    sra(address, index, 1);
+    addu(address, array, address);
+  } else if (shift == 0) {
+    addu(address, array, index);
+  } else {
+    sll(address, index, shift);
+    addu(address, array, address);
+  }
+  if (offset != 0) {
+    AddImmediate(address, offset);
+  }
+}
+
 void Assembler::SetIf(Condition condition, Register rd) {
   ASSERT(deferred_compare_ != kNone);
 
