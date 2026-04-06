@@ -1632,7 +1632,19 @@ class Assembler : public AssemblerBase {
   static int32_t EncodeBranchOffset(int32_t offset, int32_t inst);
   static int32_t DecodeBranchOffset(int32_t inst);
 
+  void AddImmediateBranchOverflow(Register rd,
+                                  Register rs1,
+                                  int32_t imm,
+                                  Label* overflow);
+  void SubtractImmediateBranchOverflow(Register rd,
+                                       Register rs1,
+                                       int32_t imm,
+                                       Label* overflow);
   void AddBranchOverflow(Register rd,
+                        Register rs1,
+                        Register rs2,
+                        Label* overflow);
+  void SubtractBranchOverflow(Register rd,
                         Register rs1,
                         Register rs2,
                         Label* overflow);
