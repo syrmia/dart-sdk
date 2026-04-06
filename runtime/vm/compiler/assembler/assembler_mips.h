@@ -1538,6 +1538,10 @@ class Assembler : public AssemblerBase {
   // Requires a scratch register in addition to the assembler temporary.
   void EmitEntryFrameVerification(Register scratch);
 
+  void LoadNativeEntry(Register rd,
+                       const ExternalLabel* label,
+                       ObjectPoolBuilderEntry::Patchability patchable);
+
   void PushObject(const Object& object);
 
   void CompareObject(Register reg, const Object& object);

@@ -867,6 +867,14 @@ void Assembler::LoadUniqueObject(Register rd, const Object& object,
   LoadObjectHelper(rd, object, true, snapshot_behavior);
 }
 
+void Assembler::LoadNativeEntry(Register rd,
+                                const ExternalLabel* label,
+                                ObjectPoolBuilderEntry::Patchability patchable) {
+  const intptr_t index =
+      object_pool_builder().FindNativeFunction(label, patchable);
+  LoadWordFromPoolIndex(rd, index);
+}
+
 void Assembler::RangeCheck(Register value,
                            Register temp,
                            intptr_t low,
