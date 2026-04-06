@@ -1429,6 +1429,13 @@ class Assembler : public AssemblerBase {
   // the branch delay slot.
   void LeaveStubFrameAndReturn(Register ra = RA);
 
+  // Set up a frame for calling a C function.
+  // Automatically save the pinned registers in Dart which are not callee-
+  // saved in the native calling convention.
+  // Use together with CallCFunction.
+  void EnterCFrame(intptr_t frame_space);
+  void LeaveCFrame();
+
   // Set up a Dart frame on entry with a frame pointer and PC information to
   // enable easy access to the RawInstruction object of code corresponding
   // to this frame.

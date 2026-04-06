@@ -1434,6 +1434,25 @@ void Assembler::LeaveStubFrameAndReturn(Register ra) {
   LeaveDartFrameAndReturn(ra);
 }
 
+void Assembler::EnterCFrame(intptr_t frame_space) {
+  // Already saved.
+  COMPILE_ASSERT(IsCalleeSavedRegister(THR));
+  COMPILE_ASSERT(IsCalleeSavedRegister(PP));
+
+  EnterFrame();
+  /*A caller reserves four words (16 bytes) at the end of its stack frame for the callee to store its
+  arguments, even if the callee takes fewer than four arguments, even if the callee does not
+  actually use this space. In other words, if you are a non-leaf function, then you must never
+  address 0(sp), 4(sp), 8(sp), or 12(sp)! However, supposing your frame is 32 bytes, then you
+  may use 32(sp), 36(sp), 40(sp), and 44(sp) for storing a0, a1, a2, and a3, respectively, even
+  though this is in the frame of your caller!*/
+  ReserveAlignedFrameSpace(frame_space + 4 * target::kWordSize);
+}
+
+void Assembler::LeaveCFrame() {
+  LeaveFrame();
+}
+
 void Assembler::EnterDartFrame(intptr_t frame_size, bool load_pool_pointer) {
   ASSERT(!in_delay_slot_);
 
