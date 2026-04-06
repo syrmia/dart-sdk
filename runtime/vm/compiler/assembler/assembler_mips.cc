@@ -981,6 +981,14 @@ void Assembler::Load(Register dest, const Address& address, OperandSize sz) {
   }
 }
 
+void Assembler::LoadSImmediate(DRegister reg, float imms) {
+  int32_t imm = bit_cast<int32_t, float>(imms);
+  ASSERT(constant_pool_allowed());
+  intptr_t index = object_pool_builder().FindImmediate(imm);
+  intptr_t offset = target::ObjectPool::element_offset(index) - kHeapObjectTag;
+  LoadSFromOffset(reg, PP, offset);
+}
+
 void Assembler::LoadWordFromPoolIndex(Register rd,
                                       intptr_t index,
                                       Register pp) {

@@ -1259,6 +1259,8 @@ class Assembler : public AssemblerBase {
 
   void Load(Register dest, const Address& address, OperandSize sz = kWordBytes) override;
 
+  void LoadSImmediate(DRegister reg, float imms);
+
   void LoadIndexedPayload(Register dst,
                           Register base,
                           int32_t offset,
@@ -1298,6 +1300,12 @@ class Assembler : public AssemblerBase {
     FRegister hi = static_cast<FRegister>(reg * 2 + 1);
     lwc1(lo, PrepareLargeOffset(base, offset));
     lwc1(hi, PrepareLargeOffset(base, offset + target::kWordSize));
+  }
+
+  void LoadSFromOffset(DRegister reg, Register base, int32_t offset) {
+    ASSERT(!in_delay_slot_);
+    FRegister freg = static_cast<FRegister>(reg * 2);
+    lwc1(freg, PrepareLargeOffset(base, offset));
   }
 
   void StoreDToOffset(DRegister reg, Register base, int32_t offset) {
