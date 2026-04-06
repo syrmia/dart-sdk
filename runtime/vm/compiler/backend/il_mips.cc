@@ -3593,6 +3593,28 @@ void CheckEitherNonSmiInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   __ beq(CMPRES1, ZR, deopt);
 }
 
+LocationSummary* BoxInstr::MakeLocationSummary(Zone* zone, bool opt) const {
+  const intptr_t kNumInputs = 1;
+  const intptr_t kNumTemps = 1;
+  LocationSummary* summary = new (zone) LocationSummary(
+      zone, kNumInputs, kNumTemps, LocationSummary::kCallOnSlowPath);
+  summary->set_in(0, Location::RequiresFpuRegister());
+  summary->set_temp(0, Location::RequiresRegister());
+  summary->set_out(0, Location::RequiresRegister());
+  return summary;
+}
+
+void BoxInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  ASSERT(from_representation() == kUnboxedDouble);
+
+  Register out_reg = locs()->out(0).reg();
+  DRegister value = locs()->in(0).fpu_reg();
+
+  BoxAllocationSlowPath::Allocate(compiler, this, compiler->double_class(),
+                                  out_reg, locs()->temp(0).reg());
+  __ StoreDToOffset(value, out_reg, Double::value_offset() - kHeapObjectTag);
+}
+
 LocationSummary* UnboxInstr::MakeLocationSummary(Zone* zone, bool opt) const {
   ASSERT(BoxCid() != kSmiCid);
   const bool needs_temp = CanDeoptimize();
@@ -4446,6 +4468,26 @@ void InvokeMathCFunctionInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
                                 /*frame_size=*/0,
                                 /*preserve_registers=*/false);
   rt.Call(TargetFunction(), TargetFunction().argument_count());
+}
+
+LocationSummary* UnboxLaneInstr::MakeLocationSummary(Zone* zone,
+                                                     bool opt) const {
+  UNREACHABLE();
+  return NULL;
+}
+
+void UnboxLaneInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  UNREACHABLE();
+}
+
+LocationSummary* BoxLanesInstr::MakeLocationSummary(Zone* zone,
+                                                    bool opt) const {
+  UNREACHABLE();
+  return NULL;
+}
+
+void BoxLanesInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  UNREACHABLE();
 }
 
 LocationSummary* TruncDivModInstr::MakeLocationSummary(Zone* zone,
