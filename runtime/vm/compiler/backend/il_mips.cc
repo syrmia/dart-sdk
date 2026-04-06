@@ -2713,6 +2713,35 @@ void GuardFieldLengthInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   }
 }
 
+LocationSummary* StoreStaticFieldInstr::MakeLocationSummary(Zone* zone,
+                                                            bool opt) const {
+  const intptr_t kNumInputs = 1;
+  const intptr_t kNumTemps = 1;
+  LocationSummary* locs = new (zone)
+      LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  locs->set_in(0, Location::RequiresRegister());
+  locs->set_temp(0, Location::RequiresRegister());
+  return locs;
+}
+
+void StoreStaticFieldInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  __ Comment("StoreStaticFieldInstr");
+  Register value = locs()->in(0).reg();
+  Register temp = locs()->temp(0).reg();
+
+  compiler->used_static_fields().Add(&field());
+
+  __ LoadFromOffset(
+      temp, THR,
+      field().is_shared()
+          ? compiler::target::Thread::shared_field_table_values_offset()
+          : compiler::target::Thread::field_table_values_offset());
+
+  // Note: static fields ids won't be changed by hot-reload.
+  __ StoreToOffset(value, temp,
+                   compiler::target::FieldTable::OffsetOf(field()));
+}
+
 LocationSummary* InstanceOfInstr::MakeLocationSummary(Zone* zone,
                                                       bool opt) const {
   const intptr_t kNumInputs = 3;
