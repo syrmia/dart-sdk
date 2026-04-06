@@ -183,6 +183,11 @@ class Assembler : public AssemblerBase {
     Bind(&done);
   }
 
+  // Stores a non-tagged value into a heap object.
+  void StoreInternalPointer(Register object,
+                            const Address& dest,
+                            Register value);
+
   static Address VMTagAddress() {
     return Address(THR, target::Thread::vm_tag_offset());
   }

@@ -273,9 +273,12 @@ void StubCodeCompiler::GenerateLoadFfiCallbackMetadataRuntimeFunction(
                     FfiCallbackMetadata::RuntimeFunctionOffset(function_index));
 }
 
+void StubCodeCompiler::GenerateFfiCallTrampolineStub() {
+  __ Breakpoint();  // Not implemented.
+}
+
 void StubCodeCompiler::GenerateFfiCallbackTrampolineStub() {
 #if defined(DART_INCLUDE_SIMULATOR) && !defined(DART_PRECOMPILER)
-  // TODO(37299): FFI is not supported in SIMMIPS.
   __ Breakpoint();
 #else
   Label body;
@@ -471,6 +474,37 @@ void StubCodeCompiler::GenerateSharedStub(
   GenerateSharedStubGeneric(save_fpu_registers,
                             self_code_stub_offset_from_thread, allow_return,
                             perform_runtime_call);
+}
+
+void StubCodeCompiler::GenerateRangeError(bool with_fpu_regs) {
+  auto perform_runtime_call = [&]() {
+    ASSERT(!GenericCheckBoundInstr::UseUnboxedRepresentation());
+    __ PushRegistersInOrder(
+        {RangeErrorABI::kLengthReg, RangeErrorABI::kIndexReg});
+    __ CallRuntime(kRangeErrorRuntimeEntry, /*argument_count=*/2);
+    __ Breakpoint();
+  };
+
+  GenerateSharedStubGeneric(
+      /*save_fpu_registers=*/with_fpu_regs,
+      with_fpu_regs
+          ? target::Thread::range_error_shared_with_fpu_regs_stub_offset()
+          : target::Thread::range_error_shared_without_fpu_regs_stub_offset(),
+      /*allow_return=*/false, perform_runtime_call);
+}
+
+void StubCodeCompiler::GenerateWriteError(bool with_fpu_regs) {
+  auto perform_runtime_call = [&]() {
+    __ CallRuntime(kWriteErrorRuntimeEntry, /*argument_count=*/2);
+    __ Breakpoint();
+  };
+
+  GenerateSharedStubGeneric(
+      /*save_fpu_registers=*/with_fpu_regs,
+      with_fpu_regs
+          ? target::Thread::write_error_shared_with_fpu_regs_stub_offset()
+          : target::Thread::write_error_shared_without_fpu_regs_stub_offset(),
+      /*allow_return=*/false, perform_runtime_call);
 }
 
 // Input parameters:
@@ -2070,6 +2104,18 @@ void StubCodeCompiler::GenerateAllocateObjectSlowStub() {
   __ LeaveDartFrameAndReturn();
 }
 
+//  S2: function object.
+void StubCodeCompiler::GenerateOptimizedUsageCounterIncrement() {
+  Register func_reg = S2;
+  if (FLAG_precompiled_mode) {
+    __ Breakpoint();
+    return;
+  }
+  __ lw(TMP, FieldAddress(func_reg, target::Function::usage_counter_offset()));
+  __ addiu(TMP, TMP, Immediate(1));
+  __ sw(TMP, FieldAddress(func_reg, target::Function::usage_counter_offset()));
+}
+
 // Loads function into 'temp_reg'.
 void StubCodeCompiler::GenerateUsageCounterIncrement(Register temp_reg) {
   if (FLAG_precompiled_mode) {
@@ -2851,6 +2897,112 @@ void StubCodeCompiler::GenerateDebugStepCheckStub() {
 #endif
 }
 
+// Used to check class and type arguments. Arguments passed in registers:
+//
+// Inputs (all preserved, mostly from TypeTestABI struct):
+//   - kSubtypeTestCacheReg: UntaggedSubtypeTestCache
+//   - kInstanceReg: instance to test against.
+//   - kDstTypeReg: destination type (for n>=7).
+//   - kInstantiatorTypeArgumentsReg: instantiator type arguments (for n>=3).
+//   - kFunctionTypeArgumentsReg: function type arguments (for n>=4).
+//   - RA: return address.
+//
+// Outputs (from TypeTestABI struct):
+//   - kSubtypeTestCacheResultReg: the cached result, or null if not found.
+void StubCodeCompiler::GenerateSubtypeNTestCacheStub(Assembler* assembler,
+                                                     int n) {
+  ASSERT(n >= 1);
+  ASSERT(n <= SubtypeTestCache::kMaxInputs);
+  // If we need the parent function type arguments for a closure, we also need
+  // the delayed type arguments, so this case will never happen.
+  ASSERT(n != 5);
+  RegisterSet saved_registers;
+
+  // Safe as the original value of TypeTestABI::kSubtypeTestCacheReg is only
+  // used to initialize this register.
+  const Register kCacheArrayReg = TypeTestABI::kSubtypeTestCacheReg;
+  saved_registers.AddRegister(kCacheArrayReg);
+
+  const Register kNullReg =
+      FLAG_precompiled_mode ? CODE_REG : T7;
+  saved_registers.AddRegister(kNullReg);
+
+  // Free up additional registers needed for checks in the loop. Initially
+  // define them as kNoRegister so any unexpected uses are caught.
+  Register kInstanceInstantiatorTypeArgumentsReg = kNoRegister;
+  if (n >= 2) {
+    kInstanceInstantiatorTypeArgumentsReg = PP;
+    saved_registers.AddRegister(kInstanceInstantiatorTypeArgumentsReg);
+  }
+  Register kInstanceParentFunctionTypeArgumentsReg = kNoRegister;
+  if (n >= 5) {
+    // For this, we look at the pair of Registers we considered for kNullReg
+    // and use the one that must be preserved instead.
+    kInstanceParentFunctionTypeArgumentsReg =
+        FLAG_precompiled_mode ? T7 : CODE_REG;
+    saved_registers.AddRegister(kInstanceParentFunctionTypeArgumentsReg);
+  }
+  Register kInstanceDelayedFunctionTypeArgumentsReg = kNoRegister;
+  if (n >= 6) {
+    // We retrieve all the needed fields from the instance during loop
+    // initialization and store them in registers, so we don't need the value
+    // of kInstanceReg during the loop and just need to save and restore it.
+    // Thus, use kInstanceReg for the last field that can possibly be retrieved
+    // from the instance.
+    kInstanceDelayedFunctionTypeArgumentsReg = TypeTestABI::kInstanceReg;
+    saved_registers.AddRegister(kInstanceDelayedFunctionTypeArgumentsReg);
+  }
+
+  // We'll replace these with actual registers if possible, but fall back to
+  // the stack if register pressure is too great. The last two values are
+  // used in every loop iteration, and so are more important to put in
+  // registers if possible, whereas the first is used only when we go off
+  // the end of the backing array (usually at most once per check).
+  Register kCacheContentsSizeReg = kNoRegister;
+  if (n < 5) {
+    // Use the register we would have used for the parent function type args.
+    kCacheContentsSizeReg =
+        FLAG_precompiled_mode ? T7 : CODE_REG;
+    saved_registers.AddRegister(kCacheContentsSizeReg);
+  }
+  Register kProbeDistanceReg = kNoRegister;
+  if (n < 6) {
+    // Use the register we would have used for the delayed type args.
+    kProbeDistanceReg = TypeTestABI::kInstanceReg;
+    saved_registers.AddRegister(kProbeDistanceReg);
+  }
+  Register kCacheEntryEndReg = kNoRegister;
+  if (n < 7) {
+    // Use the destination type, as that is the last input that might be unused.
+    kCacheEntryEndReg = TypeTestABI::kDstTypeReg;
+    saved_registers.AddRegister(TypeTestABI::kDstTypeReg);
+  }
+
+  __ PushRegisters(saved_registers);
+  __ LoadObject(kNullReg, NullObject());
+
+  GenerateSubtypeTestCacheSearch(
+      assembler, n, kNullReg, kCacheArrayReg,
+      STCInternalRegs::kInstanceCidOrSignatureReg,
+      kInstanceInstantiatorTypeArgumentsReg,
+      kInstanceParentFunctionTypeArgumentsReg,
+      kInstanceDelayedFunctionTypeArgumentsReg, kCacheEntryEndReg,
+      kCacheContentsSizeReg, kProbeDistanceReg,
+      [&](Assembler* assembler, int n) {
+        __ LoadCompressed(
+            TypeTestABI::kSubtypeTestCacheResultReg,
+            Address(kCacheArrayReg, target::kCompressedWordSize *
+                                        target::SubtypeTestCache::kTestResult));
+        __ PopRegisters(saved_registers);
+        __ Ret();
+      },
+      [&](Assembler* assembler, int n) {
+        __ MoveRegister(TypeTestABI::kSubtypeTestCacheResultReg, kNullReg);
+        __ PopRegisters(saved_registers);
+        __ Ret();
+      });
+}
+
 // Return the current stack pointer address, used to stack alignment
 // checks.
 void StubCodeCompiler::GenerateGetCStackPointerStub() {
@@ -2917,7 +3069,8 @@ void StubCodeCompiler::GenerateJumpToFrameStub() {
 // stub or from the simulator.
 // The arguments are stored in the Thread object.
 // Does not return.
-void StubCodeCompiler::GenerateRunExceptionHandlerStub() {
+static void GenerateRunExceptionHandler(Assembler* assembler,
+                                        bool unbox_exception) {
   __ lw(A0, Address(THR, Thread::resume_pc_offset()));
 
   word offset_from_thread = 0;
@@ -2925,19 +3078,37 @@ void StubCodeCompiler::GenerateRunExceptionHandlerStub() {
   ASSERT(ok);
   __ LoadFromOffset(A2, THR, offset_from_thread);
 
+  // Exception object.
   ASSERT(kExceptionObjectReg == V0);
-  // Load the exception from the current thread.
   Address exception_addr(THR, Thread::active_exception_offset());
   __ lw(V0, exception_addr);
   __ sw(A2, exception_addr);
+  if (unbox_exception) {
+    compiler::Label not_smi, done;
+    __ BranchIfNotSmi(V0, &not_smi);
+    __ SmiUntag(V0);
+    __ b(&done);
+    __ delay_slot()->nop();
+    __ Bind(&not_smi);
+    __ lw(V0, FieldAddress(V0, target::Mint::value_offset()));
+    __ Bind(&done);
+  }
 
+  // StackTrace object.
   ASSERT(kStackTraceObjectReg == V1);
-  // Load the stacktrace from the current thread.
   Address stacktrace_addr(THR, Thread::active_stacktrace_offset());
   __ lw(V1, stacktrace_addr);
 
-  __ jr(A0);  // Jump to continuation point.
+  __ jr(A0);
   __ delay_slot()->sw(A2, stacktrace_addr);
+}
+
+void StubCodeCompiler::GenerateRunExceptionHandlerStub() {
+  GenerateRunExceptionHandler(assembler, false);
+}
+
+void StubCodeCompiler::GenerateRunExceptionHandlerUnboxStub() {
+  GenerateRunExceptionHandler(assembler, true);
 }
 
 // Deoptimize a frame on the call stack before rewinding.
@@ -3297,6 +3468,138 @@ void StubCodeCompiler::GenerateSingleTargetCallStub() {
   __ lw(T1, FieldAddress(CODE_REG,
           target::Code::entry_point_offset(CodeEntryKind::kMonomorphic)));
   __ jr(T1);
+}
+
+static int GetScaleFactor(intptr_t size) {
+  switch (size) {
+    case 1:
+      return 0;
+    case 2:
+      return 1;
+    case 4:
+      return 2;
+    case 8:
+      return 3;
+    case 16:
+      return 4;
+  }
+  UNREACHABLE();
+  return -1;
+}
+
+void StubCodeCompiler::GenerateAllocateTypedDataArrayStub(intptr_t cid) {
+  const intptr_t element_size = TypedDataElementSizeInBytes(cid);
+  const intptr_t max_len = TypedDataMaxNewSpaceElements(cid);
+  const int scale_shift = GetScaleFactor(element_size);
+
+  COMPILE_ASSERT(AllocateTypedDataArrayABI::kLengthReg == A1);
+  COMPILE_ASSERT(AllocateTypedDataArrayABI::kResultReg == V0);
+
+  if (!FLAG_use_slow_path && FLAG_inline_alloc) {
+    Label call_runtime;
+    NOT_IN_PRODUCT(__ MaybeTraceAllocation(cid, &call_runtime, T3));
+    __ mov(T3, AllocateTypedDataArrayABI::kLengthReg); /* Array length. */
+    /* Check that length is a positive Smi. */
+    /* T3: requested array length argument. */
+    __ BranchIfNotSmi(T3, &call_runtime);
+    __ SmiUntag(T3);
+    /* Check for maximum allowed length. */
+    /* T3: untagged array length. */
+    __ BranchUnsignedGreater(T3, Immediate(max_len), &call_runtime);
+    if (scale_shift != 0) {
+      __ sll(T3, T3, scale_shift);
+    }
+    const intptr_t fixed_size_plus_alignment_padding =
+        target::TypedData::HeaderSize() +
+        target::ObjectAlignment::kObjectAlignment - 1;
+    __ AddImmediate(T3, fixed_size_plus_alignment_padding);
+    __ AndImmediate(T3, T3, ~(target::ObjectAlignment::kObjectAlignment - 1));
+    __ lw(V0, Address(THR, target::Thread::top_offset()));
+
+    /* T3: allocation size. */
+    __ addu(T4, V0, T3);
+    /* Branch on unsigned overflow. */
+    __ BranchUnsignedLess(T4, V0, &call_runtime);
+
+    /* Check if the allocation fits into the remaining space. */
+    /* V0: potential new object start. */
+    /* T4: potential next object start. */
+    /* T3: allocation size. */
+    __ lw(TMP, Address(THR, target::Thread::end_offset()));
+    __ BranchUnsignedGreaterEqual(T4, TMP, &call_runtime);
+    __ CheckAllocationCanary(V0);
+
+    /* Successfully allocated the object(s), now update top to point to */
+    /* next object start and initialize the object. */
+    __ sw(T4, Address(THR, target::Thread::top_offset()));
+    __ AddImmediate(V0, kHeapObjectTag);
+    /* Initialize the tags. */
+    /* V0: new object start as a tagged pointer. */
+    /* T4: new object end address. */
+    /* T3: allocation size. */
+    {
+      compiler::Label skip_shift;
+      __ BranchSignedLessEqual(
+        T3, Immediate(target::UntaggedObject::kSizeTagMaxSizeTag),
+        &skip_shift);
+      __ LoadImmediate(T5, 0);  // overflow: tag == 0
+      compiler::Label done;
+      __ b(&done);
+
+      __ Bind(&skip_shift);
+      __ sll(T5, T3, target::UntaggedObject::kSizeTagPos -
+                              target::ObjectAlignment::kObjectAlignmentLog2);
+      __ Bind(&done);
+
+      ASSERT(cid != kIllegalCid);
+
+      /* Get the class index and insert it into the tags. */
+      uword tags =
+          target::MakeTagWordForNewSpaceObject(cid, /*instance_size=*/0);
+      __ OrImmediate(T5, T5, tags);
+      __ InitializeHeader(T5, V0);
+    }
+    /* Set the length field. */
+    /* V0: new object start as a tagged pointer. */
+    /* T4: new object end address. */
+    __ mov(T3, AllocateTypedDataArrayABI::kLengthReg); /* Array length. */
+    __ StoreIntoObjectNoBarrier(
+        V0, FieldAddress(V0, target::TypedDataBase::length_offset()), T3);
+    /* Initialize all array elements to 0. */
+    /* V0: new object start as a tagged pointer. */
+    /* T4: new object end address. */
+    /* T3: iterator which initially points to the start of the variable */
+    /* data area to be initialized. */
+    __ AddImmediate(T3, V0, target::TypedData::HeaderSize() - 1);
+    __ StoreInternalPointer(
+            V0, FieldAddress(V0, target::PointerBase::data_offset()), T3);
+
+      Label loop;
+    __ Bind(&loop);
+    for (intptr_t offset = 0; offset < target::kObjectAlignment;
+         offset += target::kWordSize) {
+      __ sw(ZR, Address(T3, offset));
+    }
+
+    // Safe to only check every kObjectAlignment bytes instead of each word.
+    ASSERT(kAllocationRedZoneSize >= target::kObjectAlignment);
+    __ AddImmediate(T3, T3, target::kObjectAlignment);
+    __ BranchUnsignedLess(T3, T4, &loop);
+    __ WriteAllocationCanary(T4);  // Fix overshoot.
+    __ Ret();
+    __ Bind(&call_runtime);
+  }
+
+  __ EnterStubFrame();
+  __ PushRegister(ZR);  // Make room for the result.
+  __ PushImmediate(target::ToRawSmi(cid));
+  __ PushRegister(AllocateTypedDataArrayABI::kLengthReg);
+  __ CallRuntime(kAllocateTypedDataRuntimeEntry, 2);
+  __ Drop(2);  // Drop arguments.
+  __ PopRegister(AllocateTypedDataArrayABI::kResultReg);
+  __ LeaveStubFrame();
+
+  __ Ret();
 }
 
 }  // namespace compiler

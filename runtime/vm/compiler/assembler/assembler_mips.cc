@@ -864,6 +864,13 @@ void Assembler::StoreObjectIntoObjectNoBarrier(Register object,
   Store(value_reg, address, size);
 }
 
+// Stores a non-tagged value into a heap object.
+void Assembler::StoreInternalPointer(Register object,
+                                     const Address& dest,
+                                     Register value) {
+  sw(value, dest);
+}
+
 void Assembler::StoreBarrier(Register object,
                              Register value,
                              CanBeSmi can_value_be_smi,
