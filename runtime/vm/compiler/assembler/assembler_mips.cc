@@ -989,6 +989,22 @@ void Assembler::LoadSImmediate(DRegister reg, float imms) {
   LoadSFromOffset(reg, PP, offset);
 }
 
+void Assembler::LoadDImmediate(DRegister reg, double immd, Register scratch) {
+  ASSERT(scratch != TMP);
+  int64_t imm = bit_cast<int64_t, double>(immd);
+  if (constant_pool_allowed()) {
+    intptr_t index = object_pool_builder().FindImmediate64(imm);
+    intptr_t offset = target::ObjectPool::element_offset(index) - kHeapObjectTag;
+    LoadDFromOffset(reg, PP, offset);
+  } else {
+    ASSERT(scratch != kNoRegister);
+    LoadImmediate(TMP, Utils::Low32Bits(imm));
+    LoadImmediate(scratch, Utils::High32Bits(imm));
+    mtc1(TMP, static_cast<FRegister>(reg*2));
+    mtc1(scratch, static_cast<FRegister>(reg*2 + 1));
+  }
+}
+
 void Assembler::LoadWordFromPoolIndex(Register rd,
                                       intptr_t index,
                                       Register pp) {

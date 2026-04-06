@@ -1260,6 +1260,7 @@ class Assembler : public AssemblerBase {
   void Load(Register dest, const Address& address, OperandSize sz = kWordBytes) override;
 
   void LoadSImmediate(DRegister reg, float imms);
+  void LoadDImmediate(DRegister reg, double immd, Register scratch);
 
   void LoadIndexedPayload(Register dst,
                           Register base,
