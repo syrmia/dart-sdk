@@ -744,6 +744,26 @@ void Assembler::AddBranchOverflow(Register rd,
   }
 }
 
+bool Assembler::AddressCanHoldConstantIndex(const Object& constant,
+                                            bool is_load,
+                                            bool is_external,
+                                            intptr_t cid,
+                                            intptr_t index_scale,
+                                            bool* needs_base) {
+  if (!IsSafeSmi(constant)) {
+    return false;
+  }
+  const int64_t index = target::SmiValue(constant);
+  const intptr_t offset_base =
+      (is_external ? 0
+                   : (target::Instance::DataOffsetFor(cid) - kHeapObjectTag));
+  const int64_t offset = index * index_scale + offset_base;
+  if (!Utils::IsInt(32, offset)) {
+    return false;
+  }
+  return Address::CanHoldOffset(static_cast<int32_t>(offset));
+}
+
 void Assembler::Bind(Label* label) {
   ASSERT(!label->IsBound());
   intptr_t bound_pc = buffer_.Size();

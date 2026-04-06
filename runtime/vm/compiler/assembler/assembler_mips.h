@@ -1562,6 +1562,13 @@ class Assembler : public AssemblerBase {
   void ExtractClassIdFromTags(Register result, Register tags);
   void ExtractInstanceSizeFromTags(Register result, Register tags);
 
+  static bool AddressCanHoldConstantIndex(const Object& constant,
+                                          bool is_load,
+                                          bool is_external,
+                                          intptr_t cid,
+                                          intptr_t index_scale,
+                                          bool* needs_base = nullptr);
+
   void LoadUnboxedDouble(FpuRegister dst, Register base, int32_t offset) {
     LoadDFromOffset(dst, base, offset);
   }
