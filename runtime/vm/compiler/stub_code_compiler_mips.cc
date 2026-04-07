@@ -248,6 +248,34 @@ void StubCodeCompiler::GenerateCallNativeThroughSafepointStub() {
   __ jr(S2);
 }
 
+void StubCodeCompiler::GenerateLoadBSSEntry(BSS::Relocation relocation,
+                                            Register dst,
+                                            Register tmp) {
+  compiler::Label skip_reloc;
+  __ b(&skip_reloc);
+  InsertBSSRelocation(relocation);
+  __ Bind(&skip_reloc);
+
+  __ Push(RA);
+  compiler::Label label_for_getting_pc;
+  __ bal(&label_for_getting_pc);
+  __ Bind(&label_for_getting_pc);
+  //push = 2 instr, bal = 2 instr
+  __ addiu(tmp, RA, compiler::Immediate(-5 * compiler::target::kWordSize));
+  __ Pop(RA);
+
+  // tmp holds the address of the relocation.
+  __ lw(dst, compiler::Address(tmp));
+
+  // dst holds the relocation itself: tmp - bss_start.
+  // tmp = tmp + (bss_start - tmp) = bss_start
+  __ addu(tmp, tmp, dst);
+
+  // tmp holds the start of the BSS section.
+  // Load the "get-thread" routine: *bss_start.
+  __ lw(dst, compiler::Address(tmp));
+}
+
 void StubCodeCompiler::GenerateLoadFfiCallbackMetadataRuntimeFunction(
     uword function_index,
     Register dst) {
