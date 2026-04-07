@@ -1777,6 +1777,13 @@ class Assembler : public AssemblerBase {
     delay_slot_available_ = true;
   }
 
+  void StoreIntoObjectFilter(Register object, Register value, Label* no_update);
+
+  // Shorter filtering sequence that assumes that value is not a smi.
+  void StoreIntoObjectFilterNoSmi(Register object,
+                                  Register value,
+                                  Label* no_update);
+
   void JumpAndLink(intptr_t target_code_pool_index, CodeEntryKind entry_kind);
 
   std::function<void(Register reg)> generate_invoke_write_barrier_wrapper_;

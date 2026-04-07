@@ -2328,6 +2328,40 @@ void Assembler::PushObject(const Object& object) {
   Push(TMP);
 }
 
+// Preserves object and value registers.
+void Assembler::StoreIntoObjectFilterNoSmi(Register object,
+                                           Register value,
+                                           Label* no_update) {
+  ASSERT(!in_delay_slot_);
+  COMPILE_ASSERT((target::ObjectAlignment::kNewObjectAlignmentOffset == target::kWordSize) &&
+                 (target::ObjectAlignment::kOldObjectAlignmentOffset == 0));
+
+  // Write-barrier triggers if the value is in the new space (has bit set) and
+  // the object is in the old space (has bit cleared).
+  // To check that, we compute value & ~object and skip the write barrier
+  // if the bit is not set. We can't destroy the object.
+  nor(TMP, ZR, object);
+  and_(TMP, value, TMP);
+  andi(CMPRES1, TMP, Immediate(target::ObjectAlignment::kNewObjectAlignmentOffset));
+  beq(CMPRES1, ZR, no_update);
+}
+
+// Preserves object and value registers.
+void Assembler::StoreIntoObjectFilter(Register object,
+                                      Register value,
+                                      Label* no_update) {
+  ASSERT(!in_delay_slot_);
+  // For the value we are only interested in the new/old bit and the tag bit.
+  // And the new bit with the tag bit. The resulting bit will be 0 for a Smi.
+  sll(TMP, value, target::ObjectAlignment::kObjectAlignmentLog2 - 1);
+  and_(TMP, value, TMP);
+  // And the result with the negated space bit of the object.
+  nor(CMPRES1, ZR, object);
+  and_(TMP, TMP, CMPRES1);
+  andi(CMPRES1, TMP, Immediate(target::ObjectAlignment::kNewObjectAlignmentOffset));
+  beq(CMPRES1, ZR, no_update);
+}
+
 void Assembler::CompareObject(Register reg, const Object& object) {
   ASSERT(IsOriginalObject(object));
   if (IsSameObject(compiler::NullObject(), object)) {
