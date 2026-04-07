@@ -160,6 +160,21 @@ class BareSwitchableCallPattern : public SwitchableCallPatternBase {
   DISALLOW_COPY_AND_ASSIGN(BareSwitchableCallPattern);
 };
 
+class ReturnPattern : public ValueObject {
+ public:
+  explicit ReturnPattern(uword pc);
+
+  // jr(RA) = 1
+  static const int kLengthInBytes = 1 * Instr::kInstrSize;
+
+  int pattern_length_in_bytes() const { return kLengthInBytes; }
+
+  bool IsValid() const;
+
+ private:
+  const uword pc_;
+};
+
 class PcRelativePatternBase : public ValueObject {
  public:
   // 16 bit signed integer which will get multiplied by 4.

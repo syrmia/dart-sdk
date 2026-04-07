@@ -7,7 +7,7 @@
 
 #include "vm/instructions.h"
 #include "vm/instructions_mips.h"
-
+#include "vm/object_store.h"
 #include "vm/object.h"
 namespace dart {
 
@@ -292,6 +292,14 @@ void BareSwitchableCallPattern::SetTargetRelease(const Code& target) const {
          ObjectPool::EntryType::kImmediate);
   object_pool_.SetRawValueAt<std::memory_order_release>(
       target_pool_index_, target.MonomorphicEntryPoint());
+}
+
+ReturnPattern::ReturnPattern(uword pc) : pc_(pc) {}
+
+bool ReturnPattern::IsValid() const {
+  Instr* jr = Instr::At(pc_);
+  return (jr->OpcodeField() == SPECIAL) && (jr->FunctionField() == JR) &&
+         (jr->RsField() == RA);
 }
 
 }  // namespace dart
