@@ -674,6 +674,22 @@ void Assembler::StoreWordUnaligned(Register src, Register addr, Register tmp) {
   sb(tmp, Address(addr, 3));
 }
 
+static const char* cpu_reg_names[kNumberOfCpuRegisters] = {
+    "zr", "tmp", "v0", "v1", "a0", "a1", "a2", "a3", "t0", "t1", "t2",
+    "t3", "t4",  "t5", "t6", "t7", "s0", "s1", "s2", "s3", "s4", "s5",
+    "s6", "s7",  "t8", "t9", "k0", "k1", "gp", "sp", "fp", "ra",
+};
+
+const char* Assembler::RegisterName(Register reg) {
+  ASSERT((0 <= reg) && (reg < kNumberOfCpuRegisters));
+  return cpu_reg_names[reg];
+}
+
+const char* Assembler::FpuRegisterName(FpuRegister reg) {
+  ASSERT((0 <= reg) && (reg < kNumberOfFpuRegisters));
+  return fpu_reg_names[reg];
+}
+
 void Assembler::SetIf(Condition condition, Register rd) {
   ASSERT(deferred_compare_ != kNone);
 
