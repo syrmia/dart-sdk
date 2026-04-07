@@ -1338,6 +1338,90 @@ void Assembler::StoreWordToPoolIndex(Register rs,
   }
 }
 
+void Assembler::AdduDetectOverflow(Register rd,
+                                   Register rs,
+                                   Register rt,
+                                   Register ro,
+                                   Register scratch) {
+  ASSERT(!in_delay_slot_);
+  ASSERT(rd != ro);
+  ASSERT(rd != TMP);
+  ASSERT(ro != TMP);
+  ASSERT(ro != rs);
+  ASSERT(ro != rt);
+
+  if ((rs == rt) && (rd == rs)) {
+    ASSERT(scratch != kNoRegister);
+    ASSERT(scratch != TMP);
+    ASSERT(rd != scratch);
+    ASSERT(ro != scratch);
+    ASSERT(rs != scratch);
+    ASSERT(rt != scratch);
+    mov(scratch, rt);
+    rt = scratch;
+  }
+
+  if (rd == rs) {
+    mov(TMP, rs);        // Preserve rs.
+    addu(rd, rs, rt);    // rs is overwritten.
+    xor_(TMP, rd, TMP);  // Original rs.
+    xor_(ro, rd, rt);
+    and_(ro, ro, TMP);
+  } else if (rd == rt) {
+    mov(TMP, rt);        // Preserve rt.
+    addu(rd, rs, rt);    // rt is overwritten.
+    xor_(TMP, rd, TMP);  // Original rt.
+    xor_(ro, rd, rs);
+    and_(ro, ro, TMP);
+  } else {
+    addu(rd, rs, rt);
+    xor_(ro, rd, rs);
+    xor_(TMP, rd, rt);
+    and_(ro, TMP, ro);
+  }
+}
+
+void Assembler::SubuDetectOverflow(Register rd,
+                                   Register rs,
+                                   Register rt,
+                                   Register ro) {
+  ASSERT(!in_delay_slot_);
+  ASSERT(rd != ro);
+  ASSERT(rd != TMP);
+  ASSERT(ro != TMP);
+  ASSERT(ro != rs);
+  ASSERT(ro != rt);
+  ASSERT(rs != TMP);
+  ASSERT(rt != TMP);
+
+  // This happens with some crankshaft code. Since Subu works fine if
+  // left == right, let's not make that restriction here.
+  if (rs == rt) {
+    mov(rd, ZR);
+    mov(ro, ZR);
+    return;
+  }
+
+  if (rd == rs) {
+    mov(TMP, rs);        // Preserve left.
+    subu(rd, rs, rt);    // Left is overwritten.
+    xor_(ro, rd, TMP);   // scratch is original left.
+    xor_(TMP, TMP, rs);  // scratch is original left.
+    and_(ro, TMP, ro);
+  } else if (rd == rt) {
+    mov(TMP, rt);      // Preserve right.
+    subu(rd, rs, rt);  // Right is overwritten.
+    xor_(ro, rd, rs);
+    xor_(TMP, rs, TMP);  // Original right.
+    and_(ro, TMP, ro);
+  } else {
+    subu(rd, rs, rt);
+    xor_(ro, rd, rs);
+    xor_(TMP, rs, rt);
+    and_(ro, TMP, ro);
+  }
+}
+
 void Assembler::LoadFieldAddressForRegOffset(Register address,
                                              Register instance,
                                              Register offset_in_words_as_smi) {

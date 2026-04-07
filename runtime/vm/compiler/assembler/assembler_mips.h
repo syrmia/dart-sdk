@@ -724,6 +724,48 @@ class Assembler : public AssemblerBase {
     EmitRType(SPECIAL, rs, rt, rd, 0, XOR);
   }
 
+  // Addition of rs and rt with the result placed in rd.
+  // After, ro < 0 if there was signed overflow, ro >= 0 otherwise.
+  // rd and ro must not be TMP.
+  // ro must be different from all the other registers.
+  // If rd, rs, and rt are the same register, then a scratch register different
+  // from the other registers is needed.
+  void AdduDetectOverflow(Register rd,
+                          Register rs,
+                          Register rt,
+                          Register ro,
+                          Register scratch = kNoRegister);
+  // ro must be different from rd and rs.
+  // rd and ro must not be TMP.
+  // If rd and rs are the same, a scratch register different from the other
+  // registers is needed.
+  void AddImmediateDetectOverflow(Register rd,
+                                  Register rs,
+                                  int32_t imm,
+                                  Register ro,
+                                  Register scratch = kNoRegister) {
+    ASSERT(!in_delay_slot_);
+    LoadImmediate(rd, imm);
+    AdduDetectOverflow(rd, rs, rd, ro, scratch);
+  }
+
+  // Subtraction of rt from rs (rs - rt) with the result placed in rd.
+  // After, ro < 0 if there was signed overflow, ro >= 0 otherwise.
+  // None of rd, rs, rt, or ro may be TMP.
+  // ro must be different from the other registers.
+  void SubuDetectOverflow(Register rd, Register rs, Register rt, Register ro);
+
+  // ro must be different from rd and rs.
+  // None of rd, rs, rt, or ro may be TMP.
+  void SubImmediateDetectOverflow(Register rd,
+                                  Register rs,
+                                  int32_t imm,
+                                  Register ro) {
+    ASSERT(!in_delay_slot_);
+    LoadImmediate(rd, imm);
+    SubuDetectOverflow(rd, rs, rd, ro);
+  }
+
   void RestoreCodePointer();
 
   void LoadImmediate(Register rd, int32_t value) override{
