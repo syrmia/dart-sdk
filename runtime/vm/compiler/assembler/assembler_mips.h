@@ -201,6 +201,11 @@ class Assembler : public AssemblerBase {
   void CompareImmediate(Register rn, int32_t imm, OperandSize sz = kWordBytes) override;
   void TestImmediate(Register rn, int32_t imm, OperandSize sz = kWordBytes);
 
+  // Debugging and bringup support.
+  void Unimplemented(const char* message);
+  void Untested(const char* message);
+  void Unreachable(const char* message);
+
   static const char* RegisterName(Register reg);
 
   static const char* FpuRegisterName(FpuRegister reg);
