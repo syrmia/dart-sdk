@@ -380,6 +380,8 @@ class Assembler : public AssemblerBase {
 
   void Breakpoint() override { break_(0); }
 
+  static uword GetBreakInstructionFiller() { return BreakEncoding(0); }
+
   void StoreStoreFence() override { sync(0); }
 
   // FPU compare, always false.
@@ -1408,6 +1410,8 @@ class Assembler : public AssemblerBase {
     }
     Call(T9);
   }
+
+  void CallVmStub(const Code& target);
 
   void LoadPoolPointer(Register reg = PP);
   void CheckCodePointer();
