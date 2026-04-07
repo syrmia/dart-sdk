@@ -622,6 +622,20 @@ void Assembler::LoadElementAddressForRegIndex(Register address,
   }
 }
 
+void Assembler::LoadStaticFieldAddress(Register address,
+                                       Register field,
+                                       Register scratch,
+                                       bool is_shared) {
+  LoadFieldFromOffset(
+      scratch, field, target::Field::host_offset_or_field_id_offset());
+  const intptr_t field_table_offset =
+      is_shared ? compiler::target::Thread::shared_field_table_values_offset()
+                : compiler::target::Thread::field_table_values_offset();
+  LoadMemoryValue(address, THR, static_cast<int32_t>(field_table_offset));
+  sll(scratch, scratch, target::kWordSizeLog2 - kSmiTagShift);
+  addu(address, address, scratch);
+}
+
 void Assembler::LoadHalfWordUnaligned(Register dst,
                                       Register addr,
                                       Register tmp) {
