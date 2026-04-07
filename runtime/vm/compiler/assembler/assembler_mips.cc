@@ -539,6 +539,66 @@ void Assembler::BranchIfBit(Register rn,
   }
 }
 
+static const RegisterSet kRuntimeCallSavedRegisters(kDartVolatileCpuRegs,
+                                                    kAbiVolatileFpuRegs);
+
+#define __ assembler_->
+
+LeafRuntimeScope::LeafRuntimeScope(Assembler* assembler,
+                                   intptr_t frame_size,
+                                   bool preserve_registers)
+    : assembler_(assembler), preserve_registers_(preserve_registers) {
+  __ Comment("EnterCallRuntimeFrame");
+  __ AddImmediate(SP, SP, -4 * target::kWordSize);
+  __ sw(RA, Address(SP, 3 * target::kWordSize));
+  __ sw(FP, Address(SP, 2 * target::kWordSize));
+  __ sw(CODE_REG, Address(SP, 1 * target::kWordSize));
+  __ sw(PP, Address(SP, 0 * target::kWordSize));
+  __ AddImmediate(FP, SP, 2 * target::kWordSize);
+
+  if (preserve_registers) {
+    __ PushRegisters(kRuntimeCallSavedRegisters);
+  } else {
+    // These registers must always be preserved.
+    COMPILE_ASSERT(IsCalleeSavedRegister(THR));
+    COMPILE_ASSERT(IsCalleeSavedRegister(PP));
+    COMPILE_ASSERT(IsCalleeSavedRegister(CODE_REG));
+  }
+  __ ReserveAlignedFrameSpace(frame_size + 4 * target::kWordSize);
+}
+
+void LeafRuntimeScope::Call(const RuntimeEntry& entry,
+                            intptr_t argument_count) {
+  ASSERT(argument_count == entry.argument_count());
+  __ lw(T9, compiler::Address(THR, entry.OffsetFromThread()));
+  __ sw(T9, compiler::Address(THR, target::Thread::vm_tag_offset()));
+  __ jalr(T9);
+  __ LoadImmediate(TMP, target::Thread::vm_tag_dart_id());
+  __ sw(TMP, compiler::Address(THR, target::Thread::vm_tag_offset()));
+}
+
+LeafRuntimeScope::~LeafRuntimeScope() {
+  if (preserve_registers_) {
+    // SP might have been modified to reserve space for arguments
+    // and ensure proper alignment of the stack frame.
+    // We need to restore it before restoring registers.
+    const intptr_t kPushedRegistersSize =
+        kRuntimeCallSavedRegisters.CpuRegisterCount() * target::kWordSize +
+        kRuntimeCallSavedRegisters.FpuRegisterCount() * kFpuRegisterSize +
+        2* target::kWordSize;
+    __ AddImmediate(SP, FP, -kPushedRegistersSize);
+    __ PopRegisters(kRuntimeCallSavedRegisters);
+  }
+  __ AddImmediate(SP, FP, -2 * target::kWordSize);
+  __ lw(PP, Address(SP, 0 * target::kWordSize));
+  __ lw(CODE_REG, Address(SP, 1 * target::kWordSize));
+  __ lw(FP, Address(SP, 2 * target::kWordSize));
+  __ lw(RA, Address(SP, 3 * target::kWordSize));
+  __ AddImmediate(SP, SP, 4 * target::kWordSize);
+}
+
+#undef __
+
 Address Assembler::ElementAddressForIntIndex(bool is_external,
                                             intptr_t cid,
                                             intptr_t index_scale,
