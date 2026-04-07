@@ -1146,6 +1146,13 @@ void ParallelMoveEmitter::EmitSwap(const MoveOperands& move) {
   }
 }
 
+void ParallelMoveEmitter::MoveMemoryToMemory(const compiler::Address& dst,
+                                              const compiler::Address& src) {
+  __ Comment("ParallelMoveEmitter::MoveMemoryToMemory");
+  __ lw(TMP, src);
+  __ sw(TMP, dst);
+}
+
 void ParallelMoveEmitter::Exchange(Register reg,
                                     Register base_reg,
                                     intptr_t stack_offset) {
