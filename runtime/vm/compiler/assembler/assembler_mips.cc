@@ -15,16 +15,247 @@ DECLARE_FLAG(bool, check_code_pointer);
 
 namespace compiler{
 
+static bool CanEncodeBranchOffset(int32_t offset) {
+  ASSERT(Utils::IsAligned(offset, 4));
+  return Utils::IsInt(18, offset);
+}
+
+int32_t Assembler::EncodeBranchOffset(int32_t offset, int32_t instr) {
+  ASSERT(Utils::IsAligned(offset, 4));
+  ASSERT(Utils::IsInt(18, offset));
+
+  // Properly preserve only the bits supported in the instruction.
+  offset >>= 2;
+  offset &= kBranchOffsetMask;
+  return (instr & ~kBranchOffsetMask) | offset;
+}
+
+int32_t Assembler::DecodeBranchOffset(int32_t instr) {
+  // Sign-extend, left-shift by 2.
+  return (((instr & kBranchOffsetMask) << 16) >> 14);
+}
+
+static int32_t DecodeLoadImmediate(int32_t ori_instr, int32_t lui_instr) {
+  return (((lui_instr & kBranchOffsetMask) << 16) |
+          (ori_instr & kBranchOffsetMask));
+}
+
+static int32_t EncodeLoadImmediate(int32_t dest, int32_t instr) {
+  return ((instr & ~kBranchOffsetMask) | (dest & kBranchOffsetMask));
+}
+
+class PatchFarJump : public AssemblerFixup {
+ public:
+  PatchFarJump() {}
+
+  void Process(const MemoryRegion& region, intptr_t position) {
+    const int32_t high = region.Load<int32_t>(position);
+    const int32_t low = region.Load<int32_t>(position + Instr::kInstrSize);
+    const int32_t offset = DecodeLoadImmediate(low, high);
+    const int32_t dest = region.start() + offset;
+
+    if ((Instr::At(reinterpret_cast<uword>(&high))->OpcodeField() == LUI) &&
+        (Instr::At(reinterpret_cast<uword>(&low))->OpcodeField() == ORI)) {
+      // Change the offset to the absolute value.
+      const int32_t encoded_low =
+          EncodeLoadImmediate(dest & kBranchOffsetMask, low);
+      const int32_t encoded_high = EncodeLoadImmediate(dest >> 16, high);
+
+      region.Store<int32_t>(position, encoded_high);
+      region.Store<int32_t>(position + Instr::kInstrSize, encoded_low);
+      return;
+    }
+    // If the offset loading instructions aren't there, we must have replaced
+    // the far branch with a near one, and so these instructions should be NOPs.
+    ASSERT((high == Instr::kNopInstruction) && (low == Instr::kNopInstruction));
+  }
+
+  virtual bool IsPointerOffset() const { return false; }
+};
+
+void Assembler::EmitFarJump(int32_t offset, bool link) {
+  ASSERT(!in_delay_slot_);
+  ASSERT(use_far_branches());
+  const uint16_t low = Utils::Low16Bits(offset);
+  const uint16_t high = Utils::High16Bits(offset);
+  buffer_.EmitFixup(new PatchFarJump());
+  lui(T9, Immediate(high));
+  ori(T9, T9, Immediate(low));
+  if (link) {
+    EmitRType(SPECIAL, T9, R0, RA, 0, JALR);
+  } else {
+    EmitRType(SPECIAL, T9, R0, R0, 0, JR);
+  }
+}
+
+static Opcode OppositeBranchOpcode(Opcode b) {
+  switch (b) {
+    case BEQ:
+      return BNE;
+    case BNE:
+      return BEQ;
+    case BGTZ:
+      return BLEZ;
+    case BLEZ:
+      return BGTZ;
+    case BEQL:
+      return BNEL;
+    case BNEL:
+      return BEQL;
+    case BGTZL:
+      return BLEZL;
+    case BLEZL:
+      return BGTZL;
+    default:
+      UNREACHABLE();
+      break;
+  }
+  return BNE;
+}
+
+void Assembler::EmitFarBranch(Opcode b,
+                              Register rs,
+                              Register rt,
+                              int32_t offset) {
+  ASSERT(!in_delay_slot_);
+  EmitIType(b, rs, rt, 4);
+  nop();
+  EmitFarJump(offset, false);
+}
+
+static RtRegImm OppositeBranchNoLink(RtRegImm b) {
+  switch (b) {
+    case BLTZ:
+      return BGEZ;
+    case BGEZ:
+      return BLTZ;
+    case BLTZAL:
+      return BGEZ;
+    case BGEZAL:
+      return BLTZ;
+    default:
+      UNREACHABLE();
+      break;
+  }
+  return BLTZ;
+}
+
+void Assembler::EmitFarRegImmBranch(RtRegImm b, Register rs, int32_t offset) {
+  ASSERT(!in_delay_slot_);
+  EmitRegImmType(REGIMM, rs, b, 4);
+  nop();
+  EmitFarJump(offset, (b == BLTZAL) || (b == BGEZAL));
+}
+
+void Assembler::EmitFarFpuBranch(bool kind, int32_t offset) {
+  ASSERT(!in_delay_slot_);
+  const uint32_t b16 = kind ? (1 << 16) : 0;
+  Emit(COP1 << kOpcodeShift | COP1_BC << kCop1SubShift | b16 | 4);
+  nop();
+  EmitFarJump(offset, false);
+}
+
 void Assembler::EmitBranch(Opcode b, Register rs, Register rt, Label* label) {
-  UNIMPLEMENTED();
+  ASSERT(!in_delay_slot_);
+  if (label->IsBound()) {
+    // Relative destination from an instruction after the branch.
+    const int32_t dest =
+        label->Position() - (buffer_.Size() + Instr::kInstrSize);
+    if (use_far_branches() && !CanEncodeBranchOffset(dest)) {
+      EmitFarBranch(OppositeBranchOpcode(b), rs, rt, label->Position());
+    } else {
+      BailoutIfInvalidBranchOffset(dest);
+      const uint16_t dest_off = EncodeBranchOffset(dest, 0);
+      EmitIType(b, rs, rt, dest_off);
+    }
+  } else {
+    const intptr_t position = buffer_.Size();
+    if (use_far_branches()) {
+      const uint32_t dest_off = label->position_;
+      EmitFarBranch(b, rs, rt, dest_off);
+    } else {
+      BailoutIfInvalidBranchOffset(label->position_);
+      const uint16_t dest_off = EncodeBranchOffset(label->position_, 0);
+      EmitIType(b, rs, rt, dest_off);
+    }
+    label->LinkTo(position);
+  }
+}
+
+void Assembler::BailoutIfInvalidBranchOffset(int32_t offset) {
+  if (!CanEncodeBranchOffset(offset)) {
+    ASSERT(!use_far_branches());
+    BailoutWithBranchOffsetError();
+  }
 }
 
 void Assembler::EmitRegImmBranch(RtRegImm b, Register rs, Label* label) {
-  UNIMPLEMENTED();
+  ASSERT(!in_delay_slot_);
+  if (label->IsBound()) {
+    // Relative destination from an instruction after the branch.
+    const int32_t dest =
+        label->Position() - (buffer_.Size() + Instr::kInstrSize);
+    if (use_far_branches() && !CanEncodeBranchOffset(dest)) {
+      EmitFarRegImmBranch(OppositeBranchNoLink(b), rs, label->Position());
+    } else {
+      BailoutIfInvalidBranchOffset(dest);
+      const uint16_t dest_off = EncodeBranchOffset(dest, 0);
+      EmitRegImmType(REGIMM, rs, b, dest_off);
+    }
+  } else {
+    const intptr_t position = buffer_.Size();
+    if (use_far_branches()) {
+      const uint32_t dest_off = label->position_;
+      EmitFarRegImmBranch(b, rs, dest_off);
+    } else {
+      BailoutIfInvalidBranchOffset(label->position_);
+      const uint16_t dest_off = EncodeBranchOffset(label->position_, 0);
+      EmitRegImmType(REGIMM, rs, b, dest_off);
+    }
+    label->LinkTo(position);
+  }
 }
 
 void Assembler::EmitFpuBranch(bool kind, Label* label) {
-  UNIMPLEMENTED();
+  ASSERT(!in_delay_slot_);
+  const int32_t b16 = kind ? (1 << 16) : 0;  // Bit 16 set for branch on true.
+  if (label->IsBound()) {
+    // Relative destination from an instruction after the branch.
+    const int32_t dest =
+        label->Position() - (buffer_.Size() + Instr::kInstrSize);
+    if (use_far_branches() && !CanEncodeBranchOffset(dest)) {
+      EmitFarFpuBranch(kind, label->Position());
+    } else {
+      BailoutIfInvalidBranchOffset(dest);
+      const uint16_t dest_off = EncodeBranchOffset(dest, 0);
+      Emit(COP1 << kOpcodeShift | COP1_BC << kCop1SubShift | b16 | dest_off);
+    }
+  } else {
+    const intptr_t position = buffer_.Size();
+    if (use_far_branches()) {
+      const uint32_t dest_off = label->position_;
+      EmitFarFpuBranch(kind, dest_off);
+    } else {
+      BailoutIfInvalidBranchOffset(label->position_);
+      const uint16_t dest_off = EncodeBranchOffset(label->position_, 0);
+      Emit(COP1 << kOpcodeShift | COP1_BC << kCop1SubShift | b16 | dest_off);
+    }
+    label->LinkTo(position);
+  }
+}
+
+static int32_t FlipBranchInstruction(int32_t instr) {
+  Instr* i = Instr::At(reinterpret_cast<uword>(&instr));
+  if (i->OpcodeField() == REGIMM) {
+    RtRegImm b = OppositeBranchNoLink(i->RegImmFnField());
+    i->SetRegImmFnField(b);
+    return i->InstructionBits();
+  } else if (i->OpcodeField() == COP1) {
+    return instr ^ (1 << 16);
+  }
+  Opcode b = OppositeBranchOpcode(i->OpcodeField());
+  i->SetOpcodeField(b);
+  return i->InstructionBits();
 }
 
 void Assembler::PushRegisters(const RegisterSet& registers) {
@@ -308,6 +539,141 @@ void Assembler::BranchIfBit(Register rn,
   }
 }
 
+Address Assembler::ElementAddressForIntIndex(bool is_external,
+                                            intptr_t cid,
+                                            intptr_t index_scale,
+                                            Register array,
+                                            intptr_t index) const {
+  const int64_t offset =
+      static_cast<int64_t>(index) * index_scale +
+      (is_external ? 0 : (target::Instance::DataOffsetFor(cid) - kHeapObjectTag));
+  ASSERT(Utils::IsInt(32, offset));
+  ASSERT(Address::CanHoldOffset(offset));
+  return Address(array, static_cast<int32_t>(offset));
+}
+
+void Assembler::LoadElementAddressForIntIndex(Register address,
+                                              bool is_external,
+                                              intptr_t cid,
+                                              intptr_t index_scale,
+                                              Register array,
+                                              intptr_t index) {
+  const int64_t offset =
+      static_cast<int64_t>(index) * index_scale +
+      (is_external ? 0 : (target::Instance::DataOffsetFor(cid) - kHeapObjectTag));
+  ASSERT(Utils::IsInt(32, offset));
+  AddImmediate(address, array, offset);
+}
+
+Address Assembler::ElementAddressForRegIndex(bool is_load,
+                                            bool is_external,
+                                            intptr_t cid,
+                                            intptr_t index_scale,
+                                            bool index_unboxed,
+                                            Register array,
+                                            Register index) {
+  // Note that index is expected smi-tagged, (i.e, LSL 1) for all arrays.
+  const intptr_t boxing_shift = index_unboxed ? 0 : -kSmiTagShift;
+  const intptr_t shift = Utils::ShiftForPowerOfTwo(index_scale) + boxing_shift;
+  const int32_t offset =
+      is_external ? 0 : (target::Instance::DataOffsetFor(cid) - kHeapObjectTag);
+  ASSERT(array != TMP);
+  ASSERT(index != TMP);
+  const Register base = is_load ? TMP : index;
+  if (shift < 0) {
+    ASSERT(shift == -1);
+    sra(TMP, index, 1);
+    addu(base, array, TMP);
+  } else if (shift == 0) {
+    addu(base, array, index);
+  } else {
+    sll(TMP, index, shift);
+    addu(base, array, TMP);
+  }
+  ASSERT(Address::CanHoldOffset(offset));
+  return Address(base, offset);
+}
+
+void Assembler::LoadElementAddressForRegIndex(Register address,
+                                              bool is_load,
+                                              bool is_external,
+                                              intptr_t cid,
+                                              intptr_t index_scale,
+                                              bool index_unboxed,
+                                              Register array,
+                                              Register index) {
+  // Note that index is expected smi-tagged, (i.e, LSL 1) for all arrays.
+  const intptr_t boxing_shift = index_unboxed ? 0 : -kSmiTagShift;
+  const intptr_t shift = Utils::ShiftForPowerOfTwo(index_scale) + boxing_shift;
+  const int32_t offset =
+      is_external ? 0 : (target::Instance::DataOffsetFor(cid) - kHeapObjectTag);
+  if (shift < 0) {
+    ASSERT(shift == -1);
+    sra(address, index, 1);
+    addu(address, array, address);
+  } else if (shift == 0) {
+    addu(address, array, index);
+  } else {
+    sll(address, index, shift);
+    addu(address, array, address);
+  }
+  if (offset != 0) {
+    AddImmediate(address, offset);
+  }
+}
+
+void Assembler::LoadHalfWordUnaligned(Register dst,
+                                      Register addr,
+                                      Register tmp) {
+  ASSERT(dst != addr);
+  lbu(dst, Address(addr, 0));
+  lb(tmp, Address(addr, 1));
+  sll(tmp, tmp, 8);
+  or_(dst, dst, tmp);
+}
+
+void Assembler::LoadHalfWordUnsignedUnaligned(Register dst,
+                                              Register addr,
+                                              Register tmp) {
+  ASSERT(dst != addr);
+  lbu(dst, Address(addr, 0));
+  lbu(tmp, Address(addr, 1));
+  sll(tmp, tmp, 8);
+  or_(dst, dst, tmp);
+}
+
+void Assembler::StoreHalfWordUnaligned(Register src,
+                                       Register addr,
+                                       Register tmp) {
+  sb(src, Address(addr, 0));
+  srl(tmp, src, 8);
+  sb(tmp, Address(addr, 1));
+}
+
+void Assembler::LoadWordUnaligned(Register dst, Register addr, Register tmp) {
+  ASSERT(dst != addr);
+  lbu(dst, Address(addr, 0));
+  lbu(tmp, Address(addr, 1));
+  sll(tmp, tmp, 8);
+  or_(dst, dst, tmp);
+  lbu(tmp, Address(addr, 2));
+  sll(tmp, tmp, 16);
+  or_(dst, dst, tmp);
+  lbu(tmp, Address(addr, 3));
+  sll(tmp, tmp, 24);
+  or_(dst, dst, tmp);
+}
+
+void Assembler::StoreWordUnaligned(Register src, Register addr, Register tmp) {
+  sb(src, Address(addr, 0));
+  srl(tmp, src, 8);
+  sb(tmp, Address(addr, 1));
+  srl(tmp, src, 16);
+  sb(tmp, Address(addr, 2));
+  srl(tmp, src, 24);
+  sb(tmp, Address(addr, 3));
+}
+
 void Assembler::SetIf(Condition condition, Register rd) {
   ASSERT(deferred_compare_ != kNone);
 
@@ -513,8 +879,212 @@ void Assembler::AddBranchOverflow(Register rd,
   }
 }
 
+void Assembler::SubtractBranchOverflow(Register rd,
+                                       Register rs1,
+                                       Register rs2,
+                                       Label* overflow) {
+  ASSERT(rd != CMPRES1);
+  ASSERT(rd != CMPRES2);
+  ASSERT(rs1 != CMPRES1);
+  ASSERT(rs1 != CMPRES2);
+  ASSERT(rs2 != CMPRES1);
+  ASSERT(rs2 != CMPRES2);
+
+  if ((rd == rs1) && (rd == rs2)) {
+    ASSERT(rs1 == rs2);
+    mov(CMPRES1, rs1);
+    subu(rd, rs1, rs2);   // rs1, rs2 destroyed
+    xor_(CMPRES1, CMPRES1, rd);  // CMPRES1 negative if sign changed
+    bltz(CMPRES1, overflow);
+  } else if (rs1 == rs2) {
+    ASSERT(rd != rs1);
+    ASSERT(rd != rs2);
+    subu(rd, rs1, rs2);
+    xor_(CMPRES1, rd, rs1);  // CMPRES1 negative if sign changed
+    bltz(CMPRES1, overflow);
+  } else if (rd == rs1) {
+    ASSERT(rs1 != rs2);
+    slti(CMPRES1, rs1, Immediate(0));
+    subu(rd, rs1, rs2);  // rs1 destroyed
+    slt(CMPRES2, rd, rs2);
+    bne(CMPRES1, CMPRES2, overflow);
+  } else if (rd == rs2) {
+    ASSERT(rs1 != rs2);
+    slti(CMPRES1, rs2, Immediate(0));
+    subu(rd, rs1, rs2);  // rs2 destroyed
+    slt(CMPRES2, rd, rs1);
+    bne(CMPRES1, CMPRES2, overflow);
+  } else {
+    subu(rd, rs1, rs2);
+    slti(CMPRES1, rs2, Immediate(0));
+    slt(CMPRES2, rs1, rd);
+    bne(CMPRES1, CMPRES2, overflow);
+  }
+}
+
+bool Assembler::AddressCanHoldConstantIndex(const Object& constant,
+                                            bool is_load,
+                                            bool is_external,
+                                            intptr_t cid,
+                                            intptr_t index_scale,
+                                            bool* needs_base) {
+  if (!IsSafeSmi(constant)) {
+    return false;
+  }
+  const int64_t index = target::SmiValue(constant);
+  const intptr_t offset_base =
+      (is_external ? 0
+                   : (target::Instance::DataOffsetFor(cid) - kHeapObjectTag));
+  const int64_t offset = index * index_scale + offset_base;
+  if (!Utils::IsInt(32, offset)) {
+    return false;
+  }
+  return Address::CanHoldOffset(static_cast<int32_t>(offset));
+}
+
+void Assembler::AddImmediateBranchOverflow(Register rd,
+                                           Register rs1,
+                                           int32_t imm,
+                                           Label* overflow) {
+  ASSERT(rd != CMPRES1);
+  if (rd == rs1) {
+    mov(CMPRES1, rs1);
+    AddImmediate(rd, rs1, imm);
+    if (imm > 0) {
+      BranchSignedLess(rd, CMPRES1, overflow);
+    } else if (imm < 0) {
+      BranchSignedGreater(rd, CMPRES1, overflow);
+    }
+  } else {
+    AddImmediate(rd, rs1, imm);
+    if (imm > 0) {
+      BranchSignedLess(rd, rs1, overflow);
+    } else if (imm < 0) {
+      BranchSignedGreater(rd, rs1, overflow);
+    }
+  }
+}
+
+void Assembler::SubtractImmediateBranchOverflow(Register rd,
+                                                Register rs1,
+                                                int32_t imm,
+                                                Label* overflow) {
+  AddImmediateBranchOverflow(rd, rs1, -imm, overflow);
+}
+
 void Assembler::Bind(Label* label) {
-  UNIMPLEMENTED();
+  ASSERT(!label->IsBound());
+  intptr_t bound_pc = buffer_.Size();
+
+  while (label->IsLinked()) {
+    int32_t position = label->Position();
+    int32_t dest = bound_pc - (position + Instr::kInstrSize);
+
+    if (use_far_branches() && !CanEncodeBranchOffset(dest)) {
+      // Far branches are enabled and we can't encode the branch offset.
+
+      // Grab the branch instruction. We'll need to flip it later.
+      const int32_t branch = buffer_.Load<int32_t>(position);
+
+      // Grab instructions that load the offset.
+      const int32_t high =
+          buffer_.Load<int32_t>(position + 2 * Instr::kInstrSize);
+      const int32_t low =
+          buffer_.Load<int32_t>(position + 3 * Instr::kInstrSize);
+
+      // Change from relative to the branch to relative to the assembler buffer.
+      dest = buffer_.Size();
+      const int32_t encoded_low =
+          EncodeLoadImmediate(dest & kBranchOffsetMask, low);
+      const int32_t encoded_high = EncodeLoadImmediate(dest >> 16, high);
+
+      // Skip the unconditional far jump if the test fails by flipping the
+      // sense of the branch instruction.
+      buffer_.Store<int32_t>(position, FlipBranchInstruction(branch));
+      buffer_.Store<int32_t>(position + 2 * Instr::kInstrSize, encoded_high);
+      buffer_.Store<int32_t>(position + 3 * Instr::kInstrSize, encoded_low);
+      label->position_ = DecodeLoadImmediate(low, high);
+    } else if (use_far_branches() && CanEncodeBranchOffset(dest)) {
+      // We assembled a far branch, but we don't need it. Replace with a near
+      // branch.
+
+      // Grab the link to the next branch.
+      const int32_t high =
+          buffer_.Load<int32_t>(position + 2 * Instr::kInstrSize);
+      const int32_t low =
+          buffer_.Load<int32_t>(position + 3 * Instr::kInstrSize);
+
+      // Grab the original branch instruction.
+      int32_t branch = buffer_.Load<int32_t>(position);
+
+      // Clear out the old (far) branch.
+      for (int i = 0; i < 5; i++) {
+        buffer_.Store<int32_t>(position + i * Instr::kInstrSize,
+                               Instr::kNopInstruction);
+      }
+
+      // Calculate the new offset.
+      dest = dest - 4 * Instr::kInstrSize;
+      BailoutIfInvalidBranchOffset(dest);
+      const int32_t encoded = EncodeBranchOffset(dest, branch);
+      buffer_.Store<int32_t>(position + 4 * Instr::kInstrSize, encoded);
+      label->position_ = DecodeLoadImmediate(low, high);
+    } else {
+      const int32_t next = buffer_.Load<int32_t>(position);
+      BailoutIfInvalidBranchOffset(dest);
+      const int32_t encoded = EncodeBranchOffset(dest, next);
+      buffer_.Store<int32_t>(position, encoded);
+      label->position_ = DecodeBranchOffset(next);
+    }
+  }
+  label->BindTo(bound_pc);
+  delay_slot_available_ = false;
+}
+
+void Assembler::PushNativeCalleeSavedRegisters() {
+  RegisterSet regs(kAbiPreservedCpuRegs, kAbiPreservedFpuRegs);
+  intptr_t size = (regs.CpuRegisterCount() * target::kWordSize) +
+                  (regs.FpuRegisterCount() * sizeof(double));
+  AddImmediate(SP, SP, -size);
+  intptr_t offset = 0;
+  for (intptr_t i = 0; i < kNumberOfFpuRegisters; i++) {
+    FpuRegister reg = static_cast<FpuRegister>(i);
+    if (regs.ContainsFpuRegister(reg)) {
+      sdc1(reg, Address(SP, offset));
+      offset += sizeof(double);
+    }
+  }
+  for (intptr_t i = 0; i < kNumberOfCpuRegisters; i++) {
+    Register reg = static_cast<Register>(i);
+    if (regs.ContainsRegister(reg)) {
+      sw(reg, Address(SP, offset));
+      offset += target::kWordSize;
+    }
+  }
+  ASSERT(offset == size);
+}
+
+void Assembler::PopNativeCalleeSavedRegisters() {
+  RegisterSet regs(kAbiPreservedCpuRegs, kAbiPreservedFpuRegs);
+  intptr_t size = (regs.CpuRegisterCount() * target::kWordSize) +
+                  (regs.FpuRegisterCount() * sizeof(double));
+  intptr_t offset = 0;
+  for (intptr_t i = 0; i < kNumberOfFpuRegisters; i++) {
+    FpuRegister reg = static_cast<FpuRegister>(i);
+    if (regs.ContainsFpuRegister(reg)) {
+      ldc1(reg, Address(SP, offset));
+      offset += sizeof(double);
+    }
+  }
+  for (intptr_t i = 0; i < kNumberOfCpuRegisters; i++) {
+    Register reg = static_cast<Register>(i);
+    if (regs.ContainsRegister(reg)) {
+      lw(reg, Address(SP, offset));
+      offset += target::kWordSize;
+    }
+  }
+  ASSERT(offset == size);
+  AddImmediate(SP, SP, size);
 }
 
 Address Assembler::PrepareLargeOffset(Register base, int32_t offset) {
@@ -571,6 +1141,14 @@ void Assembler::LoadUniqueObject(Register rd, const Object& object,
   LoadObjectHelper(rd, object, true, snapshot_behavior);
 }
 
+void Assembler::LoadNativeEntry(Register rd,
+                                const ExternalLabel* label,
+                                ObjectPoolBuilderEntry::Patchability patchable) {
+  const intptr_t index =
+      object_pool_builder().FindNativeFunction(label, patchable);
+  LoadWordFromPoolIndex(rd, index);
+}
+
 void Assembler::RangeCheck(Register value,
                            Register temp,
                            intptr_t low,
@@ -587,17 +1165,36 @@ void Assembler::RangeCheck(Register value,
 }
 
 void Assembler::LoadClassId(Register result, Register object) {
-  UNIMPLEMENTED();
+  ASSERT_EQUAL(target::UntaggedObject::kClassIdTagPos, 12);
+  ASSERT_EQUAL(target::UntaggedObject::kClassIdTagSize, 20);
+  lw(result, FieldAddress(object, target::Object::tags_offset()));
+  ExtractClassIdFromTags(result, result);
 }
 
 void Assembler::LoadClassById(Register result, Register class_id) {
-  UNIMPLEMENTED();
+  ASSERT(!in_delay_slot_);
+  ASSERT(result != class_id);
+  LoadIsolateGroup(result);
+  const intptr_t offset = target::IsolateGroup::cached_class_table_table_offset();
+  LoadFromOffset(result, result, offset);
+  sll(TMP, class_id, 2);
+  addu(result, result, TMP);
+  lw(result, Address(result));
+}
+
+void Assembler::LoadClass(Register result, Register object) {
+  ASSERT(!in_delay_slot_);
+  ASSERT(TMP != result);
+  LoadClassId(TMP, object);
+  LoadClassById(result, TMP);
 }
 
 void Assembler::CompareClassId(Register object,
                                intptr_t class_id,
                                Register scratch) {
-  UNIMPLEMENTED();
+  ASSERT(scratch != kNoRegister);
+  LoadClassId(scratch, object);
+  CompareImmediate(scratch, class_id);
 }
 
 void Assembler::LoadClassIdMayBeSmi(Register result, Register object) {
@@ -663,6 +1260,30 @@ void Assembler::Load(Register dest, const Address& address, OperandSize sz) {
     default:
       UNREACHABLE();
       break;
+  }
+}
+
+void Assembler::LoadSImmediate(DRegister reg, float imms) {
+  int32_t imm = bit_cast<int32_t, float>(imms);
+  ASSERT(constant_pool_allowed());
+  intptr_t index = object_pool_builder().FindImmediate(imm);
+  intptr_t offset = target::ObjectPool::element_offset(index) - kHeapObjectTag;
+  LoadSFromOffset(reg, PP, offset);
+}
+
+void Assembler::LoadDImmediate(DRegister reg, double immd, Register scratch) {
+  ASSERT(scratch != TMP);
+  int64_t imm = bit_cast<int64_t, double>(immd);
+  if (constant_pool_allowed()) {
+    intptr_t index = object_pool_builder().FindImmediate64(imm);
+    intptr_t offset = target::ObjectPool::element_offset(index) - kHeapObjectTag;
+    LoadDFromOffset(reg, PP, offset);
+  } else {
+    ASSERT(scratch != kNoRegister);
+    LoadImmediate(TMP, Utils::Low32Bits(imm));
+    LoadImmediate(scratch, Utils::High32Bits(imm));
+    mtc1(TMP, static_cast<FRegister>(reg*2));
+    mtc1(scratch, static_cast<FRegister>(reg*2 + 1));
   }
 }
 
@@ -740,6 +1361,14 @@ void Assembler::Store(Register reg, const Address& address, OperandSize sz) {
     default:
       UNREACHABLE();
   }
+}
+
+void Assembler::AndRegisters(Register dst, Register src1, Register src2) {
+  ASSERT(src1 != src2);
+  if (src2 == kNoRegister) {
+    src2 = dst;
+  }
+  and_(dst, src2, src1);
 }
 
 void Assembler::RestoreCodePointer() {
@@ -1085,6 +1714,25 @@ void Assembler::LeaveStubFrame() {
 
 void Assembler::LeaveStubFrameAndReturn(Register ra) {
   LeaveDartFrameAndReturn(ra);
+}
+
+void Assembler::EnterCFrame(intptr_t frame_space) {
+  // Already saved.
+  COMPILE_ASSERT(IsCalleeSavedRegister(THR));
+  COMPILE_ASSERT(IsCalleeSavedRegister(PP));
+
+  EnterFrame();
+  /*A caller reserves four words (16 bytes) at the end of its stack frame for the callee to store its
+  arguments, even if the callee takes fewer than four arguments, even if the callee does not
+  actually use this space. In other words, if you are a non-leaf function, then you must never
+  address 0(sp), 4(sp), 8(sp), or 12(sp)! However, supposing your frame is 32 bytes, then you
+  may use 32(sp), 36(sp), 40(sp), and 44(sp) for storing a0, a1, a2, and a3, respectively, even
+  though this is in the frame of your caller!*/
+  ReserveAlignedFrameSpace(frame_space + 4 * target::kWordSize);
+}
+
+void Assembler::LeaveCFrame() {
+  LeaveFrame();
 }
 
 void Assembler::EnterDartFrame(intptr_t frame_size, bool load_pool_pointer) {
