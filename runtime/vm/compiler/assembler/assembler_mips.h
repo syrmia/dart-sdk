@@ -201,11 +201,6 @@ class Assembler : public AssemblerBase {
   void CompareImmediate(Register rn, int32_t imm, OperandSize sz = kWordBytes) override;
   void TestImmediate(Register rn, int32_t imm, OperandSize sz = kWordBytes);
 
-  // Debugging and bringup support.
-  void Unimplemented(const char* message);
-  void Untested(const char* message);
-  void Unreachable(const char* message);
-
   static const char* RegisterName(Register reg);
 
   static const char* FpuRegisterName(FpuRegister reg);
@@ -1416,8 +1411,6 @@ class Assembler : public AssemblerBase {
     Call(T9);
   }
 
-  void CallVmStub(const Code& target);
-
   void LoadPoolPointer(Register reg = PP);
   void CheckCodePointer();
   void GetNextPC(Register dest, Register temp = kNoRegister);
@@ -1649,6 +1642,26 @@ class Assembler : public AssemblerBase {
 
   void ExtractClassIdFromTags(Register result, Register tags);
   void ExtractInstanceSizeFromTags(Register result, Register tags);
+
+  // This emits an PC-relative call of the form "bal <offset>".  The offset
+  // is not yet known and needs therefore relocation to the right place before
+  // the code can be used.
+  //
+  // The necessary information for the "linker" (i.e. the relocation
+  // information) is stored in [UntaggedCode::static_calls_target_table_]: an
+  // entry of the form
+  //
+  //   (Code::kPcRelativeCall & pc_offset, <target-code>, <target-function>)
+  //
+  // will be used during relocation to fix the offset.
+  //
+  // The provided [offset_into_target] will be added to calculate the final
+  // destination.  It can be used e.g. for calling into the middle of a
+  // function.
+  void GenerateUnRelocatedPcRelativeCall(intptr_t offset_into_target = 0);
+
+
+  void GenerateUnRelocatedPcRelativeTailCall(intptr_t offset_into_target = 0);
 
   static bool AddressCanHoldConstantIndex(const Object& constant,
                                           bool is_load,
