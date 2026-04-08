@@ -696,6 +696,16 @@ class DynamicTable : public ElfSection {
     AddEntry(zone, elf::DynamicEntryType::DT_STRSZ, kInvalidEntry);
     AddEntry(zone, elf::DynamicEntryType::DT_SYMTAB, kInvalidEntry);
     AddEntry(zone, elf::DynamicEntryType::DT_SYMENT, sizeof(elf::Symbol));
+#if defined(TARGET_ARCH_MIPS)
+    AddEntry(zone, elf::DynamicEntryType::DT_PLTGOT, 0);  // No GOT for now
+    AddEntry(zone, elf::DynamicEntryType::DT_MIPS_RLD_VERSION, 1);
+    AddEntry(zone, elf::DynamicEntryType::DT_MIPS_FLAGS, elf::RHF_NOTPOT);
+    AddEntry(zone, elf::DynamicEntryType::DT_MIPS_BASE_ADDRESS, 0);
+    AddEntry(zone, elf::DynamicEntryType::DT_MIPS_LOCAL_GOTNO, kInvalidEntry);
+    AddEntry(zone, elf::DynamicEntryType::DT_MIPS_SYMTABNO, kInvalidEntry);
+    AddEntry(zone, elf::DynamicEntryType::DT_MIPS_UNREFEXTNO, kInvalidEntry);
+    AddEntry(zone, elf::DynamicEntryType::DT_MIPS_GOTSYM, kInvalidEntry);
+#endif
     AddEntry(zone, elf::DynamicEntryType::DT_NULL, 0);
   }
 
@@ -718,6 +728,16 @@ class DynamicTable : public ElfSection {
     FinalizeEntry(elf::DynamicEntryType::DT_STRTAB, strtab().memory_offset());
     FinalizeEntry(elf::DynamicEntryType::DT_STRSZ, strtab().MemorySize());
     FinalizeEntry(elf::DynamicEntryType::DT_SYMTAB, symtab().memory_offset());
+#if defined(TARGET_ARCH_MIPS)
+    FinalizeEntry(elf::DynamicEntryType::DT_PLTGOT, memory_offset());
+    FinalizeEntry(elf::DynamicEntryType::DT_MIPS_LOCAL_GOTNO, 0);
+    FinalizeEntry(elf::DynamicEntryType::DT_MIPS_SYMTABNO,
+                  symtab().symbols().length());
+    FinalizeEntry(elf::DynamicEntryType::DT_MIPS_UNREFEXTNO,
+                  symtab().symbols().length());
+    FinalizeEntry(elf::DynamicEntryType::DT_MIPS_GOTSYM,
+                  symtab().symbols().length());
+#endif
   }
 
  private:
@@ -1893,6 +1913,8 @@ void ElfHeader::Write(ElfWriteStream* stream) const {
   stream->WriteHalf(elf::EM_AARCH64);
 #elif defined(TARGET_ARCH_RISCV32) || defined(TARGET_ARCH_RISCV64)
   stream->WriteHalf(elf::EM_RISCV);
+#elif defined(TARGET_ARCH_MIPS)
+  stream->WriteHalf(elf::EM_MIPS);
 #else
   FATAL("Unknown ELF architecture");
 #endif
@@ -1906,6 +1928,9 @@ void ElfHeader::Write(ElfWriteStream* stream) const {
   uword flags = elf::EF_ARM_ABI | (TargetCPUFeatures::hardfp_supported()
                                        ? elf::EF_ARM_ABI_FLOAT_HARD
                                        : elf::EF_ARM_ABI_FLOAT_SOFT);
+#elif defined(TARGET_ARCH_MIPS)
+  uword flags = elf::EF_MIPS_NOREORDER | elf::EF_MIPS_PIC |
+                elf::EF_MIPS_ABI_O32 | elf::EF_MIPS_ARCH_32;
 #elif defined(TARGET_ARCH_RISCV32) || defined(TARGET_ARCH_RISCV64)
   uword flags = elf::EF_RISCV_RVC | elf::EF_RISCV_FLOAT_ABI_DOUBLE;
 #else

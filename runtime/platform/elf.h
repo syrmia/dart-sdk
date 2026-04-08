@@ -126,11 +126,21 @@ struct Symbol {
 
 enum class DynamicEntryType : uint32_t {
   DT_NULL = 0,
+  DT_PLTGOT = 3,
   DT_HASH = 4,
   DT_STRTAB = 5,
   DT_SYMTAB = 6,
   DT_STRSZ = 10,
   DT_SYMENT = 11,
+  // MIPS-specific dynamic entry types
+  DT_MIPS_RLD_VERSION = 0x70000001,
+  DT_MIPS_FLAGS = 0x70000005,
+  DT_MIPS_BASE_ADDRESS = 0x70000006,
+  DT_MIPS_LOCAL_GOTNO = 0x7000000a,
+  DT_MIPS_SYMTABNO = 0x70000011,
+  DT_MIPS_UNREFEXTNO = 0x70000012,
+  DT_MIPS_GOTSYM = 0x70000013,
+  DT_MIPS_RLD_MAP_REL = 0x70000035,
 };
 
 struct DynamicEntry {
@@ -170,6 +180,17 @@ static constexpr intptr_t EF_ARM_ABI_FLOAT_HARD = 0x00000400;
 static constexpr intptr_t EF_ARM_ABI_FLOAT_SOFT = 0x00000200;
 static constexpr intptr_t EF_ARM_ABI = 0x05000000;
 
+// MIPS-specific ELF header flags
+static constexpr intptr_t EF_MIPS_NOREORDER = 0x00000001;
+static constexpr intptr_t EF_MIPS_PIC = 0x00000002;
+static constexpr intptr_t EF_MIPS_CPIC = 0x00000004;
+static constexpr intptr_t EF_MIPS_ABI_O32 = 0x00001000;
+static constexpr intptr_t EF_MIPS_ARCH_32 = 0x50000000;
+static constexpr intptr_t EF_MIPS_ARCH_32R2 = 0x70000000;
+
+// MIPS dynamic flags
+static constexpr intptr_t RHF_NOTPOT = 0x00000001;
+
 static constexpr intptr_t EF_RISCV_RVC = 0x1;
 static constexpr intptr_t EF_RISCV_FLOAT_ABI_DOUBLE = 0x4;
 
@@ -178,6 +199,7 @@ static constexpr intptr_t EM_ARM = 40;
 static constexpr intptr_t EM_X86_64 = 62;
 static constexpr intptr_t EM_AARCH64 = 183;
 static constexpr intptr_t EM_RISCV = 243;
+static constexpr intptr_t EM_MIPS = 8;
 
 static constexpr intptr_t EV_CURRENT = 1;
 
