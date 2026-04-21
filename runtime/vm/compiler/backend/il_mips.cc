@@ -1429,6 +1429,15 @@ LocationSummary* RelationalOpInstr::MakeLocationSummary(Zone* zone,
     summary->set_out(0, Location::RequiresRegister());
     return summary;
   }
+  if (input_representation() == kUnboxedInt32 ||
+      input_representation() == kUnboxedUint32) {
+    LocationSummary* summary = new (zone) LocationSummary(
+        zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+    summary->set_in(0, Location::RequiresRegister());
+    summary->set_in(1, LocationRegisterOrConstant(right()));
+    summary->set_out(0, Location::RequiresRegister());
+    return summary;
+  }
   ASSERT(input_representation() == kTagged);
   LocationSummary* summary = new (zone)
       LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
@@ -1448,6 +1457,9 @@ Condition RelationalOpInstr::EmitConditionCode(FlowGraphCompiler* compiler,
     return EmitSmiComparisonOp(compiler, *locs(), kind());
   } else if (input_representation() == kUnboxedInt64) {
     return EmitUnboxedInt64ComparisonOp(compiler, *locs(), kind(), labels);
+  } else if (input_representation() == kUnboxedInt32 ||
+             input_representation() == kUnboxedUint32) {
+    return EmitUnboxedWordComparisonOp(compiler, *locs(), kind());
   } else {
     ASSERT(input_representation() == kUnboxedDouble);
     return EmitDoubleComparisonOp(compiler, *locs(), kind(), labels);
@@ -1550,7 +1562,7 @@ void FfiCallInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
     __ EnterDartFrame(0, /*load_pool_pointer=*/false);
   }
 
-  __ ReserveAlignedFrameSpace((marshaller_.RequiredStackSpaceInBytes()==0) ? 
+  __ ReserveAlignedFrameSpace((marshaller_.RequiredStackSpaceInBytes()==0) ?
                               4 * kWordSize : marshaller_.RequiredStackSpaceInBytes());
   if (FLAG_target_memory_sanitizer) {
     UNIMPLEMENTED();
@@ -3995,13 +4007,12 @@ void UnboxInteger32Instr::EmitNativeCode(FlowGraphCompiler* compiler) {
       CanDeoptimize()
           ? compiler->AddDeoptStub(GetDeoptId(), ICData::kDeoptUnboxInteger)
           : NULL;
-  compiler::Label* out_of_range = !is_truncating() ? deopt : NULL;
   ASSERT(value != out);
 
   if (value_cid == kSmiCid) {
     __ SmiUntag(out, value);
   } else if (value_cid == kMintCid) {
-    LoadInt32FromMint(compiler, value, out, out_of_range);
+    __ LoadFieldFromOffset(out, value, compiler::target::Mint::value_offset());
   } else if (!CanDeoptimize()) {
     compiler::Label done;
     __ SmiUntag(out, value);
@@ -4016,9 +4027,42 @@ void UnboxInteger32Instr::EmitNativeCode(FlowGraphCompiler* compiler) {
     __ beq(CMPRES1, ZR, &done);
     __ LoadClassId(CMPRES1, value);
     __ BranchNotEqual(CMPRES1, compiler::Immediate(kMintCid), deopt);
-    LoadInt32FromMint(compiler, value, out, out_of_range);
+    __ LoadFieldFromOffset(out, value, compiler::target::Mint::value_offset());
     __ Bind(&done);
   }
+}
+
+LocationSummary* CheckFieldImmutabilityInstr::MakeLocationSummary(
+    Zone* zone,
+    bool opt) const {
+  const intptr_t kNumInputs = 1;
+  const intptr_t kNumTemps = 1;
+  LocationSummary* summary = new (zone) LocationSummary(
+      zone, kNumInputs, kNumTemps, LocationSummary::kCallOnSlowPath);
+  summary->set_in(
+      0, Location::RegisterLocation(EnsureDeeplyImmutableStubABI::kValueReg));
+  summary->set_temp(
+      0, Location::RegisterLocation(EnsureDeeplyImmutableStubABI::kTempReg));
+  return summary;
+}
+
+void CheckFieldImmutabilityInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  const Register value = locs()->in(0).reg();
+  const Register temp = locs()->temp(0).reg();
+
+  auto slow_path = new EnsureDeeplyImmutableSlowPath(this, value);
+  compiler->AddSlowPathCode(slow_path);
+
+  __ BranchIfSmi(value, slow_path->exit_label(),
+                 compiler::Assembler::kNearJump);
+  __ lbu(temp, compiler::FieldAddress(value,
+                                      compiler::target::Object::tags_offset()));
+  __ AndImmediate(temp, temp,
+                  1 << compiler::target::UntaggedObject::kDeeplyImmutableBit);
+  // If immutability bit is not set, go to runtime.
+  __ beq(temp, ZR, slow_path->entry_label());
+
+  __ Bind(slow_path->exit_label());
 }
 
 LocationSummary* BinaryDoubleOpInstr::MakeLocationSummary(Zone* zone,
@@ -5100,6 +5144,25 @@ void CheckWritableInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
 LocationSummary* BinaryInt64OpInstr::MakeLocationSummary(Zone* zone,
                                                         bool opt) const {
   const intptr_t kNumInputs = 2;
+  if ((op_kind() == Token::kSHL) || (op_kind() == Token::kSHR) ||
+      (op_kind() == Token::kUSHR)) {
+    const intptr_t kNumTemps = 1;
+    LocationSummary* summary = new (zone) LocationSummary(
+        zone, kNumInputs, kNumTemps, LocationSummary::kCallOnSlowPath);
+    summary->set_in(0, Location::Pair(Location::RequiresRegister(),
+                                      Location::RequiresRegister()));
+    if (RightOperandIsPositive() && right()->definition()->IsConstant()) {
+      ConstantInstr* constant = right()->definition()->AsConstant();
+      summary->set_in(1, Location::Constant(constant));
+    } else {
+      summary->set_in(1, Location::Pair(Location::RequiresRegister(),
+                                        Location::RequiresRegister()));
+    }
+    summary->set_temp(0, Location::RequiresRegister());
+    summary->set_out(0, Location::Pair(Location::RequiresRegister(),
+                                       Location::RequiresRegister()));
+    return summary;
+  }
   const intptr_t kNumTemps = (op_kind() == Token::kMUL || op_kind() == Token::kADD ||
                               op_kind() == Token::kSUB) ? 1 : 0;
   if ((op_kind() == Token::kSHL) || (op_kind() == Token::kSHR) ||
@@ -6138,24 +6201,14 @@ LocationSummary* StrictCompareInstr::MakeLocationSummary(Zone* zone,
   }
   LocationSummary* locs = new (zone)
       LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
+  locs->set_in(0, Location::RequiresRegister());
   // If a constant has more than one use, make sure it is loaded in register
   // so that multiple immediate loads can be avoided.
-  ConstantInstr* constant = left()->definition()->AsConstant();
-  if ((constant != nullptr) && !left()->IsSingleUse()) {
-    locs->set_in(0, Location::RequiresRegister());
-  } else {
-    locs->set_in(0, LocationRegisterOrConstant(left()));
-  }
-
-  constant = right()->definition()->AsConstant();
+  ConstantInstr* constant = right()->definition()->AsConstant();
   if ((constant != nullptr) && !right()->IsSingleUse()) {
     locs->set_in(1, Location::RequiresRegister());
   } else {
-    // Only one of the inputs can be a constant. Choose register if the first
-    // one is a constant.
-    locs->set_in(1, locs->in(0).IsConstant()
-                        ? Location::RequiresRegister()
-                        : LocationRegisterOrConstant(right()));
+    locs->set_in(1, LocationRegisterOrConstant(right()));
   }
   locs->set_out(0, Location::RequiresRegister());
   return locs;
