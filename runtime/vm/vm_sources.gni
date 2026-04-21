@@ -447,6 +447,7 @@ vm_sources_tests = [
   "object_graph_test.cc",
   "object_ia32_test.cc",
   "object_id_ring_test.cc",
+  "object_mips_test.cc",
   "object_riscv_test.cc",
   "object_store_test.cc",
   "object_test.cc",
