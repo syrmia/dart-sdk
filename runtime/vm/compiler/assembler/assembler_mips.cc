@@ -8,7 +8,7 @@
 
 #include "vm/compiler/assembler/assembler.h"
 #include "vm/compiler/backend/locations.h"
-
+#include "vm/instructions.h"
 namespace dart {
 
 DECLARE_FLAG(bool, check_code_pointer);
@@ -259,11 +259,58 @@ static int32_t FlipBranchInstruction(int32_t instr) {
 }
 
 void Assembler::PushRegisters(const RegisterSet& registers) {
-  UNIMPLEMENTED();
+  const intptr_t fpu_regs_count = registers.FpuRegisterCount();
+  if (fpu_regs_count > 0) {
+    // Allocate space on the stack for the floating-point registers
+    AddImmediate(SP, -fpu_regs_count * kFpuRegisterSize);
+
+    // Store FPU registers (floating-point registers f0, f1, ..., f31)
+    intptr_t offset = 0;
+    for (intptr_t i = 0; i < kNumberOfFpuRegisters; ++i) {
+      DRegister fpu_reg = static_cast<DRegister>(i);
+      if (registers.ContainsFpuRegister(fpu_reg)) {
+        // Store the floating-point register at the correct offset
+        sdc1(fpu_reg, Address(SP, offset));
+        offset += kFpuRegisterSize;
+      }
+    }
+    ASSERT(offset == (fpu_regs_count * kFpuRegisterSize));
+  }
+
+  // Store general-purpose registers (from $31 down to $0)
+  for (intptr_t i = kNumberOfCpuRegisters - 1; i >= 0; --i) {
+    Register reg = static_cast<Register>(i);
+    if (registers.ContainsRegister(reg)) {
+      // Adjust the stack pointer to account for the stored register
+      AddImmediate(SP, -4);
+      // Store the general-purpose register onto the stack (32-bit register)
+      sw(reg, Address(SP, 0));
+    }
+  }
 }
 
 void Assembler::PopRegisters(const RegisterSet& registers) {
-  UNIMPLEMENTED();
+  for (intptr_t i = 0; i < kNumberOfCpuRegisters; ++i) {
+    Register reg = static_cast<Register>(i);
+    if (registers.ContainsRegister(reg)) {
+      lw(reg, Address(SP, 0));
+      AddImmediate(SP, 4);
+    }
+  }
+
+  const intptr_t fpu_regs_count = registers.FpuRegisterCount();
+  if (fpu_regs_count > 0) {
+    intptr_t offset = 0;
+    for (intptr_t i = 0; i < kNumberOfFpuRegisters; ++i) {
+      DRegister fpu_reg = static_cast<DRegister>(i);
+      if (registers.ContainsFpuRegister(fpu_reg)) {
+        ldc1(fpu_reg, Address(SP, offset));
+        offset += kFpuRegisterSize;
+      }
+    }
+    ASSERT(offset == (fpu_regs_count * kFpuRegisterSize));
+    AddImmediate(SP, offset);
+  }
 }
 
 void Assembler::PushRegistersInOrder(std::initializer_list<Register> regs) {

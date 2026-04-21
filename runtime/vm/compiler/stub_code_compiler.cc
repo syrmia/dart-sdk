@@ -1838,22 +1838,24 @@ void StubCodeCompiler::GenerateBoxDoubleStub() {
 }
 
 void StubCodeCompiler::GenerateBoxFloat32x4Stub() {
-#if !defined(TARGET_ARCH_RISCV32) && !defined(TARGET_ARCH_RISCV64)
+#if !defined(TARGET_ARCH_RISCV32) && !defined(TARGET_ARCH_RISCV64) &&         \
+    !defined(TARGET_ARCH_MIPS)
   GenerateBoxFpuValueStub(assembler, compiler::Float32x4Class(),
                           kBoxFloat32x4RuntimeEntry,
                           &Assembler::StoreUnboxedSimd128);
 #else
-  __ Stop("Not supported on RISC-V.");
+  __ Stop("Not supported on RISC-V and MIPS.");
 #endif
 }
 
 void StubCodeCompiler::GenerateBoxFloat64x2Stub() {
-#if !defined(TARGET_ARCH_RISCV32) && !defined(TARGET_ARCH_RISCV64)
+#if !defined(TARGET_ARCH_RISCV32) && !defined(TARGET_ARCH_RISCV64) &&         \
+    !defined(TARGET_ARCH_MIPS)
   GenerateBoxFpuValueStub(assembler, compiler::Float64x2Class(),
                           kBoxFloat64x2RuntimeEntry,
                           &Assembler::StoreUnboxedSimd128);
 #else
-  __ Stop("Not supported on RISC-V.");
+  __ Stop("Not supported on RISC-V and MIPS.");
 #endif
 }
 
