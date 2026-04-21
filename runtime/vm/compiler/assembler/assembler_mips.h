@@ -201,6 +201,10 @@ class Assembler : public AssemblerBase {
   void CompareImmediate(Register rn, int32_t imm, OperandSize sz = kWordBytes) override;
   void TestImmediate(Register rn, int32_t imm, OperandSize sz = kWordBytes);
 
+  static const char* RegisterName(Register reg);
+
+  static const char* FpuRegisterName(FpuRegister reg);
+
   void CompareRegisters(Register rn, Register rm);
   void CompareObjectRegisters(Register rn, Register rm);
   void TestRegisters(Register rn, Register rm);
@@ -375,6 +379,8 @@ class Assembler : public AssemblerBase {
   void break_(int32_t code) { Emit(BreakEncoding(code)); }
 
   void Breakpoint() override { break_(0); }
+
+  static uword GetBreakInstructionFiller() { return BreakEncoding(0); }
 
   void StoreStoreFence() override { sync(0); }
 
@@ -722,6 +728,48 @@ class Assembler : public AssemblerBase {
 
   void xor_(Register rd, Register rs, Register rt) {
     EmitRType(SPECIAL, rs, rt, rd, 0, XOR);
+  }
+
+  // Addition of rs and rt with the result placed in rd.
+  // After, ro < 0 if there was signed overflow, ro >= 0 otherwise.
+  // rd and ro must not be TMP.
+  // ro must be different from all the other registers.
+  // If rd, rs, and rt are the same register, then a scratch register different
+  // from the other registers is needed.
+  void AdduDetectOverflow(Register rd,
+                          Register rs,
+                          Register rt,
+                          Register ro,
+                          Register scratch = kNoRegister);
+  // ro must be different from rd and rs.
+  // rd and ro must not be TMP.
+  // If rd and rs are the same, a scratch register different from the other
+  // registers is needed.
+  void AddImmediateDetectOverflow(Register rd,
+                                  Register rs,
+                                  int32_t imm,
+                                  Register ro,
+                                  Register scratch = kNoRegister) {
+    ASSERT(!in_delay_slot_);
+    LoadImmediate(rd, imm);
+    AdduDetectOverflow(rd, rs, rd, ro, scratch);
+  }
+
+  // Subtraction of rt from rs (rs - rt) with the result placed in rd.
+  // After, ro < 0 if there was signed overflow, ro >= 0 otherwise.
+  // None of rd, rs, rt, or ro may be TMP.
+  // ro must be different from the other registers.
+  void SubuDetectOverflow(Register rd, Register rs, Register rt, Register ro);
+
+  // ro must be different from rd and rs.
+  // None of rd, rs, rt, or ro may be TMP.
+  void SubImmediateDetectOverflow(Register rd,
+                                  Register rs,
+                                  int32_t imm,
+                                  Register ro) {
+    ASSERT(!in_delay_slot_);
+    LoadImmediate(rd, imm);
+    SubuDetectOverflow(rd, rs, rd, ro);
   }
 
   void RestoreCodePointer();
@@ -1461,11 +1509,11 @@ class Assembler : public AssemblerBase {
                                     Register array,
                                     intptr_t index) const;
   void LoadElementAddressForIntIndex(Register address,
-                                     bool is_external,
-                                     intptr_t cid,
-                                     intptr_t index_scale,
-                                     Register array,
-                                     intptr_t index);
+                                    bool is_external,
+                                    intptr_t cid,
+                                    intptr_t index_scale,
+                                    Register array,
+                                    intptr_t index);
   Address ElementAddressForRegIndex(bool is_load,
                                     bool is_external,
                                     intptr_t cid,
@@ -1474,13 +1522,13 @@ class Assembler : public AssemblerBase {
                                     Register array,
                                     Register index);
   void LoadElementAddressForRegIndex(Register address,
-                                     bool is_load,
-                                     bool is_external,
-                                     intptr_t cid,
-                                     intptr_t index_scale,
-                                     bool index_unboxed,
-                                     Register array,
-                                     Register index);
+                                    bool is_load,
+                                    bool is_external,
+                                    intptr_t cid,
+                                    intptr_t index_scale,
+                                    bool index_unboxed,
+                                    Register array,
+                                    Register index);
 
   void EnterFullSafepoint(Register scratch0, Register scratch1);
   void ExitFullSafepoint(Register scratch0,
@@ -1594,6 +1642,26 @@ class Assembler : public AssemblerBase {
 
   void ExtractClassIdFromTags(Register result, Register tags);
   void ExtractInstanceSizeFromTags(Register result, Register tags);
+
+  // This emits an PC-relative call of the form "bal <offset>".  The offset
+  // is not yet known and needs therefore relocation to the right place before
+  // the code can be used.
+  //
+  // The necessary information for the "linker" (i.e. the relocation
+  // information) is stored in [UntaggedCode::static_calls_target_table_]: an
+  // entry of the form
+  //
+  //   (Code::kPcRelativeCall & pc_offset, <target-code>, <target-function>)
+  //
+  // will be used during relocation to fix the offset.
+  //
+  // The provided [offset_into_target] will be added to calculate the final
+  // destination.  It can be used e.g. for calling into the middle of a
+  // function.
+  void GenerateUnRelocatedPcRelativeCall(intptr_t offset_into_target = 0);
+
+
+  void GenerateUnRelocatedPcRelativeTailCall(intptr_t offset_into_target = 0);
 
   static bool AddressCanHoldConstantIndex(const Object& constant,
                                           bool is_load,
@@ -1734,6 +1802,13 @@ class Assembler : public AssemblerBase {
     Emit(Instr::kNopInstruction);  // Branch delay NOP.
     delay_slot_available_ = true;
   }
+
+  void StoreIntoObjectFilter(Register object, Register value, Label* no_update);
+
+  // Shorter filtering sequence that assumes that value is not a smi.
+  void StoreIntoObjectFilterNoSmi(Register object,
+                                  Register value,
+                                  Label* no_update);
 
   void JumpAndLink(intptr_t target_code_pool_index, CodeEntryKind entry_kind);
 

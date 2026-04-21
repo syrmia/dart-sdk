@@ -160,6 +160,21 @@ class BareSwitchableCallPattern : public SwitchableCallPatternBase {
   DISALLOW_COPY_AND_ASSIGN(BareSwitchableCallPattern);
 };
 
+class ReturnPattern : public ValueObject {
+ public:
+  explicit ReturnPattern(uword pc);
+
+  // jr(RA) = 1
+  static const int kLengthInBytes = 1 * Instr::kInstrSize;
+
+  int pattern_length_in_bytes() const { return kLengthInBytes; }
+
+  bool IsValid() const;
+
+ private:
+  const uword pc_;
+};
+
 class PcRelativePatternBase : public ValueObject {
  public:
   // 16 bit signed integer which will get multiplied by 4.
@@ -209,6 +224,33 @@ class PcRelativeTrampolineJumpPattern : public ValueObject {
   int32_t distance();
   void set_distance(int32_t distance);
   bool IsValid() const;
+
+private:
+  // This offset must be applied to account for the fact that
+  // PC is read in 6th instruction
+  static constexpr intptr_t kDistanceOffset = -5 * Instr::kInstrSize;
+
+  //  sw RA, -4(SP)
+  static constexpr uint32_t kStoreRA =
+                    SW << kOpcodeShift | SP << kRsShift | RA << kRtShift | static_cast<uint16_t>(-4);
+
+  //  bal(label)
+  static constexpr uint32_t kBranchAndLinkEncoding =
+                    REGIMM << kOpcodeShift | R0 << kRsShift | BGEZAL << kRtShift | 1;
+
+  //  add TMP, RA, TMP
+  static constexpr uint32_t kAddRaTmpEncoding =
+                    SPECIAL << kOpcodeShift | RA << kRsShift | TMP << kRtShift |
+                    TMP << kRdShift | 0 << kSaShift | ADD << kFunctionShift;
+
+  // jr(TMP)
+  static constexpr uint32_t kJumpRegisterEncoding =
+                    SPECIAL << kOpcodeShift | TMP << kRsShift | R0 << kRtShift |
+                    R0 << kRdShift | 0 << kSaShift | JR << kFunctionShift;
+
+  //  lw RA, -4(SP)
+  static constexpr uint32_t kLoadRA =
+                    LW << kOpcodeShift | SP << kRsShift | RA << kRtShift | static_cast<uint16_t>(-4);
 
   uword pattern_start_;
 };

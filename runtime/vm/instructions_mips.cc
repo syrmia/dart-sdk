@@ -7,7 +7,7 @@
 
 #include "vm/instructions.h"
 #include "vm/instructions_mips.h"
-
+#include "vm/object_store.h"
 #include "vm/object.h"
 namespace dart {
 
@@ -292,6 +292,150 @@ void BareSwitchableCallPattern::SetTargetRelease(const Code& target) const {
          ObjectPool::EntryType::kImmediate);
   object_pool_.SetRawValueAt<std::memory_order_release>(
       target_pool_index_, target.MonomorphicEntryPoint());
+}
+
+ReturnPattern::ReturnPattern(uword pc) : pc_(pc) {}
+
+bool ReturnPattern::IsValid() const {
+  Instr* jr = Instr::At(pc_);
+  return (jr->OpcodeField() == SPECIAL) && (jr->FunctionField() == JR) &&
+         (jr->RsField() == RA);
+}
+
+bool PcRelativeCallPattern::IsValid() const {
+  //bal <offset>
+  const uint32_t word = *reinterpret_cast<uint32_t*>(pc_);
+  const uint32_t branch_and_link = 0x0411;
+  const uword opcode = ((word >> kRtShift) & ((1 << kRtShift) - 1));
+  return opcode == branch_and_link;
+}
+
+bool PcRelativeTailCallPattern::IsValid() const {
+  //b <offset>
+  const uint32_t word = *reinterpret_cast<uint32_t*>(pc_);
+  const uint32_t branch = 0x1000;
+  const uword opcode = ((word >> kRtShift) & ((1 << kRtShift) - 1));
+  return opcode == branch;
+}
+
+void PcRelativeTrampolineJumpPattern::Initialize() {
+#if !defined(DART_PRECOMPILED_RUNTIME)
+  uint32_t* store_RA =
+      reinterpret_cast<uint32_t*>(pattern_start_ + 2 * Instr::kInstrSize);
+  uint32_t* branch_and_link =
+      reinterpret_cast<uint32_t*>(pattern_start_ + 3 * Instr::kInstrSize);
+  uint32_t* nop_first =
+      reinterpret_cast<uint32_t*>(pattern_start_ + 4 * Instr::kInstrSize);
+  uint32_t* add_RA_TMP =
+      reinterpret_cast<uint32_t*>(pattern_start_ + 5 * Instr::kInstrSize);
+  uint32_t* load_RA =
+      reinterpret_cast<uint32_t*>(pattern_start_ + 6 * Instr::kInstrSize);
+  uint32_t* jump_register =
+      reinterpret_cast<uint32_t*>(pattern_start_ + 7 * Instr::kInstrSize);
+  uint32_t* nop_second =
+      reinterpret_cast<uint32_t*>(pattern_start_ + 8 * Instr::kInstrSize);
+  *store_RA = kStoreRA;
+  *branch_and_link = kBranchAndLinkEncoding;
+  *nop_first = Instr::kNopInstruction;
+  *add_RA_TMP = kAddRaTmpEncoding;
+  *load_RA = kLoadRA;
+  *jump_register = kJumpRegisterEncoding;
+  *nop_second = Instr::kNopInstruction;
+  set_distance(0);
+#else
+  UNREACHABLE();
+#endif
+}
+
+int32_t PcRelativeTrampolineJumpPattern::distance() {
+#if !defined(DART_PRECOMPILED_RUNTIME)
+  //end_load - first instruction after loading offset
+  const uword end_load = pattern_start_ + 2 * Instr::kInstrSize;
+  Register reg;
+  intptr_t value;
+  InstructionPattern::DecodeLoadWordImmediate(end_load, &reg, &value);
+  value -= kDistanceOffset;
+  ASSERT(reg == TMP);
+  return value;
+#else
+  UNREACHABLE();
+  return 0;
+#endif
+}
+
+void PcRelativeTrampolineJumpPattern::set_distance(int32_t distance) {
+#if !defined(DART_PRECOMPILED_RUNTIME)
+  //end_load - first instruction after loading offset
+  const uword end_load = pattern_start_ + 2 * Instr::kInstrSize;
+  InstructionPattern::EncodeLoadWordImmediate(end_load, TMP,
+                                              distance + kDistanceOffset);
+#else
+  UNREACHABLE();
+#endif
+}
+
+bool PcRelativeTrampolineJumpPattern::IsValid() const {
+#if !defined(DART_PRECOMPILED_RUNTIME)
+  const uword end_load = pattern_start_ + 2 * Instr::kInstrSize;
+  Register reg;
+  intptr_t value;
+  InstructionPattern::DecodeLoadWordImmediate(end_load, &reg, &value);
+
+  if (reg!=TMP) return false;
+
+  uint32_t* store_RA =
+      reinterpret_cast<uint32_t*>(pattern_start_ + 2 * Instr::kInstrSize);
+  uint32_t* branch_and_link =
+      reinterpret_cast<uint32_t*>(pattern_start_ + 3 * Instr::kInstrSize);
+  uint32_t* nop_first =
+      reinterpret_cast<uint32_t*>(pattern_start_ + 4 * Instr::kInstrSize);
+  uint32_t* add_RA_TMP =
+      reinterpret_cast<uint32_t*>(pattern_start_ + 5 * Instr::kInstrSize);
+  uint32_t* load_RA =
+      reinterpret_cast<uint32_t*>(pattern_start_ + 6 * Instr::kInstrSize);
+  uint32_t* jump_register =
+      reinterpret_cast<uint32_t*>(pattern_start_ + 7 * Instr::kInstrSize);
+  uint32_t* nop_second =
+      reinterpret_cast<uint32_t*>(pattern_start_ + 8 * Instr::kInstrSize);
+
+  if (*store_RA != kStoreRA) return false;
+  if (*branch_and_link != kBranchAndLinkEncoding) return false;
+  if (*nop_first != Instr::kNopInstruction) return false;
+  if (*add_RA_TMP != kAddRaTmpEncoding) return false;
+  if (*load_RA != kLoadRA) return false;
+  if (*jump_register != kJumpRegisterEncoding) return false;
+  if (*nop_second != Instr::kNopInstruction) return false;
+
+  return true;
+#else
+  UNREACHABLE();
+  return false;
+#endif
+}
+
+intptr_t TypeTestingStubCallPattern::GetSubtypeTestCachePoolIndex() {
+
+  // LW  = pc_ - 12B
+  // JALR = pc_ - 8B
+  // NOP = pc_ - 4B (same as "sll $0, $0, 0")
+  // pc_ = next inst to exe
+  uword pc = pc_ - 2 * Instr::kInstrSize;
+  //jalr RA, S2(=R18)
+  const uint32_t jalr_t9 = 0x0240f809;
+  if(*reinterpret_cast<uint32_t*>(pc) != jalr_t9) {
+    PcRelativeCallPattern pattern(pc);
+    RELEASE_ASSERT(pattern.IsValid());
+  }
+  const uword load_instr_end = pc;
+
+  Register reg;
+  intptr_t pool_index = -1;
+
+  InstructionPattern::DecodeLoadWordFromPool(load_instr_end, &reg, &pool_index);
+
+  ASSERT_EQUAL(reg, TypeTestABI::kSubtypeTestCacheReg);
+
+  return pool_index;
 }
 
 }  // namespace dart

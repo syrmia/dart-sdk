@@ -248,6 +248,34 @@ void StubCodeCompiler::GenerateCallNativeThroughSafepointStub() {
   __ jr(S2);
 }
 
+void StubCodeCompiler::GenerateLoadBSSEntry(BSS::Relocation relocation,
+                                            Register dst,
+                                            Register tmp) {
+  compiler::Label skip_reloc;
+  __ b(&skip_reloc);
+  InsertBSSRelocation(relocation);
+  __ Bind(&skip_reloc);
+
+  __ Push(RA);
+  compiler::Label label_for_getting_pc;
+  __ bal(&label_for_getting_pc);
+  __ Bind(&label_for_getting_pc);
+  //push = 2 instr, bal = 2 instr
+  __ addiu(tmp, RA, compiler::Immediate(-5 * compiler::target::kWordSize));
+  __ Pop(RA);
+
+  // tmp holds the address of the relocation.
+  __ lw(dst, compiler::Address(tmp));
+
+  // dst holds the relocation itself: tmp - bss_start.
+  // tmp = tmp + (bss_start - tmp) = bss_start
+  __ addu(tmp, tmp, dst);
+
+  // tmp holds the start of the BSS section.
+  // Load the "get-thread" routine: *bss_start.
+  __ lw(dst, compiler::Address(tmp));
+}
+
 void StubCodeCompiler::GenerateLoadFfiCallbackMetadataRuntimeFunction(
     uword function_index,
     Register dst) {
@@ -2278,8 +2306,7 @@ void StubCodeCompiler::GenerateNArgsCheckInlineCacheStub(
   Label stepping, done_stepping;
   if (optimized == kUnoptimized) {
     __ Comment("Check single stepping");
-    __ LoadIsolate(TMP);
-    __ lbu(TMP, Address(TMP, target::Thread::single_step_offset()));
+    __ lbu(TMP, Address(THR, target::Thread::single_step_offset()));
     __ BranchNotEqual(TMP, Immediate(0), &stepping);
     __ Bind(&done_stepping);
   }
@@ -2637,8 +2664,7 @@ void StubCodeCompiler::GenerateZeroArgsUnoptimizedStaticCallStub() {
   // Check single stepping.
 #if !defined(PRODUCT)
   Label stepping, done_stepping;
-  __ LoadIsolate(T0);
-  __ lbu(T0, Address(T0, target::Thread::single_step_offset()));
+  __ lbu(T0, Address(THR, target::Thread::single_step_offset()));
   __ BranchNotEqual(T0, Immediate(0), &stepping);
   __ Bind(&done_stepping);
 #endif
@@ -2877,8 +2903,7 @@ void StubCodeCompiler::GenerateDebugStepCheckStub() {
 #else
   // Check single stepping.
   Label stepping, done_stepping;
-  __ LoadIsolate(T1);
-  __ lbu(T1, Address(T1, target::Thread::single_step_offset()));
+  __ lbu(T1, Address(THR, target::Thread::single_step_offset()));
   __ BranchNotEqual(T1, Immediate(0), &stepping);
   __ Bind(&done_stepping);
 
@@ -3252,8 +3277,7 @@ void StubCodeCompiler::GenerateUnoptimizedIdenticalWithNumberCheckStub() {
   #if !defined(PRODUCT)
   // Check single stepping.
   Label stepping, done_stepping;
-  __ LoadIsolate(T0);
-  __ lbu(T0, Address(T0, target::Thread::single_step_offset()));
+  __ lbu(T0, Address(THR, target::Thread::single_step_offset()));
   __ BranchNotEqual(T0, Immediate(0), &stepping);
   __ Bind(&done_stepping);
 #endif

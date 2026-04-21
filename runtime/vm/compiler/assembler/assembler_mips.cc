@@ -8,7 +8,7 @@
 
 #include "vm/compiler/assembler/assembler.h"
 #include "vm/compiler/backend/locations.h"
-
+#include "vm/instructions.h"
 namespace dart {
 
 DECLARE_FLAG(bool, check_code_pointer);
@@ -259,11 +259,58 @@ static int32_t FlipBranchInstruction(int32_t instr) {
 }
 
 void Assembler::PushRegisters(const RegisterSet& registers) {
-  UNIMPLEMENTED();
+  const intptr_t fpu_regs_count = registers.FpuRegisterCount();
+  if (fpu_regs_count > 0) {
+    // Allocate space on the stack for the floating-point registers
+    AddImmediate(SP, -fpu_regs_count * kFpuRegisterSize);
+
+    // Store FPU registers (floating-point registers f0, f1, ..., f31)
+    intptr_t offset = 0;
+    for (intptr_t i = 0; i < kNumberOfFpuRegisters; ++i) {
+      DRegister fpu_reg = static_cast<DRegister>(i);
+      if (registers.ContainsFpuRegister(fpu_reg)) {
+        // Store the floating-point register at the correct offset
+        sdc1(fpu_reg, Address(SP, offset));
+        offset += kFpuRegisterSize;
+      }
+    }
+    ASSERT(offset == (fpu_regs_count * kFpuRegisterSize));
+  }
+
+  // Store general-purpose registers (from $31 down to $0)
+  for (intptr_t i = kNumberOfCpuRegisters - 1; i >= 0; --i) {
+    Register reg = static_cast<Register>(i);
+    if (registers.ContainsRegister(reg)) {
+      // Adjust the stack pointer to account for the stored register
+      AddImmediate(SP, -4);
+      // Store the general-purpose register onto the stack (32-bit register)
+      sw(reg, Address(SP, 0));
+    }
+  }
 }
 
 void Assembler::PopRegisters(const RegisterSet& registers) {
-  UNIMPLEMENTED();
+  for (intptr_t i = 0; i < kNumberOfCpuRegisters; ++i) {
+    Register reg = static_cast<Register>(i);
+    if (registers.ContainsRegister(reg)) {
+      lw(reg, Address(SP, 0));
+      AddImmediate(SP, 4);
+    }
+  }
+
+  const intptr_t fpu_regs_count = registers.FpuRegisterCount();
+  if (fpu_regs_count > 0) {
+    intptr_t offset = 0;
+    for (intptr_t i = 0; i < kNumberOfFpuRegisters; ++i) {
+      DRegister fpu_reg = static_cast<DRegister>(i);
+      if (registers.ContainsFpuRegister(fpu_reg)) {
+        ldc1(fpu_reg, Address(SP, offset));
+        offset += kFpuRegisterSize;
+      }
+    }
+    ASSERT(offset == (fpu_regs_count * kFpuRegisterSize));
+    AddImmediate(SP, offset);
+  }
 }
 
 void Assembler::PushRegistersInOrder(std::initializer_list<Register> regs) {
@@ -539,6 +586,66 @@ void Assembler::BranchIfBit(Register rn,
   }
 }
 
+static const RegisterSet kRuntimeCallSavedRegisters(kDartVolatileCpuRegs,
+                                                    kAbiVolatileFpuRegs);
+
+#define __ assembler_->
+
+LeafRuntimeScope::LeafRuntimeScope(Assembler* assembler,
+                                   intptr_t frame_size,
+                                   bool preserve_registers)
+    : assembler_(assembler), preserve_registers_(preserve_registers) {
+  __ Comment("EnterCallRuntimeFrame");
+  __ AddImmediate(SP, SP, -4 * target::kWordSize);
+  __ sw(RA, Address(SP, 3 * target::kWordSize));
+  __ sw(FP, Address(SP, 2 * target::kWordSize));
+  __ sw(CODE_REG, Address(SP, 1 * target::kWordSize));
+  __ sw(PP, Address(SP, 0 * target::kWordSize));
+  __ AddImmediate(FP, SP, 2 * target::kWordSize);
+
+  if (preserve_registers) {
+    __ PushRegisters(kRuntimeCallSavedRegisters);
+  } else {
+    // These registers must always be preserved.
+    COMPILE_ASSERT(IsCalleeSavedRegister(THR));
+    COMPILE_ASSERT(IsCalleeSavedRegister(PP));
+    COMPILE_ASSERT(IsCalleeSavedRegister(CODE_REG));
+  }
+  __ ReserveAlignedFrameSpace(frame_size + 4 * target::kWordSize);
+}
+
+void LeafRuntimeScope::Call(const RuntimeEntry& entry,
+                            intptr_t argument_count) {
+  ASSERT(argument_count == entry.argument_count());
+  __ lw(T9, compiler::Address(THR, entry.OffsetFromThread()));
+  __ sw(T9, compiler::Address(THR, target::Thread::vm_tag_offset()));
+  __ jalr(T9);
+  __ LoadImmediate(TMP, target::Thread::vm_tag_dart_id());
+  __ sw(TMP, compiler::Address(THR, target::Thread::vm_tag_offset()));
+}
+
+LeafRuntimeScope::~LeafRuntimeScope() {
+  if (preserve_registers_) {
+    // SP might have been modified to reserve space for arguments
+    // and ensure proper alignment of the stack frame.
+    // We need to restore it before restoring registers.
+    const intptr_t kPushedRegistersSize =
+        kRuntimeCallSavedRegisters.CpuRegisterCount() * target::kWordSize +
+        kRuntimeCallSavedRegisters.FpuRegisterCount() * kFpuRegisterSize +
+        2* target::kWordSize;
+    __ AddImmediate(SP, FP, -kPushedRegistersSize);
+    __ PopRegisters(kRuntimeCallSavedRegisters);
+  }
+  __ AddImmediate(SP, FP, -2 * target::kWordSize);
+  __ lw(PP, Address(SP, 0 * target::kWordSize));
+  __ lw(CODE_REG, Address(SP, 1 * target::kWordSize));
+  __ lw(FP, Address(SP, 2 * target::kWordSize));
+  __ lw(RA, Address(SP, 3 * target::kWordSize));
+  __ AddImmediate(SP, SP, 4 * target::kWordSize);
+}
+
+#undef __
+
 Address Assembler::ElementAddressForIntIndex(bool is_external,
                                             intptr_t cid,
                                             intptr_t index_scale,
@@ -622,6 +729,20 @@ void Assembler::LoadElementAddressForRegIndex(Register address,
   }
 }
 
+void Assembler::LoadStaticFieldAddress(Register address,
+                                       Register field,
+                                       Register scratch,
+                                       bool is_shared) {
+  LoadFieldFromOffset(
+      scratch, field, target::Field::host_offset_or_field_id_offset());
+  const intptr_t field_table_offset =
+      is_shared ? compiler::target::Thread::shared_field_table_values_offset()
+                : compiler::target::Thread::field_table_values_offset();
+  LoadMemoryValue(address, THR, static_cast<int32_t>(field_table_offset));
+  sll(scratch, scratch, target::kWordSizeLog2 - kSmiTagShift);
+  addu(address, address, scratch);
+}
+
 void Assembler::LoadHalfWordUnaligned(Register dst,
                                       Register addr,
                                       Register tmp) {
@@ -672,6 +793,16 @@ void Assembler::StoreWordUnaligned(Register src, Register addr, Register tmp) {
   sb(tmp, Address(addr, 2));
   srl(tmp, src, 24);
   sb(tmp, Address(addr, 3));
+}
+
+const char* Assembler::RegisterName(Register reg) {
+  ASSERT((0 <= reg) && (reg < kNumberOfCpuRegisters));
+  return cpu_reg_names[reg];
+}
+
+const char* Assembler::FpuRegisterName(FpuRegister reg) {
+  ASSERT((0 <= reg) && (reg < kNumberOfFpuRegisters));
+  return fpu_reg_names[reg];
 }
 
 void Assembler::SetIf(Condition condition, Register rd) {
@@ -834,6 +965,28 @@ Register Assembler::LoadConditionOperand(Register rd,
   }
   LoadObject(rd, operand);
   return rd;
+}
+
+void Assembler::GenerateUnRelocatedPcRelativeTailCall(
+    intptr_t offset_into_target) {
+  // Emit "b <offset>".
+  EmitIType(BEQ, R0, R0, 0);
+  EmitBranchDelayNop();
+
+  PcRelativeTailCallPattern pattern(buffer_.contents() + buffer_.Size() -
+                                PcRelativeTailCallPattern::kLengthInBytes);
+  pattern.set_distance(offset_into_target);
+}
+
+void Assembler::GenerateUnRelocatedPcRelativeCall(
+    intptr_t offset_into_target) {
+  // Emit "bal <offset>".
+  EmitRegImmType(REGIMM, R0, BGEZAL, 0);
+  EmitBranchDelayNop();
+
+  PcRelativeCallPattern pattern(buffer_.contents() + buffer_.Size() -
+                                PcRelativeCallPattern::kLengthInBytes);
+  pattern.set_distance(offset_into_target);
 }
 
 void Assembler::AddBranchOverflow(Register rd,
@@ -1335,6 +1488,90 @@ void Assembler::StoreWordToPoolIndex(Register rs,
     } else {
       sw(rs, Address(pp, offset_low));
     }
+  }
+}
+
+void Assembler::AdduDetectOverflow(Register rd,
+                                   Register rs,
+                                   Register rt,
+                                   Register ro,
+                                   Register scratch) {
+  ASSERT(!in_delay_slot_);
+  ASSERT(rd != ro);
+  ASSERT(rd != TMP);
+  ASSERT(ro != TMP);
+  ASSERT(ro != rs);
+  ASSERT(ro != rt);
+
+  if ((rs == rt) && (rd == rs)) {
+    ASSERT(scratch != kNoRegister);
+    ASSERT(scratch != TMP);
+    ASSERT(rd != scratch);
+    ASSERT(ro != scratch);
+    ASSERT(rs != scratch);
+    ASSERT(rt != scratch);
+    mov(scratch, rt);
+    rt = scratch;
+  }
+
+  if (rd == rs) {
+    mov(TMP, rs);        // Preserve rs.
+    addu(rd, rs, rt);    // rs is overwritten.
+    xor_(TMP, rd, TMP);  // Original rs.
+    xor_(ro, rd, rt);
+    and_(ro, ro, TMP);
+  } else if (rd == rt) {
+    mov(TMP, rt);        // Preserve rt.
+    addu(rd, rs, rt);    // rt is overwritten.
+    xor_(TMP, rd, TMP);  // Original rt.
+    xor_(ro, rd, rs);
+    and_(ro, ro, TMP);
+  } else {
+    addu(rd, rs, rt);
+    xor_(ro, rd, rs);
+    xor_(TMP, rd, rt);
+    and_(ro, TMP, ro);
+  }
+}
+
+void Assembler::SubuDetectOverflow(Register rd,
+                                   Register rs,
+                                   Register rt,
+                                   Register ro) {
+  ASSERT(!in_delay_slot_);
+  ASSERT(rd != ro);
+  ASSERT(rd != TMP);
+  ASSERT(ro != TMP);
+  ASSERT(ro != rs);
+  ASSERT(ro != rt);
+  ASSERT(rs != TMP);
+  ASSERT(rt != TMP);
+
+  // This happens with some crankshaft code. Since Subu works fine if
+  // left == right, let's not make that restriction here.
+  if (rs == rt) {
+    mov(rd, ZR);
+    mov(ro, ZR);
+    return;
+  }
+
+  if (rd == rs) {
+    mov(TMP, rs);        // Preserve left.
+    subu(rd, rs, rt);    // Left is overwritten.
+    xor_(ro, rd, TMP);   // scratch is original left.
+    xor_(TMP, TMP, rs);  // scratch is original left.
+    and_(ro, TMP, ro);
+  } else if (rd == rt) {
+    mov(TMP, rt);      // Preserve right.
+    subu(rd, rs, rt);  // Right is overwritten.
+    xor_(ro, rd, rs);
+    xor_(TMP, rs, TMP);  // Original right.
+    and_(ro, TMP, ro);
+  } else {
+    subu(rd, rs, rt);
+    xor_(ro, rd, rs);
+    xor_(TMP, rs, rt);
+    and_(ro, TMP, ro);
   }
 }
 
@@ -2242,6 +2479,40 @@ void Assembler::PushObject(const Object& object) {
   ASSERT(!in_delay_slot_);
   LoadObject(TMP, object);
   Push(TMP);
+}
+
+// Preserves object and value registers.
+void Assembler::StoreIntoObjectFilterNoSmi(Register object,
+                                           Register value,
+                                           Label* no_update) {
+  ASSERT(!in_delay_slot_);
+  COMPILE_ASSERT((target::ObjectAlignment::kNewObjectAlignmentOffset == target::kWordSize) &&
+                 (target::ObjectAlignment::kOldObjectAlignmentOffset == 0));
+
+  // Write-barrier triggers if the value is in the new space (has bit set) and
+  // the object is in the old space (has bit cleared).
+  // To check that, we compute value & ~object and skip the write barrier
+  // if the bit is not set. We can't destroy the object.
+  nor(TMP, ZR, object);
+  and_(TMP, value, TMP);
+  andi(CMPRES1, TMP, Immediate(target::ObjectAlignment::kNewObjectAlignmentOffset));
+  beq(CMPRES1, ZR, no_update);
+}
+
+// Preserves object and value registers.
+void Assembler::StoreIntoObjectFilter(Register object,
+                                      Register value,
+                                      Label* no_update) {
+  ASSERT(!in_delay_slot_);
+  // For the value we are only interested in the new/old bit and the tag bit.
+  // And the new bit with the tag bit. The resulting bit will be 0 for a Smi.
+  sll(TMP, value, target::ObjectAlignment::kObjectAlignmentLog2 - 1);
+  and_(TMP, value, TMP);
+  // And the result with the negated space bit of the object.
+  nor(CMPRES1, ZR, object);
+  and_(TMP, TMP, CMPRES1);
+  andi(CMPRES1, TMP, Immediate(target::ObjectAlignment::kNewObjectAlignmentOffset));
+  beq(CMPRES1, ZR, no_update);
 }
 
 void Assembler::CompareObject(Register reg, const Object& object) {

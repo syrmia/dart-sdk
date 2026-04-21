@@ -206,6 +206,20 @@ void FlowGraphCompiler::EmitCallToStub(
   }
 }
 
+void FlowGraphCompiler::EmitJumpToStub(const Code& stub) {
+  ASSERT(!stub.IsNull());
+  if (CanPcRelativeCall(stub)) {
+    __ GenerateUnRelocatedPcRelativeTailCall();
+    AddPcRelativeTailCallStubTarget(stub);
+  } else {
+    __ LoadObject(CODE_REG, stub);
+    __ lw(TMP, compiler::FieldAddress(
+                   CODE_REG, compiler::target::Code::entry_point_offset()));
+    __ jr(TMP);
+    AddStubCallTarget(stub);
+  }
+}
+
 void FlowGraphCompiler::EmitTailCallToStub(const Code& stub) {
   ASSERT(!stub.IsNull());
   if (CanPcRelativeCall(stub)) {
@@ -1049,6 +1063,35 @@ void FlowGraphCompiler::EmitNativeLoad(Register dst,
       UNREACHABLE();
   }
 }
+
+void FlowGraphCompiler::LoadBSSEntry(BSS::Relocation relocation,
+                                     Register dst,
+                                     Register tmp) {
+  compiler::Label skip_reloc;
+  __ b(&skip_reloc);
+  InsertBSSRelocation(relocation);
+  __ Bind(&skip_reloc);
+
+  __ Push(RA);
+  compiler::Label label_for_getting_pc;
+  __ bal(&label_for_getting_pc);
+  __ Bind(&label_for_getting_pc);
+  //push = 2 instr, bal = 2 instr
+  __ addiu(tmp, RA, compiler::Immediate(-5 * compiler::target::kWordSize));
+  __ Pop(RA);
+
+  // tmp holds the address of the relocation.
+  __ lw(dst, compiler::Address(tmp));
+
+  // dst holds the relocation itself: tmp - bss_start.
+  // tmp = tmp + (bss_start - tmp) = bss_start
+  __ addu(tmp, tmp, dst);
+
+  // tmp holds the start of the BSS section.
+  // Load the "get-thread" routine: *bss_start.
+  __ lw(dst, compiler::Address(tmp));
+}
+
 #undef __
 #define __ compiler_->assembler()->
 
@@ -1101,6 +1144,13 @@ void ParallelMoveEmitter::EmitSwap(const MoveOperands& move) {
   } else {
     UNREACHABLE();
   }
+}
+
+void ParallelMoveEmitter::MoveMemoryToMemory(const compiler::Address& dst,
+                                              const compiler::Address& src) {
+  __ Comment("ParallelMoveEmitter::MoveMemoryToMemory");
+  __ lw(TMP, src);
+  __ sw(TMP, dst);
 }
 
 void ParallelMoveEmitter::Exchange(Register reg,
