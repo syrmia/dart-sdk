@@ -218,14 +218,14 @@ static constexpr intptr_t kAllocationCanary = 123;
 
 #if defined(TARGET_ARCH_ARM) || defined(TARGET_ARCH_ARM64) ||                  \
     defined(TARGET_ARCH_X64) || defined(TARGET_ARCH_RISCV32) ||                \
-    defined(TARGET_ARCH_RISCV64)
+    defined(TARGET_ARCH_RISCV64) || defined(TARGET_ARCH_MIPS)
 #define TARGET_USES_OBJECT_POOL 1
 #endif
 
 #if defined(DART_PRECOMPILER) &&                                               \
     (defined(TARGET_ARCH_X64) || defined(TARGET_ARCH_ARM) ||                   \
      defined(TARGET_ARCH_ARM64) || defined(TARGET_ARCH_RISCV32) ||             \
-     defined(TARGET_ARCH_RISCV64))
+     defined(TARGET_ARCH_RISCV64)) || defined(TARGET_ARCH_MIPS)
 #define DART_SUPPORT_PRECOMPILATION 1
 #endif
 
