@@ -23,8 +23,11 @@ config("sdk") {
   }
 
   if (sysroot != "") {
-    cflags += [ "--sysroot=" + sysroot ]
-    ldflags += [ "--sysroot=" + sysroot ]
+
+    if(!(target_cpu == "mipsel" && is_clang)) {
+      cflags += [ "--sysroot=" + sysroot ]
+      ldflags += [ "--sysroot=" + sysroot ]
+    }
 
     # Need to get some linker flags out of the sysroot.
     ldflags += [ exec_script("sysroot_ld_path.py",
