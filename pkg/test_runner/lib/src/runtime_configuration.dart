@@ -345,6 +345,8 @@ class DartVmRuntimeConfiguration extends RuntimeConfiguration {
       case Architecture.simarm64c:
       case Architecture.simriscv32:
       case Architecture.simriscv64:
+      case Architecture.simmips:
+      case Architecture.mips:
         multiplier *= 4;
         break;
       default:

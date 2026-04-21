@@ -736,7 +736,9 @@ enum Architecture {
   riscv32._('riscv32'),
   riscv64._('riscv64'),
   simriscv32._('simriscv32', isSimulator: true),
-  simriscv64._('simriscv64', isSimulator: true);
+  simriscv64._('simriscv64', isSimulator: true),
+  mips._('mips'),
+  simmips._('simmips', isSimulator: true);
 
   final String name;
   final bool isSimulator;
@@ -801,6 +803,8 @@ enum Architecture {
         return riscv32;
       case "riscv64":
         return riscv64;
+      case "mips":
+        return mips;
     }
 
     throw "Unknown host architecture: $arch";

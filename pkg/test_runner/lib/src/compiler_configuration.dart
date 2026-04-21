@@ -831,6 +831,12 @@ class PrecompilerCompilerConfiguration extends CompilerConfiguration
   bool get _isSimRiscv64 =>
       _configuration.architecture == Architecture.simriscv64;
 
+  bool get _isMips =>
+      _configuration.architecture == Architecture.mips;
+
+  bool get _isSimMips =>
+      _configuration.architecture == Architecture.simmips;
+
   @override
   bool get _isAot => true;
 
