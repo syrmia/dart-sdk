@@ -5102,6 +5102,23 @@ LocationSummary* BinaryInt64OpInstr::MakeLocationSummary(Zone* zone,
   const intptr_t kNumInputs = 2;
   const intptr_t kNumTemps = (op_kind() == Token::kMUL || op_kind() == Token::kADD ||
                               op_kind() == Token::kSUB) ? 1 : 0;
+  if ((op_kind() == Token::kSHL) || (op_kind() == Token::kSHR) ||
+      (op_kind() == Token::kUSHR)) {
+    LocationSummary* summary = new (zone) LocationSummary(
+        zone, kNumInputs, kNumTemps, LocationSummary::kCallOnSlowPath);
+    summary->set_in(0, Location::Pair(Location::RequiresRegister(),
+                                      Location::RequiresRegister()));
+    if (RightOperandIsPositive() && right()->definition()->IsConstant()) {
+      ConstantInstr* constant = right()->definition()->AsConstant();
+      summary->set_in(1, Location::Constant(constant));
+    } else {
+      summary->set_in(1, Location::Pair(Location::RequiresRegister(),
+                                        Location::RequiresRegister()));
+    }
+    summary->set_out(0, Location::Pair(Location::RequiresRegister(),
+                                       Location::RequiresRegister()));
+    return summary;
+  }
   LocationSummary* summary = new (zone)
       LocationSummary(zone, kNumInputs, kNumTemps, LocationSummary::kNoCall);
   summary->set_in(0, Location::Pair(Location::RequiresRegister(),
@@ -5120,6 +5137,13 @@ LocationSummary* BinaryInt64OpInstr::MakeLocationSummary(Zone* zone,
 }
 
 void BinaryInt64OpInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  ASSERT(!can_overflow());
+  if ((op_kind() == Token::kSHL) || (op_kind() == Token::kSHR) ||
+      (op_kind() == Token::kUSHR)) {
+    EmitShiftInt64(compiler);
+    return;
+  }
+
   PairLocation* left_pair = locs()->in(0).AsPairLocation();
   Register left_lo = left_pair->At(0).reg();
   Register left_hi = left_pair->At(1).reg();
@@ -5129,7 +5153,6 @@ void BinaryInt64OpInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
   PairLocation* out_pair = locs()->out(0).AsPairLocation();
   Register out_lo = out_pair->At(0).reg();
   Register out_hi = out_pair->At(1).reg();
-  ASSERT(!can_overflow());
   ASSERT(!CanDeoptimize());
 
   switch (op_kind()) {
@@ -5391,6 +5414,43 @@ class ShiftInt64OpSlowPath : public ThrowErrorSlowPathCode {
    }
 };
 
+void BinaryInt64OpInstr::EmitShiftInt64(FlowGraphCompiler* compiler) {
+  PairLocation* left_pair = locs()->in(0).AsPairLocation();
+  Register left_lo = left_pair->At(0).reg();
+  Register left_hi = left_pair->At(1).reg();
+  PairLocation* out_pair = locs()->out(0).AsPairLocation();
+  Register out_lo = out_pair->At(0).reg();
+  Register out_hi = out_pair->At(1).reg();
+  Register temp = locs()->temp(0).reg();
+  ASSERT(!can_overflow());
+
+  if (locs()->in(1).IsConstant()) {
+    EmitShiftInt64ByConstant(compiler, op_kind(), out_lo, out_hi, left_lo,
+                             left_hi, locs()->in(1).constant());
+  } else {
+    // Code for a variable shift amount (or constant that throws).
+    PairLocation* right_pair = locs()->in(1).AsPairLocation();
+    Register right_lo = right_pair->At(0).reg();
+    Register right_hi = right_pair->At(1).reg();
+
+    // Jump to a slow path if shift is larger than 63 or less than 0.
+    ShiftInt64OpSlowPath* slow_path = nullptr;
+    if (!IsShiftCountInRange()) {
+      slow_path = new (Z) ShiftInt64OpSlowPath(this);
+      compiler->AddSlowPathCode(slow_path);
+      __ BranchNotEqual(right_hi, ZR, slow_path->entry_label());
+      __ BranchSignedGreater(right_lo, compiler::Immediate(kShiftCountLimit), slow_path->entry_label());
+    }
+
+    EmitShiftInt64ByRegister(compiler, op_kind(), out_lo, out_hi, left_lo,
+                             left_hi, right_lo, temp);
+
+    if (slow_path != nullptr) {
+      __ Bind(slow_path->exit_label());
+    }
+  }
+}
+
 static void EmitShiftUint32ByConstant(FlowGraphCompiler* compiler,
                                       Token::Kind op_kind,
                                       Register out,
@@ -5495,6 +5555,12 @@ LocationSummary* BinaryUint32OpInstr::MakeLocationSummary(Zone* zone,
 }
 
 void BinaryUint32OpInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
+  if ((op_kind() == Token::kSHL) || (op_kind() == Token::kSHR) ||
+      (op_kind() == Token::kUSHR)) {
+    EmitShiftUint32(compiler);
+    return;
+  }
+
   Register left = locs()->in(0).reg();
   Register out = locs()->out(0).reg();
   ASSERT(out != left);
@@ -5549,6 +5615,33 @@ void BinaryUint32OpInstr::EmitNativeCode(FlowGraphCompiler* compiler) {
         break;
       default:
         UNREACHABLE();
+    }
+  }
+}
+
+void BinaryUint32OpInstr::EmitShiftUint32(FlowGraphCompiler* compiler) {
+
+  Register left = locs()->in(0).reg();
+  Register out = locs()->out(0).reg();
+
+  ASSERT(left != out);
+
+  if (locs()->in(1).IsConstant()) {
+    EmitShiftUint32ByConstant(compiler, op_kind(), out, left,
+                              locs()->in(1).constant());
+  } else {
+    // Code for a variable shift amount (or constant that throws).
+    const Register right = locs()->in(1).reg();
+
+    EmitShiftUint32ByRegister(compiler, op_kind(), out, left, right);
+
+    if (!IsShiftCountInRange(kUint32ShiftCountLimit)) {
+      // If shift value is > 31, return zero.
+      compiler::Label done;
+      __ CompareImmediate(right, 31, compiler::kFourBytes);
+      __ BranchIf(UNSIGNED_LESS_EQUAL, &done, compiler::Assembler::kNearJump);
+      __ LoadImmediate(out, 0);
+      __ Bind(&done);
     }
   }
 }
