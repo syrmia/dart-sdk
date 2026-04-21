@@ -292,7 +292,7 @@ ISOLATE_UNIT_TEST_CASE(CodeRelocator_DirectForwardCall) {
   helper.CreateInstructions({
 #if defined(TARGET_ARCH_MIPS)
       36,  // caller (call instruction @helper.kOffsetOfCall)
-      fmax - (36 - helper.kOffsetOfCall) - 12,  // 8 bytes less than maximum gap
+      fmax - (36 - helper.kOffsetOfCall) - 12,  // 12 bytes less than maximum gap
       12                                        // forward call target
 #else
       20,  // caller (call instruction @helper.kOffsetOfCall)
