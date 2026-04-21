@@ -130,11 +130,6 @@ class AtomicBitFieldContainer {
 
 static constexpr uword kUwordOne = 1U;
 
-#define BITFIELD_NON_BOOL_MIN_SIZE_WITH_POSITION(S, T, position)               \
-  ((sizeof(S) * kBitsPerByte - position > sizeof(T) * kBitsPerByte)            \
-       ? sizeof(T) * kBitsPerByte                                              \
-       : sizeof(S) * kBitsPerByte - (position))
-
 // BitField is a template for encoding and decoding a value of type T
 // inside a storage of type S. If a requested size is not provided, then:
 // * If T is bool, the requested size is 1.
@@ -154,10 +149,10 @@ static constexpr uword kUwordOne = 1U;
 template <typename S,
           typename T,
           int position = 0,
-          int requested_size =
-              std::is_same_v<T, bool>
-                  ? 1
-                  : BITFIELD_NON_BOOL_MIN_SIZE_WITH_POSITION(S, T, position),
+          int requested_size = (std::is_same_v<T, bool> ? 1 :
+             ((sizeof(S) * kBitsPerByte - position > sizeof(T) * kBitsPerByte)
+               ? (sizeof(T) * kBitsPerByte)
+               : (sizeof(S) * kBitsPerByte - position))),
           bool sign_extend = false,
           typename Enable = void>
 class BitField {
@@ -264,11 +259,6 @@ class BitField {
 // AtomicBitFieldContainer, which includes not having to provide any values for
 // parameters that would otherwise be appropriately deduced when not provided
 // for a BitField on an integral type S.
-//
-// Note that some specializations are duplicated for T != bool and T = bool,
-// since partial specializations cannot specialize the requested size with a
-// value that checks the type of T (to use a default requested size of 1
-// if T == bool and otherwise sizeof(T) * kBitsPerByte).
 
 template <typename S, typename T, int position, int size, bool sign_extend>
 class BitField<S,
@@ -283,87 +273,21 @@ class BitField<S,
                       size,
                       sign_extend> {};
 
-template <typename S, typename T, int position, int size>
-class BitField<
-    S,
-    T,
-    position,
-    size,
-    false,
-    std::void_t<std::enable_if_t<
-        size != BITFIELD_NON_BOOL_MIN_SIZE_WITH_POSITION(S, T, position) &&
-            !std::is_same_v<T, bool>,
-        typename S::ContainedType>>>
-    : public BitField<typename S::ContainedType, T, position, size, false> {};
-
-template <typename S, typename T, int position>
-class BitField<
-    S,
-    T,
-    position,
-    BITFIELD_NON_BOOL_MIN_SIZE_WITH_POSITION(S, T, position),
-    false,
-    std::void_t<std::enable_if_t<position != 0 && !std::is_same_v<T, bool>,
-                                 typename S::ContainedType>>>
-    : public BitField<typename S::ContainedType,
-                      T,
-                      position,
-                      BITFIELD_NON_BOOL_MIN_SIZE_WITH_POSITION(S, T, position),
-                      false> {};
-
-template <typename S, typename T>
-class BitField<S,
-               T,
-               0,
-               BITFIELD_NON_BOOL_MIN_SIZE_WITH_POSITION(S, T, 0),
-               false,
-               std::void_t<std::enable_if_t<!std::is_same_v<T, bool>,
-                                            typename S::ContainedType>>>
-    : public BitField<typename S::ContainedType,
-                      T,
-                      0,
-                      BITFIELD_NON_BOOL_MIN_SIZE_WITH_POSITION(S, T, 0),
-                      false> {};
-
-template <typename S, int position, int size>
-class BitField<
-    S,
-    bool,
-    position,
-    size,
-    false,
-    std::void_t<std::enable_if_t<size != 1, typename S::ContainedType>>>
-    : public BitField<typename S::ContainedType, bool, position, size, false> {
-};
-
-template <typename S, int position>
-class BitField<
-    S,
-    bool,
-    position,
-    1,
-    false,
-    std::void_t<std::enable_if_t<position != 0, typename S::ContainedType>>>
-    : public BitField<typename S::ContainedType, bool, position, 1, false> {};
-
-template <typename S>
-class BitField<S, bool, 0, 1, false, std::void_t<typename S::ContainedType>>
-    : public BitField<typename S::ContainedType, bool, 0, 1, false> {};
-
 // Alias for sign-extended BitFields to avoid being forced to provide a size
 // and/or position when the default values are appropriate.
 template <typename S,
           typename T,
           int position = 0,
-          int size = BITFIELD_NON_BOOL_MIN_SIZE_WITH_POSITION(S, T, position)>
+          int size = (std::is_same_v<T, bool> ? 1 :
+             ((sizeof(S) * kBitsPerByte - position > sizeof(T) * kBitsPerByte)
+               ? (sizeof(T) * kBitsPerByte)
+               : (sizeof(S) * kBitsPerByte - position)))>
 using SignedBitField = BitField<S,
                                 T,
                                 position,
                                 size,
                                 /*sign_extend=*/true,
                                 std::enable_if_t<std::is_signed_v<T>, void>>;
-
-#undef BITFIELD_NON_BOOL_MIN_SIZE_WITH_POSITION
 
 }  // namespace dart
 
