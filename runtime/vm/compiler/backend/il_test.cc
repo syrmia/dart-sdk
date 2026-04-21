@@ -992,6 +992,8 @@ ISOLATE_UNIT_TEST_CASE(IRTest_FfiCallInstrLeafDoesntSpill) {
 #if defined(TARGET_ARCH_ARM)
             // On ARM we need an extra scratch register for LoadDImmediate.
             assembler->LoadDImmediate(static_cast<DRegister>(reg), 0.0, R3);
+#elif defined(TARGET_ARCH_MIPS)
+            assembler->LoadDImmediate(static_cast<FpuRegister>(reg), 0.0, A3);
 #else
             assembler->LoadDImmediate(static_cast<FpuRegister>(reg), 0.0);
 #endif

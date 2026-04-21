@@ -38,6 +38,12 @@ VM_UNIT_TEST_CASE(Id) {
 #else   // defined(HOST_ARCH_RISCV64)
   EXPECT_STREQ("simriscv64", CPU::Id());
 #endif  // defined(HOST_ARCH_RISCV64)
+#elif defined(TARGET_ARCH_MIPS)
+#if defined(HOST_ARCH_MIPS)
+  EXPECT_STREQ("mips", CPU::Id());
+#else   // defined(HOST_ARCH_MIPS)
+  EXPECT_STREQ("simmips", CPU::Id());
+#endif  // defined(HOST_ARCH_MIPS)
 #else
 #error Architecture was not detected as supported by Dart.
 #endif

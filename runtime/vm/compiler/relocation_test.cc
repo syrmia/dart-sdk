@@ -36,6 +36,8 @@ struct RelocatorTestHelper {
   static constexpr intptr_t kOffsetOfCall = 4;
 #elif defined(TARGET_ARCH_RISCV64)
   static constexpr intptr_t kOffsetOfCall = 4;
+#elif defined(TARGET_ARCH_MIPS)
+  static constexpr intptr_t kOffsetOfCall = 8;
 #else
   static constexpr intptr_t kOffsetOfCall = 0;
 #endif
@@ -86,7 +88,7 @@ struct RelocatorTestHelper {
                                    compiler::Address::PairPreIndex)));
 #elif defined(TARGET_ARCH_ARM)
       SPILLS_RETURN_ADDRESS_FROM_LR_TO_REGISTER(__ PushList((1 << LR)));
-#elif defined(TARGET_ARCH_RISCV32) || defined(TARGET_ARCH_RISCV64)
+#elif defined(TARGET_ARCH_RISCV32) || defined(TARGET_ARCH_RISCV64) || defined(TARGET_ARCH_MIPS)
           __ PushRegister(RA);
 #endif
       __ GenerateUnRelocatedPcRelativeCall();
@@ -98,7 +100,7 @@ struct RelocatorTestHelper {
                                    compiler::Address::PairPostIndex)));
 #elif defined(TARGET_ARCH_ARM)
       RESTORES_RETURN_ADDRESS_FROM_REGISTER_TO_LR(__ PopList((1 << LR)));
-#elif defined(TARGET_ARCH_RISCV32) || defined(TARGET_ARCH_RISCV64)
+#elif defined(TARGET_ARCH_RISCV32) || defined(TARGET_ARCH_RISCV64) || defined(TARGET_ARCH_MIPS)
           __ PopRegister(RA);
 #endif
       __ Ret();
@@ -114,6 +116,8 @@ struct RelocatorTestHelper {
       __ LoadImmediate(R0, 42);
 #elif defined(TARGET_ARCH_RISCV32) || defined(TARGET_ARCH_RISCV64)
           __ LoadImmediate(A0, 42);
+#elif defined(TARGET_ARCH_MIPS)
+      __ LoadImmediate(V0, 42);
 #endif
       __ Ret();
     });
@@ -198,7 +202,7 @@ struct RelocatorTestHelper {
     typedef intptr_t (*Fun)() DART_UNUSED;
 #if defined(TARGET_ARCH_X64)
     EXPECT_EQ(42, reinterpret_cast<Fun>(entrypoint)());
-#elif defined(TARGET_ARCH_ARM) || defined(TARGET_ARCH_RISCV32)
+#elif defined(TARGET_ARCH_ARM) || defined(TARGET_ARCH_RISCV32) || defined(TARGET_ARCH_MIPS)
     EXPECT_EQ(42, EXECUTE_TEST_CODE_INT32(Fun, entrypoint));
 #elif defined(TARGET_ARCH_ARM64) || defined(TARGET_ARCH_RISCV64)
     EXPECT_EQ(42, EXECUTE_TEST_CODE_INT64(Fun, entrypoint));
@@ -286,9 +290,15 @@ ISOLATE_UNIT_TEST_CASE(CodeRelocator_DirectForwardCall) {
   // instruction is emitted (not taking into account that the next instruction
   // might actually make some of those unresolved calls resolved).
   helper.CreateInstructions({
+#if defined(TARGET_ARCH_MIPS)
+      36,  // caller (call instruction @helper.kOffsetOfCall)
+      fmax - (36 - helper.kOffsetOfCall) - 12,  // 8 bytes less than maximum gap
+      12                                        // forward call target
+#else
       20,  // caller (call instruction @helper.kOffsetOfCall)
       fmax - (20 - helper.kOffsetOfCall) - 8,  // 8 bytes less than maximum gap
       8                                        // forward call target
+#endif
   });
   helper.EmitPcRelativeCallFunction(0, 2);
   helper.EmitReturn42Function(2);
@@ -312,9 +322,15 @@ ISOLATE_UNIT_TEST_CASE(CodeRelocator_OutOfRangeForwardCall) {
   const intptr_t fmax = FLAG_upper_pc_relative_call_distance;
 
   helper.CreateInstructions({
+#if defined(TARGET_ARCH_MIPS)
+      36,  // caller (call instruction @helper.kOffsetOfCall)
+      fmax - (36 - helper.kOffsetOfCall) + 4,  //  4 bytes above maximum gap
+      12                                        // forward call target
+#else
       20,  // caller (call instruction @helper.kOffsetOfCall)
       fmax - (20 - helper.kOffsetOfCall) + 4,  // 4 bytes above maximum gap
       8                                        // forwards call target
+#endif
   });
   helper.EmitPcRelativeCallFunction(0, 2);
   helper.EmitReturn42Function(2);
@@ -342,9 +358,15 @@ ISOLATE_UNIT_TEST_CASE(CodeRelocator_DirectBackwardCall) {
   const intptr_t bmax = -FLAG_lower_pc_relative_call_distance;
 
   helper.CreateInstructions({
+#if defined(TARGET_ARCH_MIPS)
+      12,                                // backwards call target
+      bmax - 12 - helper.kOffsetOfCall,  // maximize out backwards call range
+      36  // caller (call instruction @helper.kOffsetOfCall)
+#else
       8,                                // backwards call target
       bmax - 8 - helper.kOffsetOfCall,  // maximize out backwards call range
       20  // caller (call instruction @helper.kOffsetOfCall)
+#endif
   });
   helper.EmitReturn42Function(0);
   helper.EmitPcRelativeCallFunction(2, 0);
@@ -369,6 +391,15 @@ ISOLATE_UNIT_TEST_CASE(CodeRelocator_OutOfRangeBackwardCall) {
   const intptr_t fmax = FLAG_upper_pc_relative_call_distance;
 
   helper.CreateInstructions({
+#if defined(TARGET_ARCH_MIPS)
+      12,                                    // backward call target
+      bmax - 12 - helper.kOffsetOfCall + 4,  // 4 bytes exceeding backwards range
+      36,  // caller (call instruction @helper.kOffsetOfCall)
+      fmax - (36 - helper.kOffsetOfCall) -
+          4,  // 4 bytes less than forward range
+      4,
+      4,  // out-of-range, so trampoline has to be inserted before this
+#else
       8,                                    // backward call target
       bmax - 8 - helper.kOffsetOfCall + 4,  // 4 bytes exceeding backwards range
       20,  // caller (call instruction @helper.kOffsetOfCall)
@@ -376,6 +407,7 @@ ISOLATE_UNIT_TEST_CASE(CodeRelocator_OutOfRangeBackwardCall) {
           4,  // 4 bytes less than forward range
       4,
       4,  // out-of-range, so trampoline has to be inserted before this
+#endif
   });
   helper.EmitReturn42Function(0);
   helper.EmitPcRelativeCallFunction(2, 0);
@@ -408,10 +440,17 @@ ISOLATE_UNIT_TEST_CASE(CodeRelocator_OutOfRangeBackwardCall2) {
   const intptr_t bmax = -FLAG_lower_pc_relative_call_distance;
 
   helper.CreateInstructions({
+#if defined(TARGET_ARCH_MIPS)
+      12,                                    // backwards call target
+      bmax - 12 - helper.kOffsetOfCall + 4,  // 4 bytes exceeding backwards range
+      36,  // caller (call instruction @helper.kOffsetOfCall)
+      4,
+#else
       8,                                    // backwards call target
       bmax - 8 - helper.kOffsetOfCall + 4,  // 4 bytes exceeding backwards range
       20,  // caller (call instruction @helper.kOffsetOfCall)
       4,
+#endif
   });
   helper.EmitReturn42Function(0);
   helper.EmitPcRelativeCallFunction(2, 0);
