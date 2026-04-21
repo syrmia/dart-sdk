@@ -1,0 +1,77 @@
+name: MIPS Release Build
+
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git python3 curl xz-utils \
+            gcc-multilib g++-multilib
+          cat > /tmp/i686-linux-gnu-g++ <<'WRAPPER'
+          #!/bin/bash
+          args=()
+          for arg in "$@"; do
+            [[ "$arg" == --sysroot=* ]] && continue
+            args+=("$arg")
+          done
+          exec /usr/bin/g++ "${args[@]}"
+          WRAPPER
+          chmod +x /tmp/i686-linux-gnu-g++
+          sudo mv /tmp/i686-linux-gnu-g++ /usr/local/bin/i686-linux-gnu-g++
+          sudo ln -sf /usr/bin/gcc /usr/local/bin/i686-linux-gnu-gcc
+          sudo ln -sf /usr/bin/ar  /usr/local/bin/i686-linux-gnu-ar
+
+      - name: Clone depot_tools
+        run: |
+          git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git ~/depot_tools
+          echo "$HOME/depot_tools" >> $GITHUB_PATH
+
+      - name: Cache toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/toolchain
+          key: mips-toolchain-2024.05-1
+
+      - name: Download toolchain
+        run: |
+          if [ ! -d ~/toolchain ]; then
+            wget -q https://toolchains.bootlin.com/downloads/releases/toolchains/mips32el/tarballs/mips32el--glibc--stable-2024.05-1.tar.xz
+            mkdir -p ~/toolchain
+            tar -xf mips32el--glibc--stable-2024.05-1.tar.xz -C ~/toolchain
+          fi
+          cp ~/toolchain/mips32el--glibc--stable-2024.05-1/lib/gcc/mipsel-buildroot-linux-gnu/13.3.0/crtbeginS.o \
+             ~/toolchain/mips32el--glibc--stable-2024.05-1/mipsel-buildroot-linux-gnu/sysroot/usr/lib/
+          cp ~/toolchain/mips32el--glibc--stable-2024.05-1/lib/gcc/mipsel-buildroot-linux-gnu/13.3.0/crtendS.o \
+             ~/toolchain/mips32el--glibc--stable-2024.05-1/mipsel-buildroot-linux-gnu/sysroot/usr/lib/
+          echo "$HOME/toolchain/mips32el--glibc--stable-2024.05-1/bin" >> $GITHUB_PATH
+
+      - name: Checkout SDK
+        uses: actions/checkout@v4
+        with:
+          path: sdk
+
+      - name: Sync dependencies
+        run: |
+          cat > .gclient <<'EOF'
+          solutions = [
+            {
+              "name": "sdk",
+              "url": "https://github.com/${{ github.repository }}",
+              "managed": False,
+            },
+          ]
+          EOF
+          DEPOT_TOOLS_UPDATE=0 gclient sync -D --no-history
+
+      - name: Build
+        working-directory: sdk
+        run: |
+          ./tools/build.py \
+            --arch mips --mode release \
+            --toolchain-prefix mips=$HOME/toolchain/mips32el--glibc--stable-2024.05-1/bin/mipsel-buildroot-linux-gnu- \
+            --target-sysroot mips=$HOME/toolchain/mips32el--glibc--stable-2024.05-1/mipsel-buildroot-linux-gnu/sysroot \
+            --no-clang create_sdk -j$(nproc)
