@@ -38,9 +38,14 @@ const RTLD_GLOBAL_android_arm32 = 0x00002;
 /// On Linux and Android Arm64.
 const RTLD_GLOBAL_rest = 0x00100;
 
-final RTLD_GLOBAL = Abi.current() == Abi.androidArm
-    ? RTLD_GLOBAL_android_arm32
-    : RTLD_GLOBAL_rest;
+/// On Linux MIPS.
+final RTLD_GLOBAL_mips = 0x0004;
+
+final RTLD_GLOBAL = Abi.current() == Abi.linuxMIPS
+    ? RTLD_GLOBAL_mips
+    : (Abi.current() == Abi.androidArm
+        ? RTLD_GLOBAL_android_arm32
+        : RTLD_GLOBAL_rest);
 
 @Native<Pointer<Void> Function(Pointer<Char>, Int)>()
 external Pointer<Void> dlopen(Pointer<Char> file, int mode);
