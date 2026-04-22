@@ -167,6 +167,7 @@ compiler_sources_tests = [
   "assembler/assembler_arm64_test.cc",
   "assembler/assembler_arm_test.cc",
   "assembler/assembler_ia32_test.cc",
+  "assembler/assembler_mips_test.cc",
   "assembler/assembler_riscv_test.cc",
   "assembler/assembler_test.cc",
   "assembler/assembler_x64_test.cc",

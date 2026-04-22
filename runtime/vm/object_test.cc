@@ -8224,7 +8224,11 @@ TEST_CASE(TypeArguments_Cache_SomeInstantiations) {
     !defined(USING_UNDEFINED_BEHAVIOR_SANITIZER) &&                            \
     !defined(DART_INCLUDE_SIMULATOR)
 TEST_CASE(TypeArguments_Cache_ManyInstantiations) {
+#if defined(TARGET_ARCH_MIPS)
+  const intptr_t kNumClasses = 50000;
+#else
   const intptr_t kNumClasses = 100000;
+#endif
   static_assert(kNumClasses > TypeArguments::Cache::kMaxLinearCacheEntries,
                 "too few classes to trigger change to a hash-based cache");
   TypeArgumentsHashCacheTest(thread, kNumClasses);

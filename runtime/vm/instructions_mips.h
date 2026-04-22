@@ -186,11 +186,23 @@ class PcRelativePatternBase : public ValueObject {
   static constexpr int kLengthInBytes = 2 * Instr::kInstrSize;
 
   int32_t distance() {
+#if !defined(DART_PRECOMPILED_RUNTIME)
+    return compiler::Assembler::DecodeBranchOffset(
+      *reinterpret_cast<int32_t*>(pc_)) + Instr::kInstrSize;
+#else
     UNREACHABLE();
     return 0;
+#endif
   }
 
-  void set_distance(int32_t distance) { UNREACHABLE(); }
+  void set_distance(int32_t distance) {
+#if !defined(DART_PRECOMPILED_RUNTIME)
+    int32_t* word = reinterpret_cast<int32_t*>(pc_);
+    *word = compiler::Assembler::EncodeBranchOffset(distance - Instr::kInstrSize, *word);
+#else
+    UNREACHABLE();
+#endif
+  }
 
  protected:
   uword pc_;

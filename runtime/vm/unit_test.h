@@ -147,10 +147,12 @@
 #define EXECUTE_TEST_CODE_UWORD_UWORD_UINT32(name, entry, arg0, arg1)          \
   reinterpret_cast<name>(entry)(arg0, arg1)
 #elif defined(TARGET_ARCH_ARM) || defined(TARGET_ARCH_ARM64) ||                \
-    defined(TARGET_ARCH_RISCV32) || defined(TARGET_ARCH_RISCV64)
+    defined(TARGET_ARCH_RISCV32) || defined(TARGET_ARCH_RISCV64) ||            \
+    defined(TARGET_ARCH_MIPS)
 #if defined(HOST_ARCH_ARM) || defined(HOST_ARCH_ARM64) ||                      \
-    defined(HOST_ARCH_RISCV32) || defined(HOST_ARCH_RISCV64)
-// Running on actual ARM hardware, execute code natively.
+    defined(HOST_ARCH_RISCV32) || defined(HOST_ARCH_RISCV64) ||                \
+    defined(HOST_ARCH_MIPS)
+// Running on actual ARM or MIPS hardware, execute code natively.
 #define EXECUTE_TEST_CODE_INT32(name, entry) reinterpret_cast<name>(entry)()
 #define EXECUTE_TEST_CODE_INT64(name, entry) reinterpret_cast<name>(entry)()
 #define EXECUTE_TEST_CODE_INT64_LL(name, entry, long_arg0, long_arg1)          \
@@ -168,7 +170,7 @@
 #define EXECUTE_TEST_CODE_UWORD_UWORD_UINT32(name, entry, arg0, arg1)          \
   reinterpret_cast<name>(entry)(arg0, arg1)
 #else
-// Not running on ARM hardware, call simulator to execute code.
+// Not running on ARM or MIPS hardware, call simulator to execute code.
 #if defined(ARCH_IS_64_BIT)
 #define EXECUTE_TEST_CODE_INT64(name, entry)                                   \
   static_cast<int64_t>(                                                        \
@@ -220,7 +222,7 @@
       true))
 #define EXECUTE_TEST_CODE_UWORD_UWORD_UINT32(name, entry, arg0, arg1)          \
   static_cast<uint32_t>(Simulator::Current()->Call(entry, arg0, arg1, 0, 0))
-#endif  // defined(HOST_ARCH_ARM)
+#endif  // defined(HOST_ARCH_ARM) || defined(HOST_ARCH_MIPS)
 #endif  // defined(TARGET_ARCH_{ARM, ARM64})
 
 #define ZONE_STR(FMT, ...)                                                     \
