@@ -183,7 +183,7 @@ class PcRelativePatternBase : public ValueObject {
 
   explicit PcRelativePatternBase(uword pc) : pc_(pc) {}
 
-  static constexpr int kLengthInBytes = 2 * Instr::kInstrSize;
+  static constexpr int kLengthInBytes = 9 * Instr::kInstrSize;
 
   int32_t distance() {
 #if !defined(DART_PRECOMPILED_RUNTIME)
@@ -222,6 +222,15 @@ class PcRelativeTailCallPattern : public PcRelativePatternBase {
   bool IsValid() const;
 };
 
+// The pattern of the trampoline looks like:
+//        lui TMP, #upper_16
+//        ori TMP, TMP, #lower_16
+//        sw RA, -4(SP)
+//        bal(label)
+//        add TMP, RA, TMP - delay slot, new return address is in RA register
+// label: jr(TMP)              
+//        lw RA, -4(SP)    - delay slot
+
 class PcRelativeTrampolineJumpPattern : public ValueObject {
  public:
   explicit PcRelativeTrampolineJumpPattern(uword pattern_start)
@@ -229,7 +238,7 @@ class PcRelativeTrampolineJumpPattern : public ValueObject {
     USE(pattern_start_);
   }
 
-  static constexpr int kLengthInBytes = 9 * Instr::kInstrSize;
+  static constexpr int kLengthInBytes = 7 * Instr::kInstrSize;
 
   void Initialize();
 

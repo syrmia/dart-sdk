@@ -324,23 +324,17 @@ void PcRelativeTrampolineJumpPattern::Initialize() {
       reinterpret_cast<uint32_t*>(pattern_start_ + 2 * Instr::kInstrSize);
   uint32_t* branch_and_link =
       reinterpret_cast<uint32_t*>(pattern_start_ + 3 * Instr::kInstrSize);
-  uint32_t* nop_first =
-      reinterpret_cast<uint32_t*>(pattern_start_ + 4 * Instr::kInstrSize);
   uint32_t* add_RA_TMP =
-      reinterpret_cast<uint32_t*>(pattern_start_ + 5 * Instr::kInstrSize);
+      reinterpret_cast<uint32_t*>(pattern_start_ + 4 * Instr::kInstrSize);
+  uint32_t* jump_register =
+       reinterpret_cast<uint32_t*>(pattern_start_ + 5 * Instr::kInstrSize);
   uint32_t* load_RA =
       reinterpret_cast<uint32_t*>(pattern_start_ + 6 * Instr::kInstrSize);
-  uint32_t* jump_register =
-      reinterpret_cast<uint32_t*>(pattern_start_ + 7 * Instr::kInstrSize);
-  uint32_t* nop_second =
-      reinterpret_cast<uint32_t*>(pattern_start_ + 8 * Instr::kInstrSize);
   *store_RA = kStoreRA;
   *branch_and_link = kBranchAndLinkEncoding;
-  *nop_first = Instr::kNopInstruction;
   *add_RA_TMP = kAddRaTmpEncoding;
-  *load_RA = kLoadRA;
   *jump_register = kJumpRegisterEncoding;
-  *nop_second = Instr::kNopInstruction;
+  *load_RA = kLoadRA;
   set_distance(0);
 #else
   UNREACHABLE();
@@ -387,24 +381,18 @@ bool PcRelativeTrampolineJumpPattern::IsValid() const {
       reinterpret_cast<uint32_t*>(pattern_start_ + 2 * Instr::kInstrSize);
   uint32_t* branch_and_link =
       reinterpret_cast<uint32_t*>(pattern_start_ + 3 * Instr::kInstrSize);
-  uint32_t* nop_first =
-      reinterpret_cast<uint32_t*>(pattern_start_ + 4 * Instr::kInstrSize);
   uint32_t* add_RA_TMP =
+      reinterpret_cast<uint32_t*>(pattern_start_ + 4 * Instr::kInstrSize);
+  uint32_t* jump_register =
       reinterpret_cast<uint32_t*>(pattern_start_ + 5 * Instr::kInstrSize);
   uint32_t* load_RA =
       reinterpret_cast<uint32_t*>(pattern_start_ + 6 * Instr::kInstrSize);
-  uint32_t* jump_register =
-      reinterpret_cast<uint32_t*>(pattern_start_ + 7 * Instr::kInstrSize);
-  uint32_t* nop_second =
-      reinterpret_cast<uint32_t*>(pattern_start_ + 8 * Instr::kInstrSize);
 
   if (*store_RA != kStoreRA) return false;
   if (*branch_and_link != kBranchAndLinkEncoding) return false;
-  if (*nop_first != Instr::kNopInstruction) return false;
   if (*add_RA_TMP != kAddRaTmpEncoding) return false;
-  if (*load_RA != kLoadRA) return false;
   if (*jump_register != kJumpRegisterEncoding) return false;
-  if (*nop_second != Instr::kNopInstruction) return false;
+  if (*load_RA != kLoadRA) return false;
 
   return true;
 #else
@@ -421,8 +409,9 @@ intptr_t TypeTestingStubCallPattern::GetSubtypeTestCachePoolIndex() {
   // pc_ = next inst to exe
   uword pc = pc_ - 2 * Instr::kInstrSize;
   //jalr RA, S2(=R18)
-  const uint32_t jalr_t9 = 0x0240f809;
-  if(*reinterpret_cast<uint32_t*>(pc) != jalr_t9) {
+  const uint32_t jalr_S2 = 0x0240f809;
+  if(*reinterpret_cast<uint32_t*>(pc) != jalr_S2) {
+    pc = pc - 7 * Instr::kInstrSize;
     PcRelativeCallPattern pattern(pc);
     RELEASE_ASSERT(pattern.IsValid());
   }

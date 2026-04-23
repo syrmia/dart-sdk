@@ -973,15 +973,33 @@ void Assembler::GenerateUnRelocatedPcRelativeTailCall(
   EmitIType(BEQ, R0, R0, 0);
   EmitBranchDelayNop();
 
+  // Reserve space for a trampoline (7 NOP instructions).
+  EmitBranchDelayNop();
+  EmitBranchDelayNop();
+  EmitBranchDelayNop();
+  EmitBranchDelayNop();
+  EmitBranchDelayNop();
+  EmitBranchDelayNop();
+  EmitBranchDelayNop();
+
   PcRelativeTailCallPattern pattern(buffer_.contents() + buffer_.Size() -
-                                PcRelativeTailCallPattern::kLengthInBytes);
+                                    PcRelativeTailCallPattern::kLengthInBytes);
   pattern.set_distance(offset_into_target);
 }
 
-void Assembler::GenerateUnRelocatedPcRelativeCall(
-    intptr_t offset_into_target) {
+void Assembler::GenerateUnRelocatedPcRelativeCall(intptr_t offset_into_target) {
   // Emit "bal <offset>".
   EmitRegImmType(REGIMM, R0, BGEZAL, 0);
+  // Adjust return address to point past the reserved trampoline space.
+  addiu(RA, RA, Immediate(7 * 4));
+
+  // Reserve space for a trampoline (7 NOP instructions).
+  EmitBranchDelayNop();
+  EmitBranchDelayNop();
+  EmitBranchDelayNop();
+  EmitBranchDelayNop();
+  EmitBranchDelayNop();
+  EmitBranchDelayNop();
   EmitBranchDelayNop();
 
   PcRelativeCallPattern pattern(buffer_.contents() + buffer_.Size() -

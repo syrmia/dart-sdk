@@ -502,11 +502,15 @@ void CodeRelocator::BuildTrampolinesForAlmostOutOfRangeCalls(
     // In the worst case we'll make a new trampoline here, in which case the
     // current text offset must be in range for the "critical"
     // [unresolved_call].
+#if !defined(TARGET_ARCH_MIPS) //on MIPS trampolines are placed inside of functions
     ASSERT(IsTargetInRangeFor(unresolved_call, next_text_offset_));
+#endif
 
     // See if there is already a trampoline we could use.
     intptr_t trampoline_text_offset = -1;
+#if !defined(TARGET_ARCH_MIPS)
     auto callee = Code::InstructionsOf(unresolved_call->callee);
+#endif
 
     if (!FLAG_always_generate_trampolines_for_testing) {
       auto old_trampoline_entry = FindTrampolineFor(unresolved_call);
@@ -520,6 +524,17 @@ void CodeRelocator::BuildTrampolinesForAlmostOutOfRangeCalls(
       // The ownership of the trampoline bytes will be transferred to the
       // [ImageWriter], which will eventually write out the bytes and delete the
       // buffer.
+#if defined(TARGET_ARCH_MIPS)
+      uword trampoline_bytes = Code::PayloadStartOf(unresolved_call->caller) + 
+                   unresolved_call->call_offset + 
+                   2 * Instr::kInstrSize;
+      auto unresolved_trampoline = new UnresolvedTrampoline{
+          unresolved_call->callee,
+          unresolved_call->offset_into_target,
+          (uint8_t*)trampoline_bytes,
+          unresolved_call->text_offset+2*4
+      };
+#else
       auto trampoline_bytes = new uint8_t[kTrampolineSize];
       ASSERT((kTrampolineSize % compiler::target::kWordSize) == 0);
       for (uint8_t* cur = trampoline_bytes;
@@ -535,6 +550,7 @@ void CodeRelocator::BuildTrampolinesForAlmostOutOfRangeCalls(
           next_text_offset_,
       };
       AddTrampolineToText(callee, trampoline_bytes, kTrampolineSize);
+#endif
       EnqueueUnresolvedTrampoline(unresolved_trampoline);
       trampoline_text_offset = unresolved_trampoline->text_offset;
     }
