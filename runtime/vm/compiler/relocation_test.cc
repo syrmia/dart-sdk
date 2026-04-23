@@ -291,8 +291,8 @@ ISOLATE_UNIT_TEST_CASE(CodeRelocator_DirectForwardCall) {
   // might actually make some of those unresolved calls resolved).
   helper.CreateInstructions({
 #if defined(TARGET_ARCH_MIPS)
-      36,  // caller (call instruction @helper.kOffsetOfCall)
-      fmax - (36 - helper.kOffsetOfCall) - 12,  // 12 bytes less than maximum gap
+      64,  // caller (call instruction @helper.kOffsetOfCall)
+      fmax - (64 - helper.kOffsetOfCall) - 12,  // 12 bytes less than maximum gap
       12                                        // forward call target
 #else
       20,  // caller (call instruction @helper.kOffsetOfCall)
@@ -323,8 +323,8 @@ ISOLATE_UNIT_TEST_CASE(CodeRelocator_OutOfRangeForwardCall) {
 
   helper.CreateInstructions({
 #if defined(TARGET_ARCH_MIPS)
-      36,  // caller (call instruction @helper.kOffsetOfCall)
-      fmax - (36 - helper.kOffsetOfCall) + 4,  //  4 bytes above maximum gap
+      64,  // caller (call instruction @helper.kOffsetOfCall)
+      fmax - (64 - helper.kOffsetOfCall) + 4,  //  4 bytes above maximum gap
       12                                        // forward call target
 #else
       20,  // caller (call instruction @helper.kOffsetOfCall)
@@ -337,17 +337,29 @@ ISOLATE_UNIT_TEST_CASE(CodeRelocator_OutOfRangeForwardCall) {
   helper.BuildImageAndRunTest(
       [&](const GrowableArray<ImageWriterCommand>& commands,
           uword* entry_point) {
+#if defined(TARGET_ARCH_MIPS)
+        // On MIPS the trampoline is generated within the caller’s code.
+        EXPECT_EQ(3, commands.length());
+#else
         EXPECT_EQ(4, commands.length());
+#endif
 
         // This makes an out-of-range forward call.
         EXPECT_EQ(ImageWriterCommand::InsertInstructionOfCode, commands[0].op);
         // This is the last change the relocator thinks it can ensure the
         // out-of-range call above can call a trampoline - so it injets it here
         // and no later.
+#if defined(TARGET_ARCH_MIPS)
+        // On MIPS the trampoline is generated within the caller’s code.
+        EXPECT_EQ(ImageWriterCommand::InsertInstructionOfCode, commands[1].op);
+        // This is the target of the forwards call.
+        EXPECT_EQ(ImageWriterCommand::InsertInstructionOfCode, commands[2].op);
+#else
         EXPECT_EQ(ImageWriterCommand::InsertBytesOfTrampoline, commands[1].op);
         EXPECT_EQ(ImageWriterCommand::InsertInstructionOfCode, commands[2].op);
         // This is the target of the forwards call.
         EXPECT_EQ(ImageWriterCommand::InsertInstructionOfCode, commands[3].op);
+#endif
 
         *entry_point = commands[0].expected_offset;
       });
@@ -361,7 +373,7 @@ ISOLATE_UNIT_TEST_CASE(CodeRelocator_DirectBackwardCall) {
 #if defined(TARGET_ARCH_MIPS)
       12,                                // backwards call target
       bmax - 12 - helper.kOffsetOfCall,  // maximize out backwards call range
-      36  // caller (call instruction @helper.kOffsetOfCall)
+      64  // caller (call instruction @helper.kOffsetOfCall)
 #else
       8,                                // backwards call target
       bmax - 8 - helper.kOffsetOfCall,  // maximize out backwards call range
@@ -394,8 +406,8 @@ ISOLATE_UNIT_TEST_CASE(CodeRelocator_OutOfRangeBackwardCall) {
 #if defined(TARGET_ARCH_MIPS)
       12,                                    // backward call target
       bmax - 12 - helper.kOffsetOfCall + 4,  // 4 bytes exceeding backwards range
-      36,  // caller (call instruction @helper.kOffsetOfCall)
-      fmax - (36 - helper.kOffsetOfCall) -
+      64,  // caller (call instruction @helper.kOffsetOfCall)
+      fmax - (64 - helper.kOffsetOfCall) -
           4,  // 4 bytes less than forward range
       4,
       4,  // out-of-range, so trampoline has to be inserted before this
@@ -414,7 +426,12 @@ ISOLATE_UNIT_TEST_CASE(CodeRelocator_OutOfRangeBackwardCall) {
   helper.BuildImageAndRunTest(
       [&](const GrowableArray<ImageWriterCommand>& commands,
           uword* entry_point) {
+#if defined(TARGET_ARCH_MIPS)
+        // On MIPS the trampoline is generated within the caller’s code.
+        EXPECT_EQ(6, commands.length());
+#else
         EXPECT_EQ(7, commands.length());
+#endif
 
         // This is the backwards call target.
         EXPECT_EQ(ImageWriterCommand::InsertInstructionOfCode, commands[0].op);
@@ -428,8 +445,13 @@ ISOLATE_UNIT_TEST_CASE(CodeRelocator_OutOfRangeBackwardCall) {
         // This is the last change the relocator thinks it can ensure the
         // out-of-range call above can call a trampoline - so it injets it here
         // and no later.
+#if defined(TARGET_ARCH_MIPS)
+        // On MIPS the trampoline is generated within the caller’s code.
+        EXPECT_EQ(ImageWriterCommand::InsertInstructionOfCode, commands[5].op);
+#else
         EXPECT_EQ(ImageWriterCommand::InsertBytesOfTrampoline, commands[5].op);
         EXPECT_EQ(ImageWriterCommand::InsertInstructionOfCode, commands[6].op);
+#endif
 
         *entry_point = commands[2].expected_offset;
       });
@@ -443,7 +465,7 @@ ISOLATE_UNIT_TEST_CASE(CodeRelocator_OutOfRangeBackwardCall2) {
 #if defined(TARGET_ARCH_MIPS)
       12,                                    // backwards call target
       bmax - 12 - helper.kOffsetOfCall + 4,  // 4 bytes exceeding backwards range
-      36,  // caller (call instruction @helper.kOffsetOfCall)
+      64,  // caller (call instruction @helper.kOffsetOfCall)
       4,
 #else
       8,                                    // backwards call target
@@ -457,7 +479,12 @@ ISOLATE_UNIT_TEST_CASE(CodeRelocator_OutOfRangeBackwardCall2) {
   helper.BuildImageAndRunTest(
       [&](const GrowableArray<ImageWriterCommand>& commands,
           uword* entry_point) {
+#if defined(TARGET_ARCH_MIPS)
+        // On MIPS the trampoline is generated within the caller’s code.
+        EXPECT_EQ(4, commands.length());
+#else
         EXPECT_EQ(5, commands.length());
+#endif
 
         // This is the backwards call target.
         EXPECT_EQ(ImageWriterCommand::InsertInstructionOfCode, commands[0].op);
@@ -470,7 +497,9 @@ ISOLATE_UNIT_TEST_CASE(CodeRelocator_OutOfRangeBackwardCall2) {
         EXPECT_EQ(ImageWriterCommand::InsertInstructionOfCode, commands[3].op);
         // There's no other instructions coming, so the relocator will resolve
         // any pending out-of-range calls by inserting trampolines at the end.
+#if !defined(TARGET_ARCH_MIPS)
         EXPECT_EQ(ImageWriterCommand::InsertBytesOfTrampoline, commands[4].op);
+#endif
 
         *entry_point = commands[4].expected_offset;
       });
