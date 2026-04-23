@@ -1058,6 +1058,9 @@ class PrecompilerCompilerConfiguration extends CompilerConfiguration
       }
       shared = '-shared';
       ldFlags.add('-Wl,--no-undefined');
+      if (_isMips || _isSimMips) {
+        ldFlags.add('-Wl,--build-id');
+      }
     } else if (Platform.isMacOS) {
       cc = 'clang';
       shared = '-dynamiclib';
