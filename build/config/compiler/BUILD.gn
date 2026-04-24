@@ -19,6 +19,9 @@ import("//build/config/android/config.gni")
 if (current_cpu == "arm") {
   import("//build/config/arm.gni")
 }
+if (current_cpu == "mipsel") {
+  import("//build/config/mips.gni")
+}
 if (is_win) {
   import("//build/config/win/visual_studio_version.gni")
 }
@@ -295,6 +298,58 @@ config("compiler") {
       if (arm_tune != "") {
         cflags += [ "-mtune=$arm_tune" ]
       }
+    } else if (current_cpu == "mipsel") {
+      # Some toolchains default to big-endian.
+      cflags += [ "-EL" ]
+      ldflags += [ "-EL" ]
+      if(is_clang){
+        cflags += ["-march=mipsel"]
+      }
+      # We have to explicitly request exceptions to get good heap profiles from
+      # tcmalloc.
+      if (is_debug || is_release) {
+        cflags += [
+          "-fexceptions",
+          "-funwind-tables",
+        ]
+      }
+
+      if (mips_arch_variant == "r6") {
+        cflags += [
+          "-mips32r6",
+          "-Wa,-mips32r6",
+        ]
+        if (is_android) {
+          ldflags += [
+            "-mips32r6",
+            "-Wl,-melf32ltsmip",
+          ]
+        }
+      } else if (mips_arch_variant == "r2") {
+        cflags += [
+          "-mips32r2",
+          "-Wa,-mips32r2",
+        ]
+        if (mips_float_abi == "hard" && mips_fpu_mode != "") {
+          cflags += [ "-m$mips_fpu_mode" ]
+        }
+      } else if (mips_arch_variant == "r1") {
+        cflags += [
+          "-mips32",
+          "-Wa,-mips32",
+        ]
+        if (mips_float_abi == "hard" && mips_fpu_mode != "") {
+          cflags += [ "-m$mips_fpu_mode" ]
+        }
+      }
+
+      if (mips_dsp_rev == 1) {
+        cflags += [ "-mdsp" ]
+      } else if (mips_dsp_rev == 2) {
+        cflags += [ "-mdspr2" ]
+      }
+
+      cflags += [ "-m${mips_float_abi}-float" ]
     }
   }
 
@@ -364,6 +419,9 @@ config("compiler") {
         } else if (current_cpu == "x86") {
           cflags += [ "--target=i386-linux-gnu" ]
           ldflags += [ "--target=i386-linux-gnu" ]
+        } else if (current_cpu == "mipsel") {
+          cflags += [ "--target=mipsel-linux-gnu" ]
+          ldflags += [ "--target=mipsel-linux-gnu" ]
         }
       }
     }
@@ -437,6 +495,9 @@ config("compiler") {
       } else if (current_cpu == "riscv64") {
         cflags += [ "--target=riscv64-linux-android${android_api_level}" ]
         ldflags += [ "--target=riscv64-linux-android${android_api_level}" ]
+      } else if (current_cpu == "mipsel") {
+        cflags += [ "--target=mipsel-linux-android${android_api_level}" ]
+        ldflags += [ "--target=mipsel-linux-android${android_api_level}" ]
       }
     }
   }
@@ -904,7 +965,8 @@ if (is_win) {
     }
   }
 
-  if (is_clang && !using_sanitizer) {
+  # MIPS uses GNU ld instead of lld/gold, so --icf=all must be disabled.
+  if (is_clang && !using_sanitizer && current_cpu != "mipsel") {
     # Identical code folding to reduce size.
     # Warning: This changes C/C++ semantics of function pointer comparison.
     # Needs lld/gold/mold instead of GNU ld/Mac ld.

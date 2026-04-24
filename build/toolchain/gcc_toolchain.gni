@@ -98,9 +98,20 @@ template("gcc_toolchain") {
     lib_switch = "-l"
     lib_dir_switch = "-L"
 
+    additional_for_mipsel_clang_compilation = ""
+    if(target_name == "clang_mipsel"){
+      mipsel_sysroot = invoker.sysroot
+      mipsel_include_dirs = "-isystem$mipsel_sysroot/../include/c++/13.3.0"
+      mipsel_include_dirs += " -isystem$mipsel_sysroot/../include/c++/13.3.0/mipsel-buildroot-linux-gnu"
+
+      additional_for_mipsel_clang_compilation = mipsel_include_dirs + " --sysroot=" + mipsel_sysroot
+    } else if (target_name == "clang_x86" && target_cpu == "mipsel"){
+      additional_for_mipsel_clang_compilation = "--sysroot=" + "../../buildtools/sysroot/linux"
+    }
+
     tool("cc") {
       depfile = "{{output}}.d"
-      command = "$cc -MMD -MF $depfile {{defines}} {{include_dirs}} {{cflags}} {{cflags_c}} -c {{source}} -o {{output}}"
+      command = "$cc -MMD -MF $depfile {{defines}} {{include_dirs}} {{cflags}} {{cflags_c}} $additional_for_mipsel_clang_compilation -c {{source}} -o {{output}}"
       depsformat = "gcc"
       description = "CC {{output}}"
       outputs =
@@ -109,7 +120,7 @@ template("gcc_toolchain") {
 
     tool("cxx") {
       depfile = "{{output}}.d"
-      command = "$cxx -MMD -MF $depfile {{defines}} {{include_dirs}} {{cflags}} {{cflags_cc}} -c {{source}} -o {{output}}"
+      command = "$cxx -MMD -MF $depfile {{defines}} {{include_dirs}} {{cflags}} {{cflags_cc}} $additional_for_mipsel_clang_compilation -c {{source}} -o {{output}}"
       depsformat = "gcc"
       description = "CXX {{output}}"
       outputs =
@@ -119,7 +130,7 @@ template("gcc_toolchain") {
     tool("asm") {
       # For GCC we can just use the C compiler to compile assembly.
       depfile = "{{output}}.d"
-      command = "$asm -MMD -MF $depfile {{defines}} {{include_dirs}} {{asmflags}} -c {{source}} -o {{output}}"
+      command = "$asm -MMD -MF $depfile {{defines}} {{include_dirs}} {{asmflags}} $additional_for_mipsel_clang_compilation -c {{source}} -o {{output}}"
       depsformat = "gcc"
       description = "ASM {{output}}"
       outputs =
@@ -148,8 +159,23 @@ template("gcc_toolchain") {
       # existing .TOC file, overwrite it, otherwise, don't change it.
       tocfile = sofile + ".TOC"
       temporary_tocname = sofile + ".tmp"
+
+      additional_for_mipsel_clang_linking = ""
+      additional_for_mipsel_clang_linking_end = ""
+      if(target_name == "clang_mipsel"){
+        mipsel_sysroot  = invoker.sysroot
+        mipsel_lib_dirs = " -L$mipsel_sysroot/../../lib/gcc/mipsel-buildroot-linux-gnu/13.3.0"
+        mipsel_ld = "$mipsel_sysroot/../../bin/mipsel-buildroot-linux-gnu-ld"
+
+        additional_for_mipsel_clang_linking = "-fuse-ld=$mipsel_ld "
+        additional_for_mipsel_clang_linking += mipsel_lib_dirs + " --sysroot=" + mipsel_sysroot
+        additional_for_mipsel_clang_linking_end += " -latomic"
+      } else if (target_name == "clang_x86" && target_cpu == "mipsel"){
+        additional_for_mipsel_clang_linking = "--sysroot=" + "../../buildtools/sysroot/linux"
+      }
+
       link_command =
-          "$ld -shared {{ldflags}} -o $sofile -Wl,-soname=$soname @$rspfile"
+          "$ld -shared {{ldflags}} $additional_for_mipsel_clang_linking -o $sofile -Wl,-soname=$soname @$rspfile $additional_for_mipsel_clang_linking_end"
       toc_command = "{ $readelf -d $sofile | grep SONAME ; $nm -gD -f posix $sofile | cut -f1-2 -d' '; } > $temporary_tocname"
       replace_command = "if ! cmp -s $temporary_tocname $tocfile; then mv $temporary_tocname $tocfile; fi"
 
@@ -199,7 +225,21 @@ template("gcc_toolchain") {
         stripped_outfile = "{{root_out_dir}}/exe.stripped/$exename"
       }
 
-      command = "$ld {{ldflags}} -o $outfile -Wl,--start-group @$rspfile {{solibs}} -Wl,--end-group $libs_section_prefix {{libs}} $libs_section_postfix"
+      additional_for_mipsel_clang_linking = ""
+      additional_for_mipsel_clang_linking_end = ""
+      if(target_name == "clang_mipsel"){
+        mipsel_sysroot  = invoker.sysroot
+        mipsel_lib_dirs = " -L$mipsel_sysroot/../../lib/gcc/mipsel-buildroot-linux-gnu/13.3.0"
+        mipsel_ld = "$mipsel_sysroot/../../bin/mipsel-buildroot-linux-gnu-ld"
+
+        additional_for_mipsel_clang_linking = "-fuse-ld=$mipsel_ld "
+        additional_for_mipsel_clang_linking += mipsel_lib_dirs + " --sysroot=" + mipsel_sysroot
+        additional_for_mipsel_clang_linking_end += " -latomic"
+      } else if (target_name == "clang_x86" && target_cpu == "mipsel"){
+        additional_for_mipsel_clang_linking = "--sysroot=" + "../../buildtools/sysroot/linux"
+      }
+
+      command = "$ld {{ldflags}} $additional_for_mipsel_clang_linking -o $outfile -Wl,--start-group @$rspfile {{solibs}}  -Wl,--end-group $libs_section_prefix {{libs}} $libs_section_postfix $additional_for_mipsel_clang_linking_end"
 
       symbolizer_script =
           rebase_path("//runtime/tools/dart_profiler_symbols.py")
