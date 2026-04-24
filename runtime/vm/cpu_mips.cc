@@ -28,9 +28,7 @@ void CPU::FlushICache(uword start, uword size) {
   }
 
 #if defined(DART_HOST_OS_LINUX)
-  char* beg = reinterpret_cast<char*>(start);
-  char* end = reinterpret_cast<char*>(start + size);
-  __builtin___clear_cache(beg, end);
+  syscall(__NR_cacheflush, start, size, ICACHE);
 #else
 #error FlushICache only tested/supported on Linux
 #endif
