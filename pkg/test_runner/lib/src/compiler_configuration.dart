@@ -1053,6 +1053,8 @@ class PrecompilerCompilerConfiguration extends CompilerConfiguration
         cc = 'riscv32-linux-gnu-gcc';
       } else if (_isSimRiscv64 || (_isRiscv64 && _configuration.useQemu)) {
         cc = 'riscv64-linux-gnu-gcc';
+      } else if (_isSimMips || (_isMips && _configuration.useQemu)) {
+        cc = 'mipsel-linux-gnu-gcc';
       } else {
         cc = 'gcc';
       }
