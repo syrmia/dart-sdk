@@ -2155,10 +2155,10 @@ void StubCodeCompiler::GenerateUsageCounterIncrement(Register temp_reg) {
     Register ic_reg = S5;
     Register func_reg = temp_reg;
     __ Comment("Increment function counter");
-    __ lw(func_reg, FieldAddress(ic_reg, ICData::owner_offset()));
-    __ lw(T1, FieldAddress(func_reg, Function::usage_counter_offset()));
+    __ lw(func_reg, FieldAddress(ic_reg, target::ICData::owner_offset()));
+    __ lw(T1, FieldAddress(func_reg, target::Function::usage_counter_offset()));
     __ addiu(T1, T1, Immediate(1));
-    __ sw(T1, FieldAddress(func_reg, Function::usage_counter_offset()));
+    __ sw(T1, FieldAddress(func_reg, target::Function::usage_counter_offset()));
   }
 }
 
@@ -2224,7 +2224,7 @@ static void EmitFastSmiOp(Assembler* assembler,
 #endif
   if (FLAG_optimization_counter_threshold >= 0) {
     // Update counter, ignore overflow.
-    const intptr_t count_offset = ICData::CountIndexFor(num_args) * target::kWordSize;
+    const intptr_t count_offset = target::ICData::CountIndexFor(num_args) * target::kWordSize;
     __ lw(A1, Address(S2, count_offset));
     __ AddImmediate(A1, A1, target::ToRawSmi(1));
     __ sw(A1, Address(S2, count_offset));
@@ -2505,7 +2505,7 @@ void StubCodeCompiler::GenerateNArgsCheckInlineCacheStub(
     __ addu(T7, FUNCTION_REG, T6);
     __ lw(T7, Address(T7, 0));
   } else {
-    __ lw(T7, FieldAddress(FUNCTION_REG, Function::entry_point_offset()));
+    __ lw(T7, FieldAddress(FUNCTION_REG, target::Function::entry_point_offset()));
   }
   __ jr(T7);
 
@@ -2652,9 +2652,9 @@ void StubCodeCompiler::GenerateZeroArgsUnoptimizedStaticCallStub() {
     Label ok;
     // Check that the IC data array has NumArgsTested() == 0.
     // 'NumArgsTested' is stored in the least significant bits of 'state_bits'.
-    __ lw(T0, FieldAddress(S5, ICData::state_bits_offset()));
-    ASSERT(ICData::NumArgsTestedShift() == 0);  // No shift needed.
-    __ AndImmediate(T0, T0, ICData::NumArgsTestedMask());
+    __ lw(T0, FieldAddress(S5, target::ICData::state_bits_offset()));
+    ASSERT(target::ICData::NumArgsTestedShift() == 0);  // No shift needed.
+    __ AndImmediate(T0, T0, target::ICData::NumArgsTestedMask());
     __ beq(T0, ZR, &ok);
     __ Stop("Incorrect IC data for unoptimized static call");
     __ Bind(&ok);
@@ -2670,7 +2670,7 @@ void StubCodeCompiler::GenerateZeroArgsUnoptimizedStaticCallStub() {
 #endif
 
   // S5: IC data object (preserved).
-  __ lw(A0, FieldAddress(ICREG, ICData::entries_offset()));
+  __ lw(A0, FieldAddress(ICREG, target::ICData::entries_offset()));
   // A0: ic_data_array with entries: target functions and count.
   __ AddImmediate(A0, Array::data_offset() - kHeapObjectTag);
   // A0: points directly to the first ic data array element.
@@ -2689,7 +2689,7 @@ void StubCodeCompiler::GenerateZeroArgsUnoptimizedStaticCallStub() {
 
   // Get function and call it, if possible.
   __ lw(T0, Address(A0, target_offset));
-  __ lw(CODE_REG, FieldAddress(T0, Function::code_offset()));
+  __ lw(CODE_REG, FieldAddress(T0, target::Function::code_offset()));
   __ addu(A0, T0, T6);
   __ lw(T4, Address(A0, 0));
   __ jr(T4);
@@ -3204,8 +3204,8 @@ void StubCodeCompiler::GenerateOptimizeFunctionStub() {
   __ lw(S4, Address(SP, 2 * target::kWordSize));       // Restore argument descriptor.
   __ addiu(SP, SP, Immediate(3 * target::kWordSize));  // Discard argument.
 
-  __ lw(CODE_REG, FieldAddress(FUNCTION_REG, Function::code_offset()));
-  __ lw(T1, FieldAddress(FUNCTION_REG, Function::entry_point_offset()));
+  __ lw(CODE_REG, FieldAddress(FUNCTION_REG, target::Function::code_offset()));
+  __ lw(T1, FieldAddress(FUNCTION_REG, target::Function::entry_point_offset()));
   __ LeaveStubFrameAndReturn(T1);
   __ break_(0);
 }
@@ -3416,7 +3416,7 @@ void StubCodeCompiler::GenerateICCallThroughCodeStub() {
   ASSERT(Smi::RawValue(kIllegalCid) == 0);
   __ beq(T2, ZR, &miss);
 
-  const intptr_t entry_length = ICData::TestEntryLengthFor(1, /*tracking_exactness=*/false) * target::kWordSize;
+  const intptr_t entry_length = target::ICData::TestEntryLengthFor(1, /*tracking_exactness=*/false) * target::kWordSize;
   __ AddImmediate(T6, entry_length);  // Next entry.
   __ b(&loop);
 
