@@ -1,4 +1,11 @@
-# Dart
+# Dart for MIPS32
+
+This repository contains newly (re)added support for the MIPS32 architecture
+(variants: Rev 1 and Rev 2).
+
+The work was carried out by a small team during the 2025/2026 season (see the list below).
+It reuses parts of the original MIPS32 port of Dart VM, which was originally developed
+by Google engineers and later removed in 2017.
 
 NOTE: User manual is at the end of this README, after the Roadmap section.
 
@@ -333,3 +340,16 @@ export QEMU_LD_PREFIX=/path/to/mips32el--glibc--stable-2024.05-1/mipsel-buildroo
 tools/test.py -m release -a mips -c dartkp -r dart_precompiled --use-qemu \
   runtime/tests/vm/dart/spawn_uri_aot_test.dart
 ```
+
+### Contributors
+
+The MIPS32 port of Dart VM was contributed by the following engineers
+(in alphabetical order):
+
+- Aleksandar Djajic
+- Andrea Milinkovic
+- Djordje Todorovic
+- Eldar Osmanovic
+- Milica Matic
+- Petar Jovanovic
+- Slavisa Petrovic
