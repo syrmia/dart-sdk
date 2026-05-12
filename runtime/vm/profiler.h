@@ -52,7 +52,19 @@ class SampleBlock;
   V(sample_allocation_failure)
 
 struct ProfilerCounters {
-#define DECLARE_PROFILER_COUNTER(name) RelaxedAtomic<int64_t> name;
+#if defined(TARGET_ARCH_MIPS)
+  // TODO(mips):
+  // Revisit use of atomic operations in signal handlers.
+  // 64-bit atomics (e.g. RelaxedAtomic<int64_t>) may call into libatomic
+  // (__atomic_fetch_add_8) on some targets (e.g. MIPS32), which is not
+  // async-signal-safe and can deadlock if it takes a lock.
+  // Ensure all operations in signal handlers are lock-free and
+  // async-signal-safe, or move them out of the handler.
+  using ProfilerCounter = intptr_t;
+#else
+  using ProfilerCounter = int64_t;
+#endif
+#define DECLARE_PROFILER_COUNTER(name) RelaxedAtomic<ProfilerCounter> name;
   PROFILER_COUNTERS(DECLARE_PROFILER_COUNTER)
 #undef DECLARE_PROFILER_COUNTER
 };
